@@ -1,0 +1,4 @@
+.superpowers/
+.DS_Store
+build/
+*.xcuserdata
