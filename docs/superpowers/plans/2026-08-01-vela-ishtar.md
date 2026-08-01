@@ -78,47 +78,101 @@ Key interfaces (task implementers rely on these exact signatures):
 
 ## Tasks (TDD, commit per task)
 
-1. **Scaffold** — Package.swift, .gitignore (build/, .build/), dirs.
-2. **Models + fixture test** — decode the verified live JSON (saved as
+### Task 1: Scaffold
+
+Package.swift, .gitignore (build/, .build/), dirs.
+
+### Task 2: Models + fixture test
+
+decode the verified live JSON (saved as
    test fixture); tolerant ISO8601 (mixed `Z` / `-03:00` / fractional).
-3. **BorderDash** — tests: fractions 0, 0.5, 0.85, 1.0 vs exact perimeter.
-4. **BurnBuffer** — tests: deltas, midnight clamp, all-zero → nil.
-5. **PaceEngine** — tests: idle, exhausted, ETA clamp at midnight UTC,
+
+### Task 3: BorderDash
+
+tests: fractions 0, 0.5, 0.85, 1.0 vs exact perimeter.
+
+### Task 4: BurnBuffer
+
+tests: deltas, midnight clamp, all-zero → nil.
+
+### Task 5: PaceEngine
+
+tests: idle, exhausted, ETA clamp at midnight UTC,
    limit disabled, elapsed < 60s.
-6. **HistoryStore** — JSON round-trip in tmpdir; UTC-day keying (21:30
+
+### Task 6: HistoryStore
+
+JSON round-trip in tmpdir; UTC-day keying (21:30
    São Paulo lands on correct UTC day).
-7. **KeychainStore** — thin SecItem wrapper (manual verify; no unit test).
-8. **AIHubClient** — error mapping (noToken/unauthorized/network/badStatus/
+
+### Task 7: KeychainStore
+
+thin SecItem wrapper (manual verify; no unit test).
+
+### Task 8: AIHubClient
+
+error mapping (noToken/unauthorized/network/badStatus/
    decode); live curl-equivalence check with `$AIHUB_TOKEN`.
-9. **UsagePoller** — unit-test transitions with stubbed client protocol.
-10. **StatusItemController + pill renderer** — offscreen NSImage at 2x:
+
+### Task 9: UsagePoller
+
+unit-test transitions with stubbed client protocol.
+
+### Task 10: StatusItemController + pill renderer
+
+offscreen NSImage at 2x:
     border dash trace (amber >85%, red closed loop at 100%, contents dim),
     age-faded sparkline + area fill + leading dot, tabular amount.
     `isTemplate = false`, appearance-adaptive palettes (resolve colors
     under aqua/darkAqua). Dev trick: dump `tiffRepresentation` to /tmp
     to eyeball renders.
-11. **PopoverPanel** — borderless nonactivating NSPanel, vibrancy
+
+### Task 11: PopoverPanel
+
+borderless nonactivating NSPanel, vibrancy
     (.popover material), anchored to `statusItem.button.window.frame`
     computed at click time, 180ms scale+fade (instant under Reduce
     Motion), global+local outside-click monitors.
-12. **PopoverView** — 320pt: hero 30pt semibold tabular + pace sentence,
+
+### Task 12: PopoverView
+
+320pt: hero 30pt semibold tabular + pace sentence,
     CurveView (hourly cumulative from HistoryStore, dotted budget
     hairline, "now" tick), top-5 model rows (hairline bars, cost tabular,
     tokens 11pt/40%), footer: Dashboard ↗ (opens web UI), API key
     (copies token), `● AI Hub · 12:38:04` health unit.
-13. **CurveView draw-on** — progress-mask 0→1 in the open animation
+
+### Task 13: CurveView draw-on
+
+progress-mask 0→1 in the open animation
     context, once per open.
-14. **Health states** — green/amber/gray dot, stale note row, content
+
+### Task 14: Health states
+
+green/amber/gray dot, stale note row, content
     dim to 55%.
-15. **First-run flow** — inline NSSecureTextField in popover → Keychain
+
+### Task 15: First-run flow
+
+inline NSSecureTextField in popover → Keychain
     → pollNow.
-16. **Launch-at-login** — SMAppService.mainApp toggle in footer
+
+### Task 16: Launch-at-login
+
+SMAppService.mainApp toggle in footer
     (ad-hoc signing OK; toggle only after moving .app to /Applications).
-17. **build.sh + Info.plist** — `swiftc -O -target arm64-apple-macos14.0
+
+### Task 17: build.sh + Info.plist
+
+`swiftc -O -target arm64-apple-macos14.0
     Sources/VelaCore/*.swift Sources/App/*.swift -o ... -framework Cocoa
     -framework ServiceManagement -framework Security -framework
     QuartzCore`; Info.plist copy; `xattr -cr`; `codesign --force --sign -`.
-18. **Live verification pass** — checklist below.
+
+### Task 18: Live verification pass
+
+checklist below.
+
 
 ## Gotchas (baked into tasks)
 
