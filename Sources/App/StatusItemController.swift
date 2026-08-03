@@ -25,7 +25,7 @@ public final class StatusItemController: NSObject {
     private var lastBurnBuffer: BurnBuffer?
 
     // Pill geometry, in points -- matches the locked design spec.
-    private static let pillSize = NSSize(width: 76, height: 22)
+    private static let pillSize = NSSize(width: 88, height: 22)
     private static let cornerRadius: CGFloat = 6
 
     public override init() {
@@ -86,7 +86,7 @@ public final class StatusItemController: NSObject {
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
 
             let (usedPercent, limitEnabled) = Self.budgetFields(for: state)
-            let sparklineLane = CGRect(x: rect.minX + 8, y: rect.minY + (rect.height - 14) / 2, width: 40, height: 14)
+            let sparklineLane = CGRect(x: rect.minX + 8, y: rect.minY + (rect.height - 14) / 2, width: 44, height: 14)
 
             switch state {
             case .stale:
