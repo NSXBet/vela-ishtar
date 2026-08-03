@@ -19,9 +19,11 @@ import Security
 ///
 /// Security framework calls are thread-safe, so this type needs no locking
 /// or actor isolation of its own.
-final class KeychainStore {
+public final class KeychainStore: @unchecked Sendable {
     private let service = "com.nsxbet.velaishtar"
     private let account = "gateway-token"
+
+    public init() {}
 
     private func baseQuery() -> [String: Any] {
         [
@@ -32,7 +34,7 @@ final class KeychainStore {
     }
 
     /// Reads the stored token, or nil if none exists (or on any Keychain error).
-    func read() -> String? {
+    public func read() -> String? {
         var query = baseQuery()
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -45,7 +47,7 @@ final class KeychainStore {
 
     /// Adds the token, or updates it in place if one is already stored.
     @discardableResult
-    func write(_ token: String) -> Bool {
+    public func write(_ token: String) -> Bool {
         let data = Data(token.utf8)
 
         var addQuery = baseQuery()
@@ -67,7 +69,7 @@ final class KeychainStore {
     /// Removes the token. Returns true if it was deleted, or if there was
     /// nothing to delete (deleting an absent item is not a failure).
     @discardableResult
-    func delete() -> Bool {
+    public func delete() -> Bool {
         let status = SecItemDelete(baseQuery() as CFDictionary)
         return status == errSecSuccess || status == errSecItemNotFound
     }
