@@ -3,25 +3,12 @@
 // GET /v1/me/usage endpoint and decodes it into a UsageResponse.
 // Why: isolates the one network call the app makes behind a protocol, so
 // UsagePoller can be unit-tested against a stub instead of a real socket.
-// RELEVANT FILES: Sources/App/KeychainStore.swift, Sources/App/UsagePoller.swift, Sources/VelaCore/Models.swift
+// UsageError/AIHubClientProtocol live in VelaCore (see AIHubClientProtocol.swift)
+// so PollStateMachine can reference them without depending on this target.
+// RELEVANT FILES: Sources/App/KeychainStore.swift, Sources/App/UsagePoller.swift, Sources/VelaCore/AIHubClientProtocol.swift
 
 import Foundation
-
-/// Everything that can go wrong fetching usage, mapped to a small closed set
-/// so callers can switch on it instead of inspecting raw HTTP/URLError detail.
-public enum UsageError: Error, Equatable {
-    case noToken
-    case unauthorized
-    case network(String)
-    case badStatus(Int)
-    case decode
-}
-
-/// The poller depends on this protocol, not the concrete client, so tests
-/// can stub fetchUsage without making a real request.
-public protocol AIHubClientProtocol {
-    func fetchUsage(completion: @escaping (Result<UsageResponse, UsageError>) -> Void)
-}
+import VelaCore
 
 /// Live implementation backed by URLSession.
 public final class AIHubClient: AIHubClientProtocol {
