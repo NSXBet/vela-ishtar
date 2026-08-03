@@ -110,4 +110,28 @@ struct HistoryStoreTests {
         let decoded = try JSONDecoder().decode(DayRecord.self, from: data)
         #expect(decoded == original)
     }
+
+    @Test("record sets exhaustedAt to the instant spend first reaches the limit")
+    func recordSetsExhaustedAtOnFirstCrossing() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let underLimit = ISODate.parse("2026-08-01T09:00:00Z")!
+        let crossing = ISODate.parse("2026-08-01T14:23:00Z")!
+        store.record(spentToday: 40, limit: 50, at: underLimit)
+        store.record(spentToday: 50, limit: 50, at: crossing)
+
+        let day = store.day(utcDate: crossing)
+        #expect(day?.exhaustedAt == crossing)
+    }
+
+    @Test("record does not overwrite exhaustedAt on a later poll that is still over the limit")
+    func recordDoesNotOverwriteExhaustedAt() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let firstCrossing = ISODate.parse("2026-08-01T14:23:00Z")!
+        let laterPoll = ISODate.parse("2026-08-01T16:00:00Z")!
+        store.record(spentToday: 50, limit: 50, at: firstCrossing)
+        store.record(spentToday: 55, limit: 50, at: laterPoll)
+
+        let day = store.day(utcDate: laterPoll)
+        #expect(day?.exhaustedAt == firstCrossing)
+    }
 }

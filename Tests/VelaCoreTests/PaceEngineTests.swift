@@ -30,11 +30,19 @@ struct PaceEngineTests {
         #expect(verdict == .cruisingNoLimit)
     }
 
-    @Test("spend at or above limit is exhausted")
+    @Test("spend at or above limit is exhausted, defaulting reachedAt to now when no exhaustedAt is passed")
     func exhaustedAtLimit() {
         let now = ISODate.parse("2026-08-01T18:40:00Z")!
         #expect(PaceEngine.verdict(spent: 100, limit: 100, limitEnabled: true, now: now) == .exhausted(reachedAt: now))
         #expect(PaceEngine.verdict(spent: 150, limit: 100, limitEnabled: true, now: now) == .exhausted(reachedAt: now))
+    }
+
+    @Test("exhausted uses the passed exhaustedAt instead of now, so the reported time is the true first crossing")
+    func exhaustedUsesPassedExhaustedAt() {
+        let firstCrossing = ISODate.parse("2026-08-01T09:15:00Z")!
+        let now = ISODate.parse("2026-08-01T18:40:00Z")!
+        let verdict = PaceEngine.verdict(spent: 150, limit: 100, limitEnabled: true, now: now, exhaustedAt: firstCrossing)
+        #expect(verdict == .exhausted(reachedAt: firstCrossing))
     }
 
     @Test("zero or negative spend is idle")
@@ -43,10 +51,15 @@ struct PaceEngineTests {
         #expect(PaceEngine.verdict(spent: 0, limit: 100, limitEnabled: true, now: now) == .idle)
     }
 
-    @Test("less than 60 seconds since midnight UTC is idle regardless of spend")
-    func idleWhenTooEarlyInTheDay() {
+    @Test("less than 60 seconds since midnight UTC with real spend is a generic pace, not a false idle")
+    func paceGenericWhenTooEarlyInTheDayWithSpend() {
         let now = ISODate.parse("2026-08-01T00:00:30Z")!
-        #expect(PaceEngine.verdict(spent: 5, limit: 100, limitEnabled: true, now: now) == .idle)
+        let verdict = PaceEngine.verdict(spent: 5, limit: 100, limitEnabled: true, now: now)
+        let nextMidnightUTC = ISODate.parse("2026-08-02T00:00:00Z")!
+        #expect(verdict == .pace(eta: nextMidnightUTC))
+        // Since the eta is exactly next midnight (not before it), sentence()
+        // must render the honest generic line, not a fabricated projection.
+        #expect(PaceEngine.sentence(for: verdict, now: now) == "On pace to stay under budget today.")
     }
 
     @Test("pace is projected from the burn rate since midnight UTC")

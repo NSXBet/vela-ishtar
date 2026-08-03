@@ -53,6 +53,11 @@ public struct HistoryStore: Sendable {
 
     /// Records a new cumulative "spent today" reading into the UTC hour
     /// slot for `date`, creating that day's record if it doesn't exist yet.
+    ///
+    /// Also persists the FIRST instant spend reaches or exceeds the limit
+    /// that day (`exhaustedAt`), so PaceEngine can report a true, stable
+    /// exhaustion time instead of re-stamping "now" on every poll after the
+    /// budget is already blown.
     public mutating func record(spentToday: Double, limit: Double, at date: Date) {
         let key = Self.dayKeyFormatter.string(from: date)
         let hour = Self.utcCalendar.component(.hour, from: date)
@@ -60,6 +65,9 @@ public struct HistoryStore: Sendable {
         var day = days[key] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
         day.limit = limit
         day.hourly[hour] = spentToday
+        if day.exhaustedAt == nil, spentToday >= limit {
+            day.exhaustedAt = date
+        }
         days[key] = day
     }
 

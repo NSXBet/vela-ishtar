@@ -35,16 +35,37 @@ public enum PaceEngine {
         return calendar
     }
 
+    /// The next UTC midnight strictly after `date`. Shared by verdict()'s
+    /// early-day fallback and sentence()'s eta-clamp so both agree on where
+    /// "today" ends.
+    private static func nextMidnightUTC(after date: Date) -> Date {
+        utcCalendar.date(byAdding: .day, value: 1, to: utcCalendar.startOfDay(for: date))!
+    }
+
     /// Decides today's pace verdict. Rule order matters: a disabled limit
     /// always wins (there's nothing to be exhausted against or pace toward).
-    public static func verdict(spent: Double, limit: Double, limitEnabled: Bool, now: Date) -> PaceVerdict {
+    ///
+    /// `exhaustedAt` is the persisted instant spend first crossed the limit
+    /// today (from HistoryStore.DayRecord.exhaustedAt). The App layer should
+    /// always pass it once known; it defaults to nil so `.exhausted(reachedAt:
+    /// now)` is only a fallback for the very first poll that crosses the
+    /// limit, before anything has been persisted yet.
+    public static func verdict(spent: Double, limit: Double, limitEnabled: Bool, now: Date, exhaustedAt: Date? = nil) -> PaceVerdict {
         guard limitEnabled else { return .cruisingNoLimit }
-        guard spent < limit else { return .exhausted(reachedAt: now) }
+        guard spent < limit else { return .exhausted(reachedAt: exhaustedAt ?? now) }
         guard spent > 0 else { return .idle }
 
         let midnightUTC = utcCalendar.startOfDay(for: now)
         let elapsedSeconds = now.timeIntervalSince(midnightUTC)
-        guard elapsedSeconds >= minElapsedSecondsForProjection else { return .idle }
+        guard elapsedSeconds >= minElapsedSecondsForProjection else {
+            // Money has already been spent today (spent > 0, checked above),
+            // so .idle would be a lie -- it reads as "no spend yet today."
+            // There just isn't enough burn history yet to trust a rate
+            // projection, so report the honest generic pace instead: an eta
+            // past midnight makes sentence() render "On pace to stay under
+            // budget today." rather than a fabricated early-day claim.
+            return .pace(eta: nextMidnightUTC(after: now))
+        }
 
         let rate = spent / elapsedSeconds
         let secondsToLimit = (limit - spent) / rate
@@ -65,8 +86,11 @@ public enum PaceEngine {
         case .exhausted(let reachedAt):
             return "Budget reached at \(localTime(reachedAt)). Resets at midnight UTC."
         case .pace(let eta):
-            let nextMidnightUTC = utcCalendar.date(byAdding: .day, value: 1, to: utcCalendar.startOfDay(for: now))!
-            if eta < nextMidnightUTC {
+            // Shared with verdict()'s early-day fallback so both agree on
+            // where "today" ends -- otherwise the two computations could
+            // silently drift apart.
+            let midnightBoundary = Self.nextMidnightUTC(after: now)
+            if eta < midnightBoundary {
                 return "At this pace you'll reach budget around \(localTime(eta))."
             } else {
                 return "On pace to stay under budget today."
