@@ -29,8 +29,11 @@ public struct BurnBuffer: Equatable, Sendable {
     ///
     /// A negative delta means today's cumulative spend went DOWN, which only
     /// happens when the API's spend counter reset at UTC midnight between
-    /// polls. In that case the whole buffer is cleared (the old deltas
-    /// belonged to a different day) and a single 0 is stored for this poll.
+    /// polls. That reset isn't a real burn of 0 — it's just an artifact of
+    /// the counter rolling over — so it's clamped to 0 for this poll rather
+    /// than treated as a negative burn. The buffer itself is NOT wiped:
+    /// older slots still represent real minutes of spend and stay in the
+    /// sparkline until capacity naturally evicts them.
     public mutating func record(spentToday: Double, at date: Date) {
         guard let previous = previousSpentToday else {
             previousSpentToday = spentToday
@@ -41,12 +44,8 @@ public struct BurnBuffer: Equatable, Sendable {
         let delta = spentToday - previous
         previousSpentToday = spentToday
 
-        if delta < 0 {
-            slots = [0]
-            return
-        }
-
-        slots.append(delta)
+        let clampedDelta = max(delta, 0)
+        slots.append(clampedDelta)
         if slots.count > Self.capacity {
             slots.removeFirst(slots.count - Self.capacity)
         }

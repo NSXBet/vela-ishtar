@@ -27,7 +27,7 @@ struct BurnBufferTests {
         #expect(buffer.slots == [0.0, 5.0, 3.5])
     }
 
-    @Test("a negative delta (midnight UTC reset) clears the buffer and stores zero")
+    @Test("a negative delta (midnight UTC reset) is clamped to zero but does not clear prior slots")
     func midnightResetClamp() {
         var buffer = BurnBuffer()
         let t0 = Date()
@@ -35,7 +35,22 @@ struct BurnBufferTests {
         buffer.record(spentToday: 25.0, at: t0.addingTimeInterval(60))
         // spend dropped -> today's cumulative reset at UTC midnight.
         buffer.record(spentToday: 1.0, at: t0.addingTimeInterval(120))
-        #expect(buffer.slots == [0.0])
+        // The prior slots (0, 5) are real burned minutes and must survive;
+        // only this poll's negative delta is clamped to 0, not wiped away.
+        #expect(buffer.slots == [0.0, 5.0, 0.0])
+    }
+
+    @Test("accumulation resumes normally after a midnight-reset clamp")
+    func postResetAccumulation() {
+        var buffer = BurnBuffer()
+        let t0 = Date()
+        buffer.record(spentToday: 20.0, at: t0)
+        buffer.record(spentToday: 25.0, at: t0.addingTimeInterval(60))
+        // Midnight UTC reset: cumulative spend drops back down.
+        buffer.record(spentToday: 1.0, at: t0.addingTimeInterval(120))
+        // Spend resumes accumulating from the new (post-reset) baseline.
+        buffer.record(spentToday: 3.0, at: t0.addingTimeInterval(180))
+        #expect(buffer.slots == [0.0, 5.0, 0.0, 2.0])
     }
 
     @Test("all-zero buffer normalizes to nil")
