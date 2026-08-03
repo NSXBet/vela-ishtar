@@ -8,7 +8,6 @@
 // RELEVANT FILES: Sources/VelaCore/PollStateMachine.swift, Sources/App/AIHubClient.swift, Sources/VelaCore/AIHubClientProtocol.swift
 
 import Foundation
-import VelaCore
 
 /// Polls the usage endpoint every 60 seconds and republishes the resulting
 /// `PollState` via `onState`.

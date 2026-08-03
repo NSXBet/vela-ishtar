@@ -8,7 +8,6 @@
 // RELEVANT FILES: Sources/App/KeychainStore.swift, Sources/App/UsagePoller.swift, Sources/VelaCore/AIHubClientProtocol.swift
 
 import Foundation
-import VelaCore
 
 /// Live implementation backed by URLSession.
 public final class AIHubClient: AIHubClientProtocol {
