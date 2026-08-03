@@ -8,7 +8,7 @@
 import Foundation
 
 /// The state of today's spend relative to the daily limit.
-public enum PaceVerdict: Equatable {
+public enum PaceVerdict: Equatable, Sendable {
     /// No spend recorded yet today (or too early in the day to project).
     case idle
     /// Spend has reached or exceeded the limit, at this moment.

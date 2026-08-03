@@ -7,7 +7,7 @@
 
 import Foundation
 
-public struct BurnBuffer: Equatable {
+public struct BurnBuffer: Equatable, Sendable {
     /// Number of poll-minute slots retained. Older slots are evicted first.
     public static let capacity = 60
 

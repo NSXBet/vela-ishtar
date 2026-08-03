@@ -10,7 +10,7 @@ import Foundation
 /// One UTC day's worth of spend. `hourly[h]` is the cumulative "spent
 /// today" figure as of UTC hour `h`, or nil if that hour hasn't happened
 /// (or wasn't observed) yet.
-public struct DayRecord: Codable, Equatable {
+public struct DayRecord: Codable, Equatable, Sendable {
     public var hourly: [Double?]
     public var limit: Double
     public var exhaustedAt: Date?
@@ -23,7 +23,7 @@ public struct DayRecord: Codable, Equatable {
 }
 
 /// On-disk store of DayRecords, keyed by UTC calendar day ("yyyy-MM-dd").
-public struct HistoryStore {
+public struct HistoryStore: Sendable {
     private let directory: URL
     private var days: [String: DayRecord] = [:]
 

@@ -10,7 +10,7 @@
 
 import Foundation
 
-public struct UsageResponse: Codable, Equatable {
+public struct UsageResponse: Codable, Equatable, Sendable {
     public let tokenId: String
     public let dailyBudget: DailyBudget
     public let currentMonth: MonthStats
@@ -31,7 +31,7 @@ public struct UsageResponse: Codable, Equatable {
     }
 }
 
-public struct DailyBudget: Codable, Equatable {
+public struct DailyBudget: Codable, Equatable, Sendable {
     public let limitUSD: Double
     public let spentUSD: Double
     public let remainingUSD: Double
@@ -58,7 +58,7 @@ public struct DailyBudget: Codable, Equatable {
     }
 }
 
-public struct MonthStats: Codable, Equatable {
+public struct MonthStats: Codable, Equatable, Sendable {
     public let totalCostUSD: Double
     public let totalTokens: Int
     public let requests: Int
@@ -82,7 +82,7 @@ public struct MonthStats: Codable, Equatable {
     }
 }
 
-public struct ModelUsage: Codable, Equatable {
+public struct ModelUsage: Codable, Equatable, Sendable {
     public let model: String
     public let totalCostUSD: Double
     public let totalTokens: Int
