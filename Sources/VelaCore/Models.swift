@@ -114,6 +114,12 @@ public enum ISODate {
 
         let plain = ISO8601DateFormatter()
         plain.formatOptions = [.withInternetDateTime]
-        return plain.date(from: s)
+        if let d = plain.date(from: s) { return d }
+
+        // Date-only strings ("2026-08-01") have no time component at all,
+        // so neither formatter above matches -- try that shape last.
+        let dateOnly = ISO8601DateFormatter()
+        dateOnly.formatOptions = [.withFullDate]
+        return dateOnly.date(from: s)
     }
 }

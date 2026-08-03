@@ -134,4 +134,33 @@ struct HistoryStoreTests {
         let day = store.day(utcDate: laterPoll)
         #expect(day?.exhaustedAt == firstCrossing)
     }
+
+    @Test("load normalizes a hand-edited day record whose hourly array is not 24 slots, so a later record() does not crash")
+    func loadNormalizesMalformedHourlyArray() throws {
+        let directory = Self.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // Hand-craft a history.json with a day record that only has 3 hourly
+        // slots -- e.g. from manual editing or a corrupted write. Without
+        // normalization, record() would index this array by UTC hour
+        // (0...23) and crash with an out-of-bounds write.
+        let malformedJSON = """
+        {"2026-08-01":{"hourly":[1.0,2.0,3.0],"limit":50,"exhaustedAt":null}}
+        """
+        try malformedJSON.data(using: .utf8)!.write(to: directory.appendingPathComponent("history.json"))
+
+        var store = HistoryStore(directory: directory)
+        try store.load()
+
+        // The malformed day was reset to a fresh 24-nil-slot array, so its
+        // old readings are gone but the shape is safe to index into.
+        let malformedDay = ISODate.parse("2026-08-01T12:00:00Z")!
+        #expect(store.day(utcDate: malformedDay)?.hourly.count == 24)
+
+        // Recording at hour 23 (out of range for the original 3-slot array)
+        // must not crash.
+        let lateHour = ISODate.parse("2026-08-01T23:00:00Z")!
+        store.record(spentToday: 10, limit: 50, at: lateHour)
+        #expect(store.day(utcDate: lateHour)?.hourly[23] == 10)
+    }
 }

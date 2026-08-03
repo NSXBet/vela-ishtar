@@ -27,12 +27,17 @@ public struct HistoryStore: Sendable {
     private let directory: URL
     private var days: [String: DayRecord] = [:]
 
+    // Computed, not `static let`: Calendar and DateFormatter are not
+    // thread-safe to share, so building a fresh instance per call is the
+    // safe choice here rather than caching one behind a lock.
     private static var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         return calendar
     }
 
+    // Same reasoning as `utcCalendar` above: DateFormatter is not
+    // thread-safe, so this stays a computed var, not a cached singleton.
     private static var dayKeyFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -86,7 +91,17 @@ public struct HistoryStore: Sendable {
             return
         }
         let data = try Data(contentsOf: fileURL)
-        days = try JSONDecoder().decode([String: DayRecord].self, from: data)
+        var decoded = try JSONDecoder().decode([String: DayRecord].self, from: data)
+
+        // Defend against a hand-edited or corrupted history.json where a
+        // day's hourly array isn't exactly 24 slots -- record() indexes it
+        // by UTC hour (0...23) and would crash on an out-of-bounds write.
+        // Reset any offending day back to a fresh 24-nil array rather than
+        // failing the whole load.
+        for key in decoded.keys where decoded[key]!.hourly.count != 24 {
+            decoded[key]!.hourly = Array(repeating: nil, count: 24)
+        }
+        days = decoded
     }
 
     /// Saves the current history to history.json, creating `directory` if
@@ -97,7 +112,13 @@ public struct HistoryStore: Sendable {
         let data = try JSONEncoder().encode(days)
 
         let tempURL = directory.appendingPathComponent("history.json.tmp-\(UUID().uuidString)")
-        try data.write(to: tempURL, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tempURL)
+        try data.write(to: tempURL)
+        do {
+            _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tempURL)
+        } catch {
+            // Don't leave the orphaned temp file behind if the swap failed.
+            try? FileManager.default.removeItem(at: tempURL)
+            throw error
+        }
     }
 }
