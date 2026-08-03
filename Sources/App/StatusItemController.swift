@@ -20,6 +20,10 @@ public final class StatusItemController: NSObject {
     private var statusItem: NSStatusItem?
     private var appearanceObservation: NSKeyValueObservation?
 
+    /// Exposed so the popover can anchor itself under this exact button.
+    /// Only valid after install(); nil before that.
+    public var button: NSStatusBarButton? { statusItem?.button }
+
     // Last-rendered inputs; render() skips redraw when both unchanged (zero-render-between-polls rule).
     private var lastState: PollState?
     private var lastBurnBuffer: BurnBuffer?
