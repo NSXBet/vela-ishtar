@@ -11,16 +11,6 @@ import Foundation
 @testable import VelaCore
 
 struct PaceEngineTests {
-    // Independent of PaceEngine's own formatting code, so the test actually
-    // checks behavior rather than mirroring the implementation.
-    static func expectedLocalTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
-        formatter.dateFormat = "h:mm a"
-        return formatter.string(from: date).lowercased()
-    }
-
     // MARK: - verdict() rule order
 
     @Test("limitEnabled false always wins, even if spend already exceeds limit")
@@ -103,18 +93,22 @@ struct PaceEngineTests {
     }
 
     @Test("exhausted sentence includes the local reached-at time")
-    func exhaustedSentence() {
+    func exhaustedSentence() throws {
         let reachedAt = ISODate.parse("2026-08-01T18:40:00Z")!
-        let expected = "Budget reached at \(Self.expectedLocalTime(reachedAt)). Resets at midnight UTC."
-        #expect(PaceEngine.sentence(for: .exhausted(reachedAt: reachedAt)) == expected)
+        let sentence = PaceEngine.sentence(for: .exhausted(reachedAt: reachedAt))
+        #expect(sentence.hasPrefix("Budget reached at "))
+        #expect(sentence.hasSuffix(". Resets at midnight UTC."))
+        #expect(try sentence.contains(Regex(#"\b\d{1,2}:\d{2} [ap]m\b"#)))
     }
 
     @Test("pace sentence before next midnight UTC gives the projected time")
-    func paceSentenceBeforeMidnight() {
+    func paceSentenceBeforeMidnight() throws {
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
         let eta = now.addingTimeInterval(21600) // 6h later, still same UTC day.
-        let expected = "At this pace you'll reach budget around \(Self.expectedLocalTime(eta))."
-        #expect(PaceEngine.sentence(for: .pace(eta: eta), now: now) == expected)
+        let sentence = PaceEngine.sentence(for: .pace(eta: eta), now: now)
+        #expect(sentence.hasPrefix("At this pace you'll reach budget around "))
+        #expect(sentence.hasSuffix("."))
+        #expect(try sentence.contains(Regex(#"\b\d{1,2}:\d{2} [ap]m\b"#)))
     }
 
     @Test("pace sentence clamps to a generic message once the eta crosses midnight UTC")

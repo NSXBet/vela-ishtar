@@ -15,6 +15,10 @@ public enum BorderDash {
     /// (shortened by the corner radius on both ends) plus the four corners,
     /// which together sweep one full circle of radius `cornerRadius`.
     public static func perimeter(width w: Double, height h: Double, cornerRadius r: Double) -> Double {
+        // A corner radius bigger than half the shortest side is geometrically
+        // impossible (the two corners on that side would overlap), so clamp
+        // it down rather than let the straight-edge term go negative.
+        let r = min(r, min(w, h) / 2)
         let straightEdges = 2 * (w - 2 * r) + 2 * (h - 2 * r)
         let corners = 2 * Double.pi * r
         return straightEdges + corners
