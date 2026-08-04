@@ -30,8 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = StatusItemController()
 
         controller.install()
-        controller.onClick = { [weak self, weak controller] in
-            guard let self, let controller else { return }
+        controller.onClick = { [weak self, weak controller, weak poller] in
+            guard let self, let controller, let poller else { return }
             if let popover = self.popover, popover.isShown {
                 popover.dismiss()
                 return
@@ -39,9 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Lazy instantiation: the panel (and its content view) is only
             // built on first click, so the app doesn't create any windows
             // at launch.
-            let panel = self.popover ?? PopoverPanel(contentView: Self.makePlaceholderContentView())
+            let popoverView = PopoverView()
+            let panel = self.popover ?? PopoverPanel(contentView: popoverView)
             self.popover = panel
             panel.show(relativeTo: controller.button)
+            popoverView.update(state: poller.machine.state, history: poller.machine.history, exhaustedAt: poller.machine.exhaustedAt, lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
         }
 
         poller.onState = { [weak controller, weak poller] state in
@@ -52,13 +54,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         poller.start()
         self.poller = poller
         self.statusItem = controller
-    }
-
-    /// Flat 320x480 placeholder, no styling -- replaced by PopoverView in
-    /// the next task. Its only job right now is to give PopoverPanel a
-    /// real, correctly-sized content view to anchor and animate.
-    private static func makePlaceholderContentView() -> NSView {
-        NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 480))
     }
 }
 

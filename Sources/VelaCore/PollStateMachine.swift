@@ -37,6 +37,13 @@ public struct PollStateMachine: Sendable {
     /// pass it straight into `PaceEngine.verdict(...)`.
     public private(set) var exhaustedAt: Date?
 
+    /// The instant of the most recent successful fetch, regardless of how
+    /// many failures have piled up since. The App layer uses this to show
+    /// "data is N minutes old" while stale.
+    public private(set) var lastSuccessAt: Date? {
+        didSet { /* tracking enabled */ }
+    }
+
     // The last successfully-fetched response, kept even while state is
     // .stale so a subsequent failure can keep referencing it.
     private var lastGood: UsageResponse?
@@ -69,6 +76,7 @@ public struct PollStateMachine: Sendable {
         case .success(let usage):
             consecutiveFailures = 0
             lastGood = usage
+            lastSuccessAt = date
             burnBuffer.record(spentToday: usage.dailyBudget.spentUSD, at: date)
             history.record(spentToday: usage.dailyBudget.spentUSD, limit: usage.dailyBudget.limitUSD, at: date)
             exhaustedAt = history.day(utcDate: date)?.exhaustedAt

@@ -1,0 +1,166 @@
+// Sources/App/CurveView.swift
+// Draws today's cumulative-spend curve: a filled polyline against a dotted
+// budget ceiling, with a "now" tick marking the current UTC hour.
+// Why: this is the popover's one real chart, so it gets its own file and
+// its own draw(_:) rather than living inline in PopoverView -- the
+// polyline/gradient/dash math is dense enough to want isolation, and
+// Task 13's draw-on animation only needs to touch drawProgress here.
+// RELEVANT FILES: Sources/App/PopoverView.swift, Sources/VelaCore/HistoryStore.swift, Sources/App/StatusItemController.swift
+
+import Cocoa
+
+/// Renders one day's hourly cumulative-spend curve inside a fixed 284x92pt
+/// lane. configure(...) sets the data; draw(_:) is pure rendering off that
+/// stored state, so appearance changes (light/dark) redraw for free.
+@MainActor
+public final class CurveView: NSView {
+    /// 0 = nothing drawn, 1 = fully drawn. Task 13 animates this 0->1 on
+    /// popover open; this file only has to honor it (clip to it), not
+    /// animate it.
+    public var drawProgress: CGFloat = 1.0 {
+        didSet { needsDisplay = true }
+    }
+
+    // 24 slots, hourly[h] = cumulative spend as of UTC hour h, nil if that
+    // hour hasn't happened yet today.
+    private var hourly: [Double?] = Array(repeating: nil, count: 24)
+    private var limit: Double = 0
+    private var nowHourUTC: Int = 0
+
+    public override init(frame: NSRect) {
+        super.init(frame: frame)
+    }
+
+    public required init?(coder: NSCoder) {
+        fatalError("CurveView does not support NSCoder-based initialization")
+    }
+
+    /// Stores the day's data and triggers a redraw. `limit` and `hourly`
+    /// come straight from HistoryStore.DayRecord; nowHourUTC positions the
+    /// "now" tick.
+    public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int) {
+        self.hourly = hourly
+        self.limit = limit
+        self.nowHourUTC = nowHourUTC
+        needsDisplay = true
+    }
+
+    public override func draw(_ dirtyRect: NSRect) {
+        let lane = bounds
+
+        // Y scale: headroom above whichever is larger, limit or the day's
+        // peak, so a curve that blows through the budget still fits.
+        let peak = hourly.compactMap { $0 }.max() ?? 0
+        let yMax = max(limit, peak, 1) * 1.08
+        func y(for value: Double) -> CGFloat { lane.minY + lane.height * CGFloat(value / yMax) }
+        func x(for hour: Int) -> CGFloat { lane.minX + lane.width * CGFloat(hour) / 23.0 }
+
+        drawBudgetCeiling(in: lane, y: y(for: limit))
+        drawCurve(in: lane, x: x, y: y)
+        drawNowTick(in: lane, x: x(for: nowHourUTC))
+    }
+
+    /// Dotted hairline at the budget ceiling, with a faint "$400"-style
+    /// label at the right edge. Reuses StatusItemController's dash-pattern
+    /// idiom (setLineDash via an unsafe buffer).
+    private func drawBudgetCeiling(in lane: CGRect, y ceilingY: CGFloat) {
+        guard limit > 0 else { return }
+        let path = NSBezierPath()
+        path.move(to: CGPoint(x: lane.minX, y: ceilingY))
+        path.line(to: CGPoint(x: lane.maxX, y: ceilingY))
+        path.lineWidth = Self.hairlineWidth
+        let pattern: [CGFloat] = [2, 3]
+        pattern.withUnsafeBufferPointer { buffer in
+            path.setLineDash(buffer.baseAddress, count: 2, phase: 0)
+        }
+        NSColor.labelColor.withAlphaComponent(0.14).setStroke()
+        path.stroke()
+
+        let text = "$\(Int(limit.rounded()))"
+        let font = NSFont.systemFont(ofSize: 9)
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.35),
+        ])
+        let size = attributed.size()
+        attributed.draw(at: CGPoint(x: lane.maxX - size.width, y: ceilingY + 2))
+    }
+
+    /// Cumulative-spend polyline with a filled area under it. Gaps (nil
+    /// slots for hours not yet observed) are skipped by simply omitting
+    /// their point -- the segment on either side of a gap draws straight
+    /// across it, which reads as "interpolated" without any extra math.
+    private func drawCurve(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
+        let points: [CGPoint] = hourly.enumerated().compactMap { hour, value in
+            guard let value else { return nil }
+            return CGPoint(x: x(hour), y: y(value))
+        }
+        guard points.count > 1 else { return }
+
+        // drawProgress clips the visible curve to its leading fraction --
+        // Task 13's draw-on animation just has to set the property.
+        let visibleCount = max(2, Int(CGFloat(points.count) * drawProgress.clamped(to: 0...1)))
+        let visible = Array(points.prefix(visibleCount))
+        guard visible.count > 1 else { return }
+
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            let area = CGMutablePath()
+            area.move(to: CGPoint(x: visible[0].x, y: lane.minY))
+            visible.forEach { area.addLine(to: $0) }
+            area.addLine(to: CGPoint(x: visible[visible.count - 1].x, y: lane.minY))
+            area.closeSubpath()
+
+            ctx.saveGState()
+            ctx.addPath(area)
+            ctx.clip()
+            let colors = [
+                NSColor.labelColor.withAlphaComponent(0.22).cgColor,
+                NSColor.labelColor.withAlphaComponent(0).cgColor,
+            ]
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1]) {
+                ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: lane.maxY), end: CGPoint(x: 0, y: lane.minY), options: [])
+            }
+            ctx.restoreGState()
+        }
+
+        let stroke = NSBezierPath()
+        stroke.move(to: visible[0])
+        visible.dropFirst().forEach { stroke.line(to: $0) }
+        stroke.lineWidth = 1.75
+        stroke.lineJoinStyle = .round
+        NSColor.labelColor.setStroke()
+        stroke.stroke()
+    }
+
+    /// Thin vertical tick at the current UTC hour's x position, with a
+    /// small "now" label centered underneath.
+    private func drawNowTick(in lane: CGRect, x tickX: CGFloat) {
+        let tick = NSBezierPath()
+        tick.move(to: CGPoint(x: tickX, y: lane.minY))
+        tick.line(to: CGPoint(x: tickX, y: lane.maxY))
+        tick.lineWidth = 0.75
+        NSColor.labelColor.withAlphaComponent(0.30).setStroke()
+        tick.stroke()
+
+        let text = "now"
+        let font = NSFont.systemFont(ofSize: 9)
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.35),
+        ])
+        let size = attributed.size()
+        attributed.draw(at: CGPoint(x: tickX - size.width / 2, y: lane.minY - size.height))
+    }
+
+    /// One device pixel, in points -- same idiom as StatusItemController's
+    /// hairlineWidth, kept local since this file has no shared helpers module.
+    private static var hairlineWidth: CGFloat {
+        1.0 / (NSScreen.main?.backingScaleFactor ?? 2.0)
+    }
+}
+
+private extension CGFloat {
+    func clamped(to range: ClosedRange<CGFloat>) -> CGFloat {
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
