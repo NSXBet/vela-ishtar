@@ -20,6 +20,11 @@ public final class UsagePoller {
     /// fetch result (success or failure).
     public var onState: ((PollState) -> Void)?
 
+    /// Fired when the gateway rejects the token (401/403). The app opens
+    /// the first-run token flow so a revoked credential has a visible fix
+    /// instead of a silently amber pill.
+    public var onUnauthorized: (() -> Void)?
+
     public private(set) var machine: PollStateMachine
 
     private let client: AIHubClientProtocol
@@ -67,6 +72,9 @@ public final class UsagePoller {
             Task { @MainActor in
                 guard let self else { return }
                 self.isFetchInFlight = false
+                if case .failure(.unauthorized) = result {
+                    self.onUnauthorized?()
+                }
                 let state = self.machine.ingest(result, at: Date())
                 self.onState?(state)
             }
