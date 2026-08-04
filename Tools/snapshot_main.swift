@@ -39,47 +39,61 @@ func makeUsage(spent: Double, limit: Double) -> UsageResponse {
             spendDate: "2026-08-04T00:00:00Z"
         ),
         currentMonth: MonthStats(totalCostUSD: spent, totalTokens: 8_560_000, requests: 73),
-        topModels: []
+        topModels: [
+            ModelUsage(model: "moonshotai/kimi-k3", totalCostUSD: 52.30, totalTokens: 68_013_553, requests: 426),
+            ModelUsage(model: "anthropic/claude-haiku-4.5", totalCostUSD: 2.21, totalTokens: 4_959_265, requests: 99),
+        ]
     )
 }
 
 @MainActor
 func writeSnapshots() throws {
-    let rising: [Double] = [0, 0.4, 0.9, 1.1, 1.8, 2.6, 2.9, 3.8, 4.4, 5.1, 5.4, 6.2, 6.79]
-    let controller = StatusItemController()
+    // Render the POPOVER (not the pill): fabricate a fresh usage state,
+    // feed it through PollStateMachine so history is real, then snapshot
+    // PopoverView in both appearances.
     let outDir = URL(fileURLWithPath: "/tmp/vela-snapshots")
     try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
-    let fixtures: [(String, PollState, BurnBuffer)] = [
-        ("fresh-13pct", .fresh(makeUsage(spent: 54.51, limit: 400)), makeBurnBuffer(rising)),
-        ("fresh-50pct", .fresh(makeUsage(spent: 200, limit: 400)), makeBurnBuffer(rising)),
-        ("fresh-90pct-amber", .fresh(makeUsage(spent: 360, limit: 400)), makeBurnBuffer(rising)),
-        ("full-100pct-red", .fresh(makeUsage(spent: 400, limit: 400)), makeBurnBuffer(rising)),
-        ("stale-45pct", .stale(makeUsage(spent: 180.40, limit: 400), consecutiveFailures: 3), makeBurnBuffer(rising)),
-        ("never-fetched", .neverFetched, BurnBuffer()),
-        ("no-burn-yet", .fresh(makeUsage(spent: 0, limit: 400)), BurnBuffer()),
-    ]
+    var machine = PollStateMachine()
+    // Build an hour-by-hour history for today by ingesting rising spend.
+    let now = Date()
+    var utcCal = Calendar(identifier: .gregorian)
+    utcCal.timeZone = TimeZone(identifier: "UTC")!
+    let midnight = utcCal.startOfDay(for: now)
+    let currentHour = utcCal.component(.hour, from: now)
+    for hour in 0...currentHour {
+        let spent = 2.0 + Double(hour) * Double(hour) * 0.35   // accelerating burn
+        let usage = makeUsage(spent: spent, limit: 400)
+        _ = machine.ingest(.success(usage), at: midnight.addingTimeInterval(Double(hour) * 3600 + 1800))
+    }
+    // Final state at "now" with the fixture totals.
+    _ = machine.ingest(.success(makeUsage(spent: 54.51, limit: 400)), at: now)
+
+    let view = PopoverView()
+    view.update(state: machine.state, history: machine.history,
+                exhaustedAt: machine.exhaustedAt, lastSuccessAt: machine.lastSuccessAt, now: now)
+    view.frame = NSRect(x: 0, y: 0, width: 320, height: view.fittingSize.height > 0 ? view.fittingSize.height : 480)
 
     let appearances: [(String, NSAppearance)] = [
         ("light", NSAppearance(named: .aqua)!),
         ("dark", NSAppearance(named: .darkAqua)!),
     ]
-
-    for (name, state, buffer) in fixtures {
-        for (appearanceName, appearance) in appearances {
-            let image = controller.makeImage(state: state, burnBuffer: buffer, appearance: appearance)
-            guard
-                let tiff = image.tiffRepresentation,
-                let bitmap = NSBitmapImageRep(data: tiff),
-                let png = bitmap.representation(using: .png, properties: [:])
-            else {
-                FileHandle.standardError.write("snapshot failed for \(name)-\(appearanceName)\n".data(using: .utf8)!)
-                continue
-            }
-            let url = outDir.appendingPathComponent("\(name)-\(appearanceName).png")
-            try png.write(to: url)
-            print("wrote \(url.path) (\(png.count) bytes)")
+    for (name, appearance) in appearances {
+        appearance.performAsCurrentDrawingAppearance {
+            view.display()
         }
+        guard
+            let tiff = view.bitmapImageRepForCachingDisplay(in: view.bounds).map({ rep -> Data? in
+                view.cacheDisplay(in: view.bounds, to: rep)
+                return rep.representation(using: .png, properties: [:])
+            }) ?? nil
+        else {
+            FileHandle.standardError.write("popover snapshot failed for \(name)\n".data(using: .utf8)!)
+            continue
+        }
+        let url = outDir.appendingPathComponent("popover-\(name).png")
+        try tiff.write(to: url)
+        print("wrote \(url.path) (\(tiff.count) bytes)")
     }
 }
 

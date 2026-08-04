@@ -91,7 +91,9 @@ public final class PopoverView: NSView {
         if let topModels = usageResponse?.topModels, !topModels.isEmpty {
             yOffset += makeModelsHeader(at: &yOffset)
             for model in topModels.prefix(5) {
-                yOffset += makeModelRow(name: model.model, cost: model.totalCostUSD, tokens: Double(model.totalTokens), maxCost: topModels.first?.totalCostUSD ?? 1, at: &yOffset)
+                // Display strips the provider prefix ("moonshotai/kimi-k3" -> "kimi-k3").
+                let displayName = model.model.split(separator: "/").last.map(String.init) ?? model.model
+                yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), maxCost: topModels.first?.totalCostUSD ?? 1, at: &yOffset)
             }
         }
 
@@ -128,17 +130,23 @@ public final class PopoverView: NSView {
         managedSubviews.append(container)
 
         let heroText = isNeverFetched ? "—" : String(format: "$%.2f", spent)
+        let heroFont = NSFont.monospacedDigitSystemFont(ofSize: 30, weight: .semibold)
         let heroLabel = NSTextField(labelWithString: heroText)
-        heroLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 30, weight: .semibold)
+        heroLabel.font = heroFont
         heroLabel.textColor = .labelColor
-        heroLabel.frame = NSRect(x: 0, y: 0, width: 150, height: 30)
+        // Size the hero to its rendered width so the suffix sits right next
+        // to it (fixed 150pt left a visible gap after the amount).
+        let heroWidth = (heroText as NSString).size(withAttributes: [.font: heroFont]).width
+        heroLabel.frame = NSRect(x: 0, y: 0, width: ceil(heroWidth) + 2, height: 30)
         container.addSubview(heroLabel)
 
         let suffixText = isNeverFetched ? "" : String(format: " of $%.0f today", limit)
         let suffixLabel = NSTextField(labelWithString: suffixText)
         suffixLabel.font = NSFont.systemFont(ofSize: 15)
         suffixLabel.textColor = .secondaryLabelColor
-        suffixLabel.frame = NSRect(x: 150, y: 4, width: container.bounds.width - 150, height: 15)
+        // Baseline-align: the 30pt hero's baseline sits ~7pt above its frame's
+        // bottom; the 15pt suffix needs ~4pt to share that line. 8pt gap.
+        suffixLabel.frame = NSRect(x: ceil(heroWidth) + 2 + 8, y: 7, width: container.bounds.width - ceil(heroWidth) - 10, height: 15)
         container.addSubview(suffixLabel)
 
         return containerHeight
@@ -178,7 +186,9 @@ public final class PopoverView: NSView {
 
         let dayRecord = history.day(utcDate: now)
         let hourly = dayRecord?.hourly ?? Array(repeating: nil, count: 24)
-        let utcHour = Calendar(identifier: .gregorian).component(.hour, from: now)
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        let utcHour = utcCalendar.component(.hour, from: now)
         curveView.configure(hourly: hourly, limit: limit, nowHourUTC: utcHour)
 
         addSubview(curveView)
@@ -209,7 +219,7 @@ public final class PopoverView: NSView {
         managedSubviews.append(nameLabel)
 
         // Bar (2pt tall, width proportional to cost)
-        let barWidth = maxCost > 0 ? CGFloat(cost / maxCost) * 80 : 0
+        let barWidth = maxCost > 0 ? CGFloat(cost / maxCost) * 100 : 0
         let bar = NSView(frame: NSRect(x: sidePadding + 120, y: bounds.height - yOffset - 8, width: barWidth, height: 2))
         bar.wantsLayer = true
         bar.layer?.backgroundColor = NSColor.labelColor.cgColor
@@ -270,59 +280,62 @@ public final class PopoverView: NSView {
     }
 
     private func makeFooter(isFresh: Bool, lastSuccessAt: Date?, now: Date, at yOffset: inout CGFloat) -> CGFloat {
-        let footerHeight: CGFloat = 24
+        let footerHeight: CGFloat = 20
 
-        // "Dashboard ↗"
-        let dashboardButton = NSButton(frame: NSRect(x: sidePadding, y: bounds.height - yOffset - footerHeight, width: 60, height: footerHeight))
-        dashboardButton.setButtonType(.momentaryLight)
-        dashboardButton.bezelStyle = .recessed
-        dashboardButton.title = "Dashboard ↗"
-        dashboardButton.font = NSFont.systemFont(ofSize: 12)
+        // Borderless link-style buttons -- chrome stays quiet per the design.
+        let dashboardButton = Self.makeLinkButton(title: "Dashboard ↗", frame: NSRect(x: sidePadding, y: bounds.height - yOffset - footerHeight, width: 78, height: footerHeight))
         dashboardButton.target = self
         dashboardButton.action = #selector(openDashboard)
         addSubview(dashboardButton)
         managedSubviews.append(dashboardButton)
 
-        // "API key"
-        let apiKeyButton = NSButton(frame: NSRect(x: sidePadding + 65, y: bounds.height - yOffset - footerHeight, width: 50, height: footerHeight))
-        apiKeyButton.setButtonType(.momentaryLight)
-        apiKeyButton.bezelStyle = .recessed
-        apiKeyButton.title = "API key"
-        apiKeyButton.font = NSFont.systemFont(ofSize: 12)
+        let apiKeyButton = Self.makeLinkButton(title: "API key", frame: NSRect(x: sidePadding + 84, y: bounds.height - yOffset - footerHeight, width: 56, height: footerHeight))
         apiKeyButton.target = self
         apiKeyButton.action = #selector(copyAPIKey)
         addSubview(apiKeyButton)
         managedSubviews.append(apiKeyButton)
 
-        // Right side: status dot + time
-        let dotColor: NSColor
-        switch isFresh {
-        case true:
-            dotColor = .systemGreen
-        case false:
-            dotColor = lastSuccessAt != nil ? .systemOrange : .labelColor.withAlphaComponent(0.35)
-        }
+        // Health unit, right-aligned as ONE group: dot + "AI Hub · time".
+        let dotColor: NSColor = isFresh ? .systemGreen : (lastSuccessAt != nil ? .systemOrange : .labelColor.withAlphaComponent(0.35))
 
-        let dot = NSView(frame: NSRect(x: 320 - sidePadding - 14 - 50, y: bounds.height - yOffset - 8, width: 7, height: 7))
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let statusText = "AI Hub · " + (isFresh ? "" : "stale ") + formatter.string(from: now)
+        let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        let statusWidth = ceil((statusText as NSString).size(withAttributes: [.font: statusFont]).width)
+
+        let statusLabel = NSTextField(labelWithString: statusText)
+        statusLabel.font = statusFont
+        statusLabel.textColor = .labelColor.withAlphaComponent(0.38)
+        statusLabel.alignment = .right
+        statusLabel.frame = NSRect(x: 320 - sidePadding - statusWidth, y: bounds.height - yOffset - footerHeight + 3, width: statusWidth, height: 14)
+        addSubview(statusLabel)
+        managedSubviews.append(statusLabel)
+
+        let dot = NSView(frame: NSRect(x: 320 - sidePadding - statusWidth - 12, y: bounds.height - yOffset - footerHeight + 6, width: 7, height: 7))
         dot.wantsLayer = true
         dot.layer?.backgroundColor = dotColor.cgColor
         dot.layer?.cornerRadius = 3.5
         addSubview(dot)
         managedSubviews.append(dot)
 
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let timeString = formatter.string(from: now)
-        let statusPrefix = isFresh ? "" : "stale "
-        let statusLabel = NSTextField(labelWithString: "AI Hub · " + statusPrefix + timeString)
-        statusLabel.font = NSFont.systemFont(ofSize: 11)
-        statusLabel.textColor = .labelColor.withAlphaComponent(0.38)
-        statusLabel.frame = NSRect(x: 320 - sidePadding - 120, y: bounds.height - yOffset - footerHeight, width: 100, height: footerHeight)
-        addSubview(statusLabel)
-        managedSubviews.append(statusLabel)
-
         return footerHeight
     }
+
+    /// Borderless button that looks like quiet text, not chrome.
+    private static func makeLinkButton(title: String, frame: NSRect) -> NSButton {
+        let button = NSButton(frame: frame)
+        button.setButtonType(.momentaryLight)
+        button.isBordered = false
+        button.bezelStyle = .inline
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12),
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.65),
+        ]
+        button.attributedTitle = NSAttributedString(string: title, attributes: attributes)
+        return button
+    }
+
 
     @objc private func openDashboard() {
         if let url = URL(string: "https://ai-llm-gateway.fbr.land") {
