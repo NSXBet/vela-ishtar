@@ -7,6 +7,7 @@
 // RELEVANT FILES: Sources/App/CurveView.swift, Sources/VelaCore/PaceEngine.swift, Sources/VelaCore/PollStateMachine.swift
 
 import Cocoa
+import ServiceManagement
 
 @MainActor
 public final class PopoverView: NSView {
@@ -313,6 +314,16 @@ public final class PopoverView: NSView {
         addSubview(apiKeyButton)
         managedSubviews.append(apiKeyButton)
 
+        // Launch-at-login toggle: a quiet text link that reflects and flips
+        // SMAppService registration. The checkmark shows current state.
+        let atLogin = SMAppService.mainApp.status == .enabled
+        let loginTitle = atLogin ? "✓ Start at login" : "Start at login"
+        let loginButton = Self.makeLinkButton(title: loginTitle, frame: NSRect(x: sidePadding + 146, y: bounds.height - yOffset - footerHeight, width: 104, height: footerHeight))
+        loginButton.target = self
+        loginButton.action = #selector(toggleLaunchAtLogin)
+        addSubview(loginButton)
+        managedSubviews.append(loginButton)
+
         // Health unit, right-aligned as ONE group: dot + "AI Hub · time".
         let dotColor: NSColor = isFresh ? .systemGreen : (lastSuccessAt != nil ? .systemOrange : .labelColor.withAlphaComponent(0.35))
 
@@ -359,6 +370,24 @@ public final class PopoverView: NSView {
         if let url = URL(string: "https://ai-llm-gateway.fbr.land") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Toggles SMAppService registration. Errors are swallowed on purpose:
+    /// ad-hoc-signed builds can be refused by the system in some contexts,
+    /// and the toggle simply keeps reflecting the real status next update.
+    @objc private func toggleLaunchAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            // See comment above — the button re-reads status on the next
+            // popover open, so a failed toggle just looks like no change.
+        }
+        // Re-render the footer immediately so the checkmark follows reality.
+        if let panel = window as? PopoverPanel { panel.contentView?.needsDisplay = true }
     }
 
     @objc private func copyAPIKey() {
