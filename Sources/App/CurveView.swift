@@ -54,7 +54,7 @@ public final class CurveView: NSView {
         // when off-scale). Floor at 25% of limit so a tiny-peak day doesn't
         // zoom to absurdity.
         let peak = hourly.compactMap { $0 }.max() ?? 0
-        let yMax = max(peak * 1.25, limit * 0.25, 1)
+        let yMax = max(limit, peak, 1) * 1.08
         func y(for value: Double) -> CGFloat { lane.minY + lane.height * CGFloat(value / yMax) }
         func x(for hour: Int) -> CGFloat { lane.minX + lane.width * CGFloat(hour) / 23.0 }
 

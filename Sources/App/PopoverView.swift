@@ -205,18 +205,21 @@ public final class PopoverView: NSView {
         addSubview(container)
         managedSubviews.append(container)
 
-        let heroText = isNeverFetched ? "—" : String(format: "$%.2f", spent)
+        // Reserve the FULL hero width even when neverFetched — "—" is
+        // narrower than "$109.42", and without the reservation the first
+        // poll's update shifts the whole layout (the visible jump).
+        let heroText = isNeverFetched ? "$0.00" : String(format: "$%.2f", spent)
         let heroFont = NSFont.monospacedDigitSystemFont(ofSize: 30, weight: .semibold)
         let heroLabel = NSTextField(labelWithString: heroText)
         heroLabel.font = heroFont
-        heroLabel.textColor = .labelColor
+        heroLabel.textColor = isNeverFetched ? .tertiaryLabelColor : .labelColor
         // Size the hero to its rendered width so the suffix sits right next
         // to it (fixed 150pt left a visible gap after the amount).
         let heroWidth = (heroText as NSString).size(withAttributes: [.font: heroFont]).width
         heroLabel.frame = NSRect(x: 0, y: 0, width: ceil(heroWidth) + 2, height: 30)
         container.addSubview(heroLabel)
 
-        let suffixText = isNeverFetched ? "" : String(format: " of $%.0f today", limit)
+        let suffixText = isNeverFetched ? " of $0 today" : String(format: " of $%.0f today", limit)
         let suffixLabel = NSTextField(labelWithString: suffixText)
         suffixLabel.font = NSFont.systemFont(ofSize: 15)
         suffixLabel.textColor = .secondaryLabelColor
