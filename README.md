@@ -1,72 +1,87 @@
+<div align="center">
+
 # Vela Ishtar
 
-Your AI Hub spend, in the corner of your eye — never in your face.
+**Your AI Hub spend, in the corner of your eye — never in your face.**
 
 A premium macOS menu bar app that shows your personal AI Hub (LLM gateway)
-usage at a glance: today's spend against your daily budget, your burn-rate
-pulse, and the models you're burning through. An instrument, not a
-scoreboard.
+usage at a glance. An instrument, not a scoreboard.
 
-## What it shows
+![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
+![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-49%20passing-30d158?style=flat-square)
+![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 
-**In the menu bar** — a single pill:
+<img src="docs/assets/popover-dark.png" width="340" alt="Vela Ishtar popover">
 
-- A live sparkline of your last hour of burn (the "pulse")
-- Today's spend in dollars
-- The pill's own border traces your daily budget as it fills — a full
-  border means budget exhausted (and it's the only red in the app)
+</div>
 
-**In the popover** (click the pill):
+## The menu bar
 
-- **$54.51 of $400 today** — the headline, plus one computed sentence:
+One pill. Three instruments.
+
+<img src="docs/assets/pill-dark.png" alt="The pill: burn sparkline + amount + budget border">
+
+- **The pulse** — a live sparkline of your last hour of burn
+- **The amount** — today's spend in dollars
+- **The border IS the budget** — the pill's own outline traces your daily
+  budget as it fills. Amber past 85%, a closed red loop at 100% (the only
+  red in the app):
+
+<img src="docs/assets/pill-amber-dark.png" alt="Amber past 85%"> <img src="docs/assets/pill-exhausted-dark.png" alt="Red closed loop at 100%"> <img src="docs/assets/pill-stale-dark.png" alt="Dimmed when the gateway is unreachable">
+
+## The popover
+
+Click the pill. One panel, no tabs — hairlines and whitespace only.
+
+- **$54.51 of $400 today**, plus one computed sentence:
   *"At this pace you'll reach budget around 9:40 pm."*
-- **Today's curve** — cumulative spend hour by hour, against the budget
-  ceiling
-- **Models · this month** — ranked by cost
+- **Today's curve** — cumulative spend hour by hour, against the ceiling
+- **Models** — ranked by cost, with a Today / Week / Month switcher
 - **● AI Hub** — a health dot that goes amber and dims everything when
   the gateway is unreachable (your data is never silently stale)
 
+<img src="docs/assets/popover-light.png" width="340" alt="Popover, light appearance">
+
 ## Install
 
-Build from source (no Xcode needed — Command Line Tools only):
+Build from source — no Xcode needed, Command Line Tools only:
 
 ```bash
-git clone <this repo>
-cd aihub-menu-bar
+git clone https://github.com/NSXBet/vela-ishtar.git
+cd vela-ishtar
 ./build.sh
 open "build/Vela Ishtar.app"
 ```
 
 On first launch the popover asks for your AI Hub token (the same `gt_…`
 token you use for the gateway). It's stored in your macOS Keychain and
-never leaves your Mac except to the AI Hub gateway. macOS will ask once
-to authorize the Keychain item — that's normal.
+never leaves your Mac except to the AI Hub gateway. macOS asks once to
+authorize the Keychain item — that's normal.
 
 Optional: toggle **Start at login** in the popover footer.
-
-**Notes for teammates who rebuild from source:** each `./build.sh` changes the
-ad-hoc signature, so macOS may ask once for Keychain access on the first run
-of a new build — that's expected (the app needs its token back). One prompt
-per rebuild, one-time for a build you keep. The app is Apple-Silicon-only
-(arm64) for now.
-
-**Models period switcher:** the Today / Week / Month control in the popover
-switches the models list window. Today and Week currently show the month's
-model breakdown — the gateway's `/v1/me/usage` only exposes current-month
-per-model data, so per-day model splits aren't available yet (a platform
-endpoint would unlock true per-period numbers).
 
 ## How it works
 
 - Polls `GET https://ai-llm-gateway.fbr.land/v1/me/usage` every 60s with
-  your token. The response is scoped to you only — no one else's data.
-- Your daily budget resets at **midnight UTC** (that's how the gateway
-  buckets spend). The pace sentence and countdowns use that boundary.
+  your token. The response is scoped to you only.
+- Your daily budget resets at **midnight UTC** — that's how the gateway
+  buckets spend. The pace sentence uses that boundary.
 - Your personal limit comes from the API, so the UI auto-scales whether
   your budget is $100, $400, or anything else.
 - Hourly spend history is cached locally in
   `~/Library/Application Support/VelaIshtar/history.json` — it powers
   the curve and gets richer the longer you run the app.
+
+**Models period switcher:** Today / Week / Month switches the models list
+window. Today and Week currently show the month's breakdown — the gateway's
+`/v1/me/usage` only exposes current-month per-model data, so per-day model
+splits aren't available yet (a platform endpoint would unlock them).
+
+**Rebuilding from source:** each `./build.sh` changes the ad-hoc signature,
+so macOS may ask once for Keychain access on the first run of a new build.
+One prompt per rebuild; one-time for a build you keep. Apple Silicon only
+(arm64) for now.
 
 ## Design principles
 
@@ -77,12 +92,12 @@ that move, the more each one means.
 
 ## Tech
 
-Pure AppKit + Swift, zero dependencies, ~1,300 LOC. Builds with bare
-`swiftc` into an ad-hoc-signed `.app` — no Xcode, no SwiftPM for the app
-itself (SwiftPM runs the `VelaCore` unit tests via `make test`).
+Pure AppKit + Swift, zero dependencies, ~1,400 LOC. Builds with bare
+`swiftc` into an ad-hoc-signed `.app` — no Xcode. SwiftPM runs the
+`VelaCore` unit tests.
 
-```
-make test     # 49 unit tests (VelaCore: pace math, burn buffer, border dash, history)
+```bash
+make test     # 49 unit tests (pace math, burn buffer, border dash, history)
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 ```
 
@@ -97,5 +112,5 @@ make test     # 49 unit tests (VelaCore: pace math, burn buffer, border dash, hi
 ## Privacy
 
 Reads only your own usage. Stores only your token (Keychain) and your
-spend history (local file). No analytics, no telemetry, no third-party
+spend history (a local file). No analytics, no telemetry, no third-party
 network calls — the only host it ever talks to is the AI Hub gateway.

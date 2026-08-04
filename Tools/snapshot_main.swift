@@ -69,6 +69,26 @@ func writeSnapshots() throws {
     // Final state at "now" with the fixture totals.
     _ = machine.ingest(.success(makeUsage(spent: 54.51, limit: 400)), at: now)
 
+    // Pill states first (the menu bar item itself).
+    let rising: [Double] = [0, 0.4, 0.9, 1.1, 1.8, 2.6, 2.9, 3.8, 4.4, 5.1, 5.4, 6.2, 6.79]
+    let controller = StatusItemController()
+    let pillFixtures: [(String, PollState, BurnBuffer)] = [
+        ("pill-dark", .fresh(makeUsage(spent: 200, limit: 400)), makeBurnBuffer(rising)),
+        ("pill-amber-dark", .fresh(makeUsage(spent: 360, limit: 400)), makeBurnBuffer(rising)),
+        ("pill-exhausted-dark", .fresh(makeUsage(spent: 400, limit: 400)), makeBurnBuffer(rising)),
+        ("pill-stale-dark", .stale(makeUsage(spent: 180.40, limit: 400), consecutiveFailures: 3), makeBurnBuffer(rising)),
+    ]
+    for (name, state, buffer) in pillFixtures {
+        let image = controller.makeImage(state: state, burnBuffer: buffer, appearance: NSAppearance(named: .darkAqua)!)
+        if let tiff = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiff),
+           let png = bitmap.representation(using: .png, properties: [:]) {
+            let url = outDir.appendingPathComponent("\(name).png")
+            try png.write(to: url)
+            print("wrote \(url.path)")
+        }
+    }
+
     let view = PopoverView()
     view.update(state: machine.state, history: machine.history,
                 exhaustedAt: machine.exhaustedAt, lastSuccessAt: machine.lastSuccessAt, now: now)

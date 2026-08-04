@@ -182,6 +182,7 @@ public final class PopoverView: NSView {
         // Baseline-align: the 30pt hero's baseline sits ~7pt above its frame's
         // bottom; the 15pt suffix needs ~4pt to share that line. 8pt gap.
         suffixLabel.frame = NSRect(x: ceil(heroWidth) + 2 + 8, y: 5, width: container.bounds.width - ceil(heroWidth) - 10, height: 19)
+        suffixLabel.isHidden = isNeverFetched
         container.addSubview(suffixLabel)
 
         return containerHeight
