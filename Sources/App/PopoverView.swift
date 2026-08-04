@@ -10,7 +10,7 @@ import Cocoa
 
 @MainActor
 public final class PopoverView: NSView {
-    private let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))
+    let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))   // internal: PopoverPanel/main drive the draw-on animation
     private var managedSubviews: [NSView] = []
 
     private let sidePadding: CGFloat = 18
@@ -120,6 +120,24 @@ public final class PopoverView: NSView {
                     subview.alphaValue = 0.55
                 }
             }
+        }
+    }
+
+    /// Draw-on animation for the curve, run once per popover open (Task 13).
+    /// Steps drawProgress 0 -> 1 over ~0.5s with an ease-out feel (fewer,
+    /// larger steps toward the end). Reduce Motion callers skip this and
+    /// leave drawProgress at 1.
+    public func animateCurveDrawOn() {
+        curveView.drawProgress = 0
+        let steps = 14
+        for i in 1...steps {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                // Ease-out: t^0.5 curve so the leading edge decelerates.
+                let t = sqrt(CGFloat(i) / CGFloat(steps))
+                self.curveView.drawProgress = t
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * (0.5 / Double(steps)), execute: work)
         }
     }
 

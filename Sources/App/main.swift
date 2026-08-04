@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var poller: UsagePoller?
     private var statusItem: StatusItemController?
     private var popover: PopoverPanel?
+    private var popoverView: PopoverView?
 
     /// Explicit nonisolated init: the top-level bootstrap below is
     /// nonisolated, so the delegate must be constructible from there;
