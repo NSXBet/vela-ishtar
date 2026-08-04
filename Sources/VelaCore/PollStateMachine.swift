@@ -52,9 +52,7 @@ public struct PollStateMachine: Sendable {
     /// The instant of the most recent successful fetch, regardless of how
     /// many failures have piled up since. The App layer uses this to show
     /// "data is N minutes old" while stale.
-    public private(set) var lastSuccessAt: Date? {
-        didSet { /* tracking enabled */ }
-    }
+    public private(set) var lastSuccessAt: Date?
 
     // The last successfully-fetched response, kept even while state is
     // .stale so a subsequent failure can keep referencing it.

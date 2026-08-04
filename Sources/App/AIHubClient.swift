@@ -10,7 +10,9 @@
 import Foundation
 
 /// Live implementation backed by URLSession.
-public final class AIHubClient: AIHubClientProtocol {
+/// Marked @unchecked Sendable: all state is immutable `let`s set at init,
+/// and URLSession/Keychain are thread-safe — concurrent use is safe.
+public final class AIHubClient: AIHubClientProtocol, @unchecked Sendable {
     /// A `let` (not a compile-time constant) so a future debug build can
     /// point this at a staging gateway without touching call sites.
     public let baseURL: URL
@@ -25,6 +27,7 @@ public final class AIHubClient: AIHubClientProtocol {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.urlCache = nil   // belt-and-braces: spend data never touches disk cache
         self.session = URLSession(configuration: config)
     }
 
