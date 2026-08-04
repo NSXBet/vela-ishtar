@@ -22,7 +22,7 @@ public final class PopoverView: NSView {
     /// local history (the API has no period param); Month uses the API's
     /// current_month + top_models directly.
     private enum ModelPeriod: Int { case today = 0, week = 1, month = 2 }
-    private var selectedPeriod: ModelPeriod = .month
+    private var selectedPeriod: ModelPeriod = .today
     private weak var periodControl: NSSegmentedControl?
     private var latestResponse: UsageResponse?
     private var latestHistory: HistoryStore?
@@ -64,6 +64,11 @@ public final class PopoverView: NSView {
         }
         latestResponse = usageResponse
         latestHistory = history
+        // If no draw-on animation is in flight, the curve must be fully
+        // visible — poll-triggered updates shouldn't leave it half-drawn.
+        if !curveAnimationRunning && curveView.drawProgress == 0 {
+            curveView.drawProgress = 1
+        }
 
         var yOffset: CGFloat = 12
 
@@ -105,10 +110,14 @@ public final class PopoverView: NSView {
         yOffset += makeHairline(at: &yOffset)
         yOffset += sectionSpacing
 
-        // 6. Models header + top 5 rows (aggregated over the chosen period)
+        // 6. Models header + rows (aggregated over the chosen period)
         let modelsForPeriod = aggregatedModels(response: usageResponse, history: history, now: now)
-        if !modelsForPeriod.isEmpty {
-            yOffset += makeModelsHeader(at: &yOffset)
+        yOffset += makeModelsHeader(at: &yOffset)
+        if selectedPeriod == .today, let usage = usageResponse {
+            // Today: no per-model split exists on the API, so show today's
+            // total (which IS real, from daily_budget) and an honest note.
+            yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, at: &yOffset)
+        } else if !modelsForPeriod.isEmpty {
             for model in modelsForPeriod.prefix(5) {
                 // Display strips the provider prefix ("moonshotai/kimi-k3" -> "kimi-k3").
                 let displayName = model.model.split(separator: "/").last.map(String.init) ?? model.model
@@ -166,7 +175,15 @@ public final class PopoverView: NSView {
     /// Steps drawProgress 0 -> 1 over ~0.5s with an ease-out feel (fewer,
     /// larger steps toward the end). Reduce Motion callers skip this and
     /// leave drawProgress at 1.
+    private var curveAnimationItems: [DispatchWorkItem] = []
+    private var curveAnimationRunning = false
+
     public func animateCurveDrawOn() {
+        curveAnimationRunning = true
+        // Cancel any in-flight steps (a reopen or a poll mid-animation
+        // would otherwise race and leave the curve half-drawn).
+        curveAnimationItems.forEach { $0.cancel() }
+        curveAnimationItems.removeAll()
         curveView.drawProgress = 0
         let steps = 14
         for i in 1...steps {
@@ -175,7 +192,9 @@ public final class PopoverView: NSView {
                 // Ease-out: t^0.5 curve so the leading edge decelerates.
                 let t = sqrt(CGFloat(i) / CGFloat(steps))
                 self.curveView.drawProgress = t
+                if i == steps { self.curveAnimationRunning = false }
             }
+            curveAnimationItems.append(work)
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * (0.5 / Double(steps)), execute: work)
         }
     }
@@ -273,15 +292,36 @@ public final class PopoverView: NSView {
         control.selectedSegment = selectedPeriod.rawValue
         control.frame = NSRect(x: 320 - sidePadding - 168, y: bounds.height - yOffset - 20, width: 168, height: 20)
         control.controlSize = .small
-        // The gateway's /v1/me/usage only exposes current-month per-model
-        // data — Today/Week would show the same numbers and pretend they're
-        // per-period. Disabled until a platform endpoint unlocks them.
-        control.setEnabled(false, forSegment: 0)
+        // The gateway's /v1/me/usage exposes today's TOTAL (daily_budget)
+        // and the month's top_models — but no weekly or per-day model split.
+        // Today shows today's total; Month shows the model breakdown; Week
+        // is disabled until a platform endpoint unlocks per-period data.
         control.setEnabled(false, forSegment: 1)
         addSubview(control)
         managedSubviews.append(control)
         self.periodControl = control
         return 20
+    }
+
+    /// Today's total spend as a single row — the API gives daily_budget
+    /// per-credential but no per-day model split, so this is the honest
+    /// "Today" view: one real number + a quiet note.
+    private func makeTodayTotalRow(spent: Double, at yOffset: inout CGFloat) -> CGFloat {
+        let rowHeight: CGFloat = 24
+        let totalLabel = NSTextField(labelWithString: String(format: "$%.2f across all models", spent))
+        totalLabel.font = NSFont.systemFont(ofSize: 13)
+        totalLabel.textColor = .labelColor
+        totalLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight, width: 320 - 2 * sidePadding, height: rowHeight)
+        addSubview(totalLabel)
+        managedSubviews.append(totalLabel)
+
+        let note = NSTextField(labelWithString: "Per-model breakdown is monthly only")
+        note.font = NSFont.systemFont(ofSize: 10.5)
+        note.textColor = .labelColor.withAlphaComponent(0.40)
+        note.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 14, width: 320 - 2 * sidePadding, height: 14)
+        addSubview(note)
+        managedSubviews.append(note)
+        return rowHeight + 20
     }
 
     private func makeModelRow(name: String, cost: Double, tokens: Double, maxCost: Double, at yOffset: inout CGFloat) -> CGFloat {
@@ -441,7 +481,7 @@ public final class PopoverView: NSView {
 
 
     @objc private func openDashboard() {
-        if let url = URL(string: "https://ai-llm-gateway.fbr.land") {
+        if let url = URL(string: "https://ai.fbr.land/models") {
             NSWorkspace.shared.open(url)
         }
     }
@@ -481,16 +521,17 @@ public final class PopoverView: NSView {
         }
     }
 
-    /// Aggregates model usage over the selected window. Today/Week: not
-    /// available per-model from the API (no period param), so we fall back to
-    /// the month list rather than show nothing. Month: the API's own numbers.
+    /// Aggregates model usage over the selected window. Month: the API's
+    /// top_models (current-month per-model breakdown). Today: the gateway
+    /// doesn't return per-day model splits, so this returns empty and the
+    /// section shows today's total + a note instead of a fake list.
     private func aggregatedModels(response: UsageResponse?, history: HistoryStore, now: Date) -> [(model: String, totalCostUSD: Double, totalTokens: Int)] {
         guard let response else { return [] }
-        // The API only exposes current_month top_models — no per-period
-        // breakdown. Today/Week would need per-day model data the gateway
-        // doesn't return on /v1/me/usage, so those segments show the month
-        // list with a quiet note (the control still works; the data just
-        // doesn't pretend to be per-day). See README "period switcher".
-        return response.topModels.map { (model: $0.model, totalCostUSD: $0.totalCostUSD, totalTokens: $0.totalTokens) }
+        switch selectedPeriod {
+        case .month:
+            return response.topModels.map { (model: $0.model, totalCostUSD: $0.totalCostUSD, totalTokens: $0.totalTokens) }
+        case .today, .week:
+            return []
+        }
     }
 }
