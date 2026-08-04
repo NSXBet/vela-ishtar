@@ -145,11 +145,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.popover = nil
             self.openPopover(relativeTo: controller, firstRunPrompt: "Paste your new AI Hub token.")
         }
-        let panel = self.popover ?? PopoverPanel(contentView: view)
-        self.popover = panel
+        // Pre-layout BEFORE the panel exists: update() sizes the view to
+        // its content, so the panel is born at the right height — no visible
+        // jump from the initial 480pt frame down to content.
         view.update(state: poller.machine.state, history: poller.machine.history,
                     exhaustedAt: poller.machine.exhaustedAt,
                     lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
+        let panel = self.popover ?? PopoverPanel(contentView: view)
+        self.popover = panel
         panel.show(relativeTo: controller.button)
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             view.animateCurveDrawOn()

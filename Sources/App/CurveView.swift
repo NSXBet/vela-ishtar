@@ -124,7 +124,7 @@ public final class CurveView: NSView {
             ctx.addPath(area)
             ctx.clip()
             let colors = [
-                NSColor.labelColor.withAlphaComponent(0.22).cgColor,
+                NSColor.labelColor.withAlphaComponent(0.30).cgColor,
                 NSColor.labelColor.withAlphaComponent(0).cgColor,
             ]
             if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1]) {
