@@ -44,6 +44,18 @@ to authorize the Keychain item — that's normal.
 
 Optional: toggle **Start at login** in the popover footer.
 
+**Notes for teammates who rebuild from source:** each `./build.sh` changes the
+ad-hoc signature, so macOS may ask once for Keychain access on the first run
+of a new build — that's expected (the app needs its token back). One prompt
+per rebuild, one-time for a build you keep. The app is Apple-Silicon-only
+(arm64) for now.
+
+**Models period switcher:** the Today / Week / Month control in the popover
+switches the models list window. Today and Week currently show the month's
+model breakdown — the gateway's `/v1/me/usage` only exposes current-month
+per-model data, so per-day model splits aren't available yet (a platform
+endpoint would unlock true per-period numbers).
+
 ## How it works
 
 - Polls `GET https://ai-llm-gateway.fbr.land/v1/me/usage` every 60s with
