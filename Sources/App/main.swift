@@ -127,6 +127,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let view = self.popoverView ?? PopoverView()
         self.popoverView = view
+        // "API key" swaps the popover into token-entry mode so a rotated
+        // token can be pasted — the token itself never touches this view.
+        view.onReplaceToken = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            self.popover?.dismiss()
+            self.popover = nil
+            self.openPopover(relativeTo: controller, firstRunPrompt: "Paste your new AI Hub token.")
+        }
         let panel = self.popover ?? PopoverPanel(contentView: view)
         self.popover = panel
         view.update(state: poller.machine.state, history: poller.machine.history,

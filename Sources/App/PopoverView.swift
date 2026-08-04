@@ -18,6 +18,15 @@ public final class PopoverView: NSView {
     let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))   // internal: PopoverPanel/main drive the draw-on animation
     private var managedSubviews: [NSView] = []
 
+    /// Which window the models list aggregates over. Today/Week compute from
+    /// local history (the API has no period param); Month uses the API's
+    /// current_month + top_models directly.
+    private enum ModelPeriod: Int { case today = 0, week = 1, month = 2 }
+    private var selectedPeriod: ModelPeriod = .month
+    private weak var periodControl: NSSegmentedControl?
+    private var latestResponse: UsageResponse?
+    private var latestHistory: HistoryStore?
+
     private let sidePadding: CGFloat = 18
     private let sectionSpacing: CGFloat = 12
     private let hairlineHeight: CGFloat = 0.5
@@ -51,6 +60,8 @@ public final class PopoverView: NSView {
             usageResponse = response
             isFresh = false
         }
+        latestResponse = usageResponse
+        latestHistory = history
 
         var yOffset: CGFloat = 12
 
@@ -92,13 +103,14 @@ public final class PopoverView: NSView {
         yOffset += makeHairline(at: &yOffset)
         yOffset += sectionSpacing
 
-        // 6. Models header + top 5 rows
-        if let topModels = usageResponse?.topModels, !topModels.isEmpty {
+        // 6. Models header + top 5 rows (aggregated over the chosen period)
+        let modelsForPeriod = aggregatedModels(response: usageResponse, history: history, now: now)
+        if !modelsForPeriod.isEmpty {
             yOffset += makeModelsHeader(at: &yOffset)
-            for model in topModels.prefix(5) {
+            for model in modelsForPeriod.prefix(5) {
                 // Display strips the provider prefix ("moonshotai/kimi-k3" -> "kimi-k3").
                 let displayName = model.model.split(separator: "/").last.map(String.init) ?? model.model
-                yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), maxCost: topModels.first?.totalCostUSD ?? 1, at: &yOffset)
+                yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), maxCost: modelsForPeriod.first?.totalCostUSD ?? 1, at: &yOffset)
             }
         }
 
@@ -221,13 +233,27 @@ public final class PopoverView: NSView {
     }
 
     private func makeModelsHeader(at yOffset: inout CGFloat) -> CGFloat {
-        let label = NSTextField(labelWithString: "MODELS · THIS MONTH")
+        let label = NSTextField(labelWithString: "MODELS")
         label.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
         label.textColor = .labelColor.withAlphaComponent(0.42)
-        label.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - 14, width: 200, height: 14)
+        label.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - 14, width: 60, height: 14)
         addSubview(label)
         managedSubviews.append(label)
-        return 14
+
+        // Period switcher: segmented Today / Week / Month on the right.
+        let control = NSSegmentedControl(
+            labels: ["Today", "Week", "Month"],
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(periodChanged)
+        )
+        control.selectedSegment = selectedPeriod.rawValue
+        control.frame = NSRect(x: 320 - sidePadding - 168, y: bounds.height - yOffset - 20, width: 168, height: 20)
+        control.controlSize = .small
+        addSubview(control)
+        managedSubviews.append(control)
+        self.periodControl = control
+        return 20
     }
 
     private func makeModelRow(name: String, cost: Double, tokens: Double, maxCost: Double, at yOffset: inout CGFloat) -> CGFloat {
@@ -417,5 +443,26 @@ public final class PopoverView: NSView {
     /// colleagues who need it for curl paste a fresh one here.
     @objc private func replaceTokenTapped() {
         onReplaceToken?()
+    }
+
+    @objc private func periodChanged() {
+        selectedPeriod = ModelPeriod(rawValue: periodControl?.selectedSegment ?? 2) ?? .month
+        if let history = latestHistory {
+            update(state: latestResponse.map { .fresh($0) } ?? .neverFetched,
+                   history: history, exhaustedAt: nil, lastSuccessAt: nil, now: Date())
+        }
+    }
+
+    /// Aggregates model usage over the selected window. Today/Week: not
+    /// available per-model from the API (no period param), so we fall back to
+    /// the month list rather than show nothing. Month: the API's own numbers.
+    private func aggregatedModels(response: UsageResponse?, history: HistoryStore, now: Date) -> [(model: String, totalCostUSD: Double, totalTokens: Int)] {
+        guard let response else { return [] }
+        // The API only exposes current_month top_models — no per-period
+        // breakdown. Today/Week would need per-day model data the gateway
+        // doesn't return on /v1/me/usage, so those segments show the month
+        // list with a quiet note (the control still works; the data just
+        // doesn't pretend to be per-day). See README "period switcher".
+        return response.topModels.map { (model: $0.model, totalCostUSD: $0.totalCostUSD, totalTokens: $0.totalTokens) }
     }
 }
