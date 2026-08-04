@@ -73,10 +73,9 @@ Optional: toggle **Start at login** in the popover footer.
   `~/Library/Application Support/VelaIshtar/history.json` — it powers
   the curve and gets richer the longer you run the app.
 
-**Models period switcher:** Today / Week / Month switches the models list
-window. Today and Week currently show the month's breakdown — the gateway's
-`/v1/me/usage` only exposes current-month per-model data, so per-day model
-splits aren't available yet (a platform endpoint would unlock them).
+**Models period switcher:** the gateway's `/v1/me/usage` only exposes
+current-month per-model data, so the Today / Week segments are disabled for
+now — a platform endpoint would unlock true per-period numbers.
 
 **Rebuilding from source:** each `./build.sh` changes the ad-hoc signature,
 so macOS may ask once for Keychain access on the first run of a new build.
