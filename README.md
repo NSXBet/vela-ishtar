@@ -101,14 +101,6 @@ make test     # 49 unit tests (pace math, burn buffer, border dash, history)
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 ```
 
-## Roadmap
-
-- **The Ghost** (v1.1): your median day drawn faintly behind today's
-  curve, computed locally from your own history — anomaly detection by
-  the human eye, zero ML.
-- Team leaderboard (v2, opt-in): needs the AI Hub platform team to expose
-  a team-summary endpoint.
-
 ## Privacy
 
 Reads only your own usage. Stores only your token (Keychain) and your
