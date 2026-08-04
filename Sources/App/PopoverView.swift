@@ -21,7 +21,7 @@ public final class PopoverView: NSView {
     /// Which window the models list aggregates over. Today/Week compute from
     /// local history (the API has no period param); Month uses the API's
     /// current_month + top_models directly.
-    private enum ModelPeriod: Int { case today = 0, week = 1, month = 2 }
+    private enum ModelPeriod: Int { case today = 0, month = 1 }
     private var selectedPeriod: ModelPeriod = .today
     private weak var periodControl: NSSegmentedControl?
     private var latestResponse: UsageResponse?
@@ -282,25 +282,23 @@ public final class PopoverView: NSView {
         addSubview(label)
         managedSubviews.append(label)
 
+        // Spacer between label and switcher (12pt gap)
+        yOffset += 12
+
         // Period switcher: segmented Today / Week / Month on the right.
         let control = NSSegmentedControl(
-            labels: ["Today", "Week", "Month"],
+            labels: ["Today", "Month"],
             trackingMode: .selectOne,
             target: self,
             action: #selector(periodChanged)
         )
-        control.selectedSegment = selectedPeriod.rawValue
-        control.frame = NSRect(x: 320 - sidePadding - 168, y: bounds.height - yOffset - 20, width: 168, height: 20)
+        control.selectedSegment = selectedPeriod == .today ? 0 : 1
+        control.frame = NSRect(x: 320 - sidePadding - 118, y: bounds.height - yOffset - 20, width: 118, height: 20)
         control.controlSize = .small
-        // The gateway's /v1/me/usage exposes today's TOTAL (daily_budget)
-        // and the month's top_models — but no weekly or per-day model split.
-        // Today shows today's total; Month shows the model breakdown; Week
-        // is disabled until a platform endpoint unlocks per-period data.
-        control.setEnabled(false, forSegment: 1)
         addSubview(control)
         managedSubviews.append(control)
         self.periodControl = control
-        return 20
+        return 26   // 20pt control + 6pt air before the rows below
     }
 
     /// Today's total spend as a single row — the API gives daily_budget
@@ -318,10 +316,10 @@ public final class PopoverView: NSView {
         let note = NSTextField(labelWithString: "Per-model breakdown is monthly only")
         note.font = NSFont.systemFont(ofSize: 10.5)
         note.textColor = .labelColor.withAlphaComponent(0.40)
-        note.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 14, width: 320 - 2 * sidePadding, height: 14)
+        note.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 16, width: 320 - 2 * sidePadding, height: 14)
         addSubview(note)
         managedSubviews.append(note)
-        return rowHeight + 20
+        return rowHeight + 24
     }
 
     private func makeModelRow(name: String, cost: Double, tokens: Double, maxCost: Double, at yOffset: inout CGFloat) -> CGFloat {
@@ -380,7 +378,7 @@ public final class PopoverView: NSView {
         addSubview(tokenLabel)
         managedSubviews.append(tokenLabel)
 
-        return rowHeight + 6
+        return rowHeight + 8
     }
 
     private func makeStaleBanner(minutesOld: Int, at yOffset: inout CGFloat) -> CGFloat {
@@ -514,7 +512,7 @@ public final class PopoverView: NSView {
     }
 
     @objc private func periodChanged() {
-        selectedPeriod = ModelPeriod(rawValue: periodControl?.selectedSegment ?? 2) ?? .month
+        selectedPeriod = (periodControl?.selectedSegment == 0) ? .today : .month
         if let history = latestHistory {
             update(state: latestResponse.map { .fresh($0) } ?? .neverFetched,
                    history: history, exhaustedAt: nil, lastSuccessAt: nil, now: Date())
@@ -530,7 +528,7 @@ public final class PopoverView: NSView {
         switch selectedPeriod {
         case .month:
             return response.topModels.map { (model: $0.model, totalCostUSD: $0.totalCostUSD, totalTokens: $0.totalTokens) }
-        case .today, .week:
+        case .today:
             return []
         }
     }

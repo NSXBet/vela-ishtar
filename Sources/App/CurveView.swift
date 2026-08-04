@@ -48,14 +48,20 @@ public final class CurveView: NSView {
     public override func draw(_ dirtyRect: NSRect) {
         let lane = bounds
 
-        // Y scale: headroom above whichever is larger, limit or the day's
-        // peak, so a curve that blows through the budget still fits.
+        // Y scale: driven by the day's data, not the budget ceiling, so
+        // the curve occupies real vertical space. The $400 ceiling line still
+        // reads as "far above" via the dotted hairline (drawn at the lane top
+        // when off-scale). Floor at 25% of limit so a tiny-peak day doesn't
+        // zoom to absurdity.
         let peak = hourly.compactMap { $0 }.max() ?? 0
-        let yMax = max(limit, peak, 1) * 1.08
+        let yMax = max(peak * 1.25, limit * 0.25, 1)
         func y(for value: Double) -> CGFloat { lane.minY + lane.height * CGFloat(value / yMax) }
         func x(for hour: Int) -> CGFloat { lane.minX + lane.width * CGFloat(hour) / 23.0 }
 
-        drawBudgetCeiling(in: lane, y: y(for: limit))
+        // When the budget ceiling is above the visible scale, pin the
+        // dotted line to the lane top so it still reads as "way up there".
+        let ceilingY = min(y(for: limit), lane.maxY - 8)
+        drawBudgetCeiling(in: lane, y: ceilingY)
         drawCurve(in: lane, x: x, y: y)
         drawNowTick(in: lane, x: x(for: nowHourUTC))
     }
@@ -91,10 +97,14 @@ public final class CurveView: NSView {
     /// their point -- the segment on either side of a gap draws straight
     /// across it, which reads as "interpolated" without any extra math.
     private func drawCurve(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
-        let points: [CGPoint] = hourly.enumerated().compactMap { hour, value in
+        // The curve reads as a DAY, not a stub: anchor the line at $0 on
+        // the left edge (midnight UTC) so its shape is visible even when
+        // only a few late hours have data (e.g. app restarted mid-day).
+        var points: [CGPoint] = [CGPoint(x: x(0), y: y(0))]
+        points.append(contentsOf: hourly.enumerated().compactMap { hour, value in
             guard let value else { return nil }
             return CGPoint(x: x(hour), y: y(value))
-        }
+        })
         guard points.count > 1 else { return }
 
         // drawProgress clips the visible curve to its leading fraction --
