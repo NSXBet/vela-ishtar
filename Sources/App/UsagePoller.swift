@@ -34,6 +34,10 @@ public final class UsagePoller {
     // tick is still in flight -- that tick is simply dropped, not queued.
     private var isFetchInFlight = false
 
+    // Tracks whether we've already told the app about a rejected token, so a
+    // dead credential triggers the recovery flow ONCE, not every 60s tick.
+    private var didNotifyUnauthorized = false
+
     public init(client: AIHubClientProtocol, machine: PollStateMachine) {
         self.client = client
         self.machine = machine
@@ -72,8 +76,14 @@ public final class UsagePoller {
             Task { @MainActor in
                 guard let self else { return }
                 self.isFetchInFlight = false
-                if case .failure(.unauthorized) = result {
+                switch result {
+                case .failure(.unauthorized) where !self.didNotifyUnauthorized:
+                    self.didNotifyUnauthorized = true
                     self.onUnauthorized?()
+                case .success:
+                    self.didNotifyUnauthorized = false
+                default:
+                    break
                 }
                 let state = self.machine.ingest(result, at: Date())
                 self.onState?(state)

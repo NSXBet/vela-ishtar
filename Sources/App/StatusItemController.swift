@@ -90,7 +90,11 @@ public final class StatusItemController: NSObject {
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
 
             let (usedPercent, limitEnabled) = Self.budgetFields(for: state)
-            let sparklineLane = CGRect(x: rect.minX + 8, y: rect.minY + (rect.height - 14) / 2, width: 44, height: 14)
+            // The lane gets whatever width the amount doesn't need (6pt gap) --
+            // a fixed-width lane overlapped long amounts like "$231.40".
+            let amountWidth = Self.amountWidth(for: state)
+            let laneWidth = max(rect.width - 8 - 6 - amountWidth - 8 - rect.minX * 0, 0)
+            let sparklineLane = CGRect(x: rect.minX + 8, y: rect.minY + (rect.height - 14) / 2, width: laneWidth, height: 14)
 
             switch state {
             case .stale:
@@ -253,6 +257,14 @@ public final class StatusItemController: NSObject {
     }
 
     /// Right-aligned, 8pt from the pill's right edge, vertically centered.
+    /// Measured width of the amount text at the pill's font, so the
+    /// sparkline lane can give it exactly the room it needs.
+    private static func amountWidth(for state: PollState) -> CGFloat {
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        let text = amountText(for: state)
+        return ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+
     private static func drawAmount(pillRect: CGRect, text: String, color: NSColor) {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         let attributed = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])

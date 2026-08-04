@@ -31,6 +31,18 @@ public struct PollStateMachine: Sendable {
     public private(set) var burnBuffer = BurnBuffer()
     public private(set) var history: HistoryStore
 
+    /// Loads persisted spend history from disk (no-op-safe if the file is
+    /// missing). Called once at app launch before polling starts.
+    public mutating func loadHistory() {
+        try? history.load()
+    }
+
+    /// Persists spend history atomically (tmp + rename). Called after each
+    /// successful poll and on quit — a few KB once a minute, battery cost nil.
+    public func saveHistory() {
+        try? history.save()
+    }
+
     /// The instant today's spend first crossed the limit, or nil if it
     /// hasn't (or we don't know yet). Mirrors `HistoryStore.DayRecord.exhaustedAt`
     /// for the day of the most recent successful fetch, so the App layer can

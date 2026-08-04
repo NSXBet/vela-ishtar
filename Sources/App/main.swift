@@ -27,7 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let machine = PollStateMachine()
+        var machine = PollStateMachine()
+        machine.loadHistory()   // restore persisted spend history before the first poll
         let client = AIHubClient(tokenProvider: keychain)
         let poller = UsagePoller(client: client, machine: machine)
         let controller = StatusItemController()
@@ -42,9 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.openPopover(relativeTo: controller)
         }
 
-        poller.onState = { [weak controller, weak poller] state in
-            guard let controller, let poller else { return }
+        poller.onState = { [weak self, weak controller, weak poller] state in
+            guard let self, let controller, let poller else { return }
             controller.render(state: state, burnBuffer: poller.machine.burnBuffer)
+            // Persist on success — the curve and exhaustedAt survive relaunch.
+            if case .fresh = state { poller.machine.saveHistory() }
+            // An open popover is a live view, not a snapshot: refresh it on
+            // every poll so the health dot, timestamp, and banner stay true.
+            if let panel = self.popover, panel.isShown, let view = self.popoverView {
+                view.update(state: state, history: poller.machine.history,
+                            exhaustedAt: poller.machine.exhaustedAt,
+                            lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
+            }
         }
 
         // A rejected token re-opens the token flow with an explanation —
@@ -52,6 +62,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         poller.onUnauthorized = { [weak self, weak controller] in
             guard let self, let controller else { return }
             self.openPopover(relativeTo: controller, firstRunPrompt: "Token rejected — paste a fresh one.")
+        }
+
+        // After sleep, poll immediately instead of showing up-to-60s-old
+        // data with a confident green dot.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak poller] _ in
+            Task { @MainActor in poller?.pollNow() }
         }
 
         poller.start()
@@ -65,17 +83,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        poller?.machine.saveHistory()
+    }
+
     /// Builds (once) and shows the popover under the status item. When
     /// `firstRunPrompt` is set — or no token exists — the content is the
     /// token-entry view; otherwise the normal usage view.
     private func openPopover(relativeTo controller: StatusItemController, firstRunPrompt: String? = nil) {
         guard let poller else { return }
 
-        // Fresh data on demand: opening the popover asks the gateway for a
-        // new reading instead of waiting for the next 60s tick.
-        poller.pollNow()
-
         let needsToken = keychain.read() == nil || firstRunPrompt != nil
+
+        // Fresh data on demand — but NOT in the first-run/unauthorized path:
+        // with a dead token that's a guaranteed-failing extra request.
+        if !needsToken {
+            poller.pollNow()
+        }
 
         if needsToken {
             let view = self.firstRunView ?? FirstRunView()

@@ -11,8 +11,17 @@ import ServiceManagement
 
 @MainActor
 public final class PopoverView: NSView {
+    /// Fired by the "API key" footer link; AppDelegate swaps the popover
+    /// into token-entry mode so the user can paste a rotated token.
+    public var onReplaceToken: (() -> Void)?
+
     let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))   // internal: PopoverPanel/main drive the draw-on animation
     private var managedSubviews: [NSView] = []
+
+    /// Called when the user clicks "API key" — the app layer swaps the
+    /// popover into token-entry mode so the token can be REPLACED (not just
+    /// copied). The token itself is never exposed to this view.
+    public var onReplaceToken: (() -> Void)?
 
     private let sidePadding: CGFloat = 18
     private let sectionSpacing: CGFloat = 12
@@ -165,7 +174,7 @@ public final class PopoverView: NSView {
         suffixLabel.textColor = .secondaryLabelColor
         // Baseline-align: the 30pt hero's baseline sits ~7pt above its frame's
         // bottom; the 15pt suffix needs ~4pt to share that line. 8pt gap.
-        suffixLabel.frame = NSRect(x: ceil(heroWidth) + 2 + 8, y: 7, width: container.bounds.width - ceil(heroWidth) - 10, height: 15)
+        suffixLabel.frame = NSRect(x: ceil(heroWidth) + 2 + 8, y: 5, width: container.bounds.width - ceil(heroWidth) - 10, height: 19)
         container.addSubview(suffixLabel)
 
         return containerHeight
@@ -238,7 +247,10 @@ public final class PopoverView: NSView {
         managedSubviews.append(nameLabel)
 
         // Bar (2pt tall, width proportional to cost)
-        let barWidth = maxCost > 0 ? CGFloat(cost / maxCost) * 100 : 0
+        // Capped so the bar never reaches the cost label (starts x=194; bar
+        // starts x=138; 8pt gap -> 48pt max). Pre-cap it ran 100pt and cut
+        // straight through the dollar figure on the top model.
+        let barWidth = maxCost > 0 ? min(CGFloat(cost / maxCost) * 100, 48) : 0
         let bar = NSView(frame: NSRect(x: sidePadding + 120, y: bounds.height - yOffset - 8, width: barWidth, height: 2))
         bar.wantsLayer = true
         bar.layer?.backgroundColor = NSColor.labelColor.cgColor
@@ -258,7 +270,12 @@ public final class PopoverView: NSView {
         let tokensFormatted: String
         if tokens >= 1_000_000 {
             let millions = tokens / 1_000_000
-            tokensFormatted = String(format: "%.2fM", millions).trimmingCharacters(in: CharacterSet(charactersIn: "0"))
+            var formatted = String(format: "%.2fM", millions)
+            // Trim trailing zeros but never the decimal point ("5.00M" -> "5M",
+            // "4.96M" stays) — the naive trim turned "5.00M" into "5.M".
+            while formatted.hasSuffix("0") && !formatted.hasSuffix(".0M") { formatted.removeLast() }
+            if formatted.hasSuffix(".0M") { formatted = formatted.replacingOccurrences(of: ".0M", with: "M") }
+            tokensFormatted = formatted
         } else if tokens >= 1_000 {
             let thousands = tokens / 1_000
             tokensFormatted = String(format: "%.0fK", thousands)
@@ -310,7 +327,7 @@ public final class PopoverView: NSView {
 
         let apiKeyButton = Self.makeLinkButton(title: "API key", frame: NSRect(x: sidePadding + 84, y: bounds.height - yOffset - footerHeight, width: 56, height: footerHeight))
         apiKeyButton.target = self
-        apiKeyButton.action = #selector(copyAPIKey)
+        apiKeyButton.action = #selector(replaceTokenTapped)
         addSubview(apiKeyButton)
         managedSubviews.append(apiKeyButton)
 
@@ -398,9 +415,12 @@ public final class PopoverView: NSView {
         if let panel = window as? PopoverPanel { panel.contentView?.needsDisplay = true }
     }
 
-    @objc private func copyAPIKey() {
-        let keychain = KeychainStore()
-        let token = keychain.read() ?? ""
-        NSPasteboard.general.setString(token, forType: .string)
+    /// Swaps the popover into token-entry mode. Deliberately does NOT copy
+    /// the token to the pasteboard — the general pasteboard is readable by
+    /// every process and syncs via Universal Clipboard, so a silent copy of
+    /// a spend-capable token is a leak. The token stays in the Keychain;
+    /// colleagues who need it for curl paste a fresh one here.
+    @objc private func replaceTokenTapped() {
+        onReplaceToken?()
     }
 }
