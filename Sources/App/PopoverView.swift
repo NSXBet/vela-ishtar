@@ -18,11 +18,6 @@ public final class PopoverView: NSView {
     let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))   // internal: PopoverPanel/main drive the draw-on animation
     private var managedSubviews: [NSView] = []
 
-    /// Called when the user clicks "API key" — the app layer swaps the
-    /// popover into token-entry mode so the token can be REPLACED (not just
-    /// copied). The token itself is never exposed to this view.
-    public var onReplaceToken: (() -> Void)?
-
     private let sidePadding: CGFloat = 18
     private let sectionSpacing: CGFloat = 12
     private let hairlineHeight: CGFloat = 0.5
