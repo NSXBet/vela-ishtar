@@ -318,7 +318,7 @@ public final class PopoverView: NSView {
         // SMAppService registration. The checkmark shows current state.
         let atLogin = SMAppService.mainApp.status == .enabled
         let loginTitle = atLogin ? "✓ Start at login" : "Start at login"
-        let loginButton = Self.makeLinkButton(title: loginTitle, frame: NSRect(x: sidePadding + 146, y: bounds.height - yOffset - footerHeight, width: 104, height: footerHeight))
+        let loginButton = Self.makeLinkButton(title: loginTitle, frame: NSRect(x: sidePadding + 146, y: bounds.height - yOffset - footerHeight, width: 96, height: footerHeight))
         loginButton.target = self
         loginButton.action = #selector(toggleLaunchAtLogin)
         addSubview(loginButton)
@@ -333,15 +333,23 @@ public final class PopoverView: NSView {
         let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         let statusWidth = ceil((statusText as NSString).size(withAttributes: [.font: statusFont]).width)
 
-        let statusLabel = NSTextField(labelWithString: statusText)
+        // The left button group ends at sidePadding+146+96; the health unit
+        // right-anchors. If they'd collide (long timestamp), fall back to
+        // dot + "AI Hub" only — the exact time is nice-to-have, not chrome.
+        let leftGroupEnd = sidePadding + 146 + 96
+        let healthFits = (320 - sidePadding - statusWidth - 12) > leftGroupEnd
+        let finalStatusText = healthFits ? statusText : "AI Hub"
+        let finalStatusWidth = healthFits ? statusWidth : ceil((finalStatusText as NSString).size(withAttributes: [.font: statusFont]).width)
+
+        let statusLabel = NSTextField(labelWithString: finalStatusText)
         statusLabel.font = statusFont
         statusLabel.textColor = .labelColor.withAlphaComponent(0.38)
         statusLabel.alignment = .right
-        statusLabel.frame = NSRect(x: 320 - sidePadding - statusWidth, y: bounds.height - yOffset - footerHeight + 3, width: statusWidth, height: 14)
+        statusLabel.frame = NSRect(x: 320 - sidePadding - finalStatusWidth, y: bounds.height - yOffset - footerHeight + 3, width: finalStatusWidth, height: 14)
         addSubview(statusLabel)
         managedSubviews.append(statusLabel)
 
-        let dot = NSView(frame: NSRect(x: 320 - sidePadding - statusWidth - 12, y: bounds.height - yOffset - footerHeight + 6, width: 7, height: 7))
+        let dot = NSView(frame: NSRect(x: 320 - sidePadding - finalStatusWidth - 12, y: bounds.height - yOffset - footerHeight + 6, width: 7, height: 7))
         dot.wantsLayer = true
         dot.layer?.backgroundColor = dotColor.cgColor
         dot.layer?.cornerRadius = 3.5
