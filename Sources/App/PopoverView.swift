@@ -41,6 +41,8 @@ public final class PopoverView: NSView {
         fatalError("PopoverView does not support NSCoder-based initialization")
     }
 
+    private var isRelayout = false
+
     public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date) {
         // Clear all subviews and rebuild from scratch on each update.
         subviews.forEach { $0.removeFromSuperview() }
@@ -142,7 +144,7 @@ public final class PopoverView: NSView {
         // Size the view to its content so the panel never leaves dead space
         // below the footer (the stale banner used to overflow the fixed 480).
         let contentHeight = yOffset + 12
-        if abs(frame.height - contentHeight) > 1 {
+        if abs(frame.height - contentHeight) > 1 && !isRelayout {
             setFrameSize(NSSize(width: 320, height: contentHeight))
             // The panel tracks its content's height.
             if let panel = window as? NSPanel {
@@ -152,6 +154,11 @@ public final class PopoverView: NSView {
                 panelFrame.origin.y -= delta   // keep the top edge anchored
                 panel.setFrame(panelFrame, display: true, animate: false)
             }
+            // Rows were laid out against the OLD height — re-lay against the
+            // new one so the hero isn't cut off on first open.
+            isRelayout = true
+            update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now)
+            isRelayout = false
         }
     }
 
@@ -266,6 +273,11 @@ public final class PopoverView: NSView {
         control.selectedSegment = selectedPeriod.rawValue
         control.frame = NSRect(x: 320 - sidePadding - 168, y: bounds.height - yOffset - 20, width: 168, height: 20)
         control.controlSize = .small
+        // The gateway's /v1/me/usage only exposes current-month per-model
+        // data — Today/Week would show the same numbers and pretend they're
+        // per-period. Disabled until a platform endpoint unlocks them.
+        control.setEnabled(false, forSegment: 0)
+        control.setEnabled(false, forSegment: 1)
         addSubview(control)
         managedSubviews.append(control)
         self.periodControl = control
