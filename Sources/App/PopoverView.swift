@@ -138,6 +138,21 @@ public final class PopoverView: NSView {
                 }
             }
         }
+
+        // Size the view to its content so the panel never leaves dead space
+        // below the footer (the stale banner used to overflow the fixed 480).
+        let contentHeight = yOffset + 12
+        if abs(frame.height - contentHeight) > 1 {
+            setFrameSize(NSSize(width: 320, height: contentHeight))
+            // The panel tracks its content's height.
+            if let panel = window as? NSPanel {
+                var panelFrame = panel.frame
+                let delta = contentHeight - panelFrame.height
+                panelFrame.size.height = contentHeight
+                panelFrame.origin.y -= delta   // keep the top edge anchored
+                panel.setFrame(panelFrame, display: true, animate: false)
+            }
+        }
     }
 
     /// Draw-on animation for the curve, run once per popover open (Task 13).
