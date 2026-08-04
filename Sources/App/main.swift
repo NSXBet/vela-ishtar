@@ -105,6 +105,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let view = self.firstRunView ?? FirstRunView()
             self.firstRunView = view
             if let firstRunPrompt { view.promptText = firstRunPrompt }
+            // Cancel makes sense only when a token already exists (the
+            // "replace token" flow) — on true first run there's nothing to
+            // go back to, so the button stays hidden.
+            view.showsCancel = self.keychain.read() != nil
+            view.onCancel = { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.popover?.dismiss()
+                self.popover = nil
+                self.openPopover(relativeTo: controller)
+            }
             view.onSave = { [weak self, weak poller] token in
                 guard let self, let poller else { return false }
                 guard self.keychain.write(token) else { return false }

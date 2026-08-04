@@ -13,13 +13,23 @@ public final class FirstRunView: NSView {
     /// what happens next (Keychain write + pollNow).
     public var onSave: ((String) -> Bool)?
 
+    /// Called when the user cancels (relevant when a token already exists —
+    /// e.g. the "replace token" flow — so they can back out to the normal view).
+    public var onCancel: (() -> Void)?
+
     /// Optional lead-in line ("Paste your AI Hub token to begin." by default;
     /// "Token rejected — paste a fresh one." after a 401).
     public var promptText: String = "Paste your AI Hub token to begin." {
         didSet { promptLabel?.stringValue = promptText }
     }
 
+    /// Whether to show the Cancel button (false on true first run).
+    public var showsCancel: Bool = false {
+        didSet { cancelButton?.isHidden = !showsCancel }
+    }
+
     private weak var promptLabel: NSTextField?
+    private weak var cancelButton: NSButton?
     private weak var field: NSSecureTextField?
     private weak var errorLabel: NSTextField?
 
@@ -48,6 +58,16 @@ public final class FirstRunView: NSView {
         save.action = #selector(saveTapped)
         addSubview(save)
 
+        let cancel = NSButton(frame: NSRect(x: 94, y: 132 - 94, width: 68, height: 26))
+        cancel.title = "Cancel"
+        cancel.bezelStyle = .rounded
+        cancel.keyEquivalent = "\u{1b}"   // Escape cancels.
+        cancel.target = self
+        cancel.action = #selector(cancelTapped)
+        cancel.isHidden = !showsCancel
+        addSubview(cancel)
+        cancelButton = cancel
+
         let error = NSTextField(labelWithString: "")
         error.font = NSFont.systemFont(ofSize: 11)
         error.textColor = .systemRed
@@ -70,6 +90,10 @@ public final class FirstRunView: NSView {
     /// Focus the token field — called by the panel right after show().
     public func focusField() {
         window?.makeFirstResponder(field)
+    }
+
+    @objc private func cancelTapped() {
+        onCancel?()
     }
 
     @objc private func saveTapped() {
