@@ -26,6 +26,13 @@ public final class PopoverView: NSView {
     private weak var periodControl: NSSegmentedControl?
     private var latestResponse: UsageResponse?
     private var latestHistory: HistoryStore?
+    // The last real PollState and its freshness inputs, captured in update().
+    // periodChanged() re-renders from these (NOT from latestResponse re-wrapped
+    // as .fresh) so a stale reading stays amber/dimmed/bannered across a
+    // period toggle — the UI must never claim fresh data it doesn't have.
+    private var latestState: PollState = .neverFetched
+    private var latestExhaustedAt: Date?
+    private var latestSuccessAt: Date?
 
     private let sidePadding: CGFloat = 18
     private let sectionSpacing: CGFloat = 12
@@ -85,6 +92,9 @@ public final class PopoverView: NSView {
         }
         latestResponse = usageResponse
         latestHistory = history
+        latestState = state
+        latestExhaustedAt = exhaustedAt
+        latestSuccessAt = lastSuccessAt
         // If no draw-on animation is in flight, the curve must be fully
         // visible — poll-triggered updates shouldn't leave it half-drawn.
         if !curveAnimationRunning && curveView.drawProgress == 0 {
@@ -220,26 +230,14 @@ public final class PopoverView: NSView {
         }
     }
 
-    /// Loading state: spinner + "Connecting to AI Hub…" centered, footer
-    /// at the bottom. The view stays at its full 480pt height so the first
-    /// real render doesn't resize the panel (the "hero jump" bug).
-    private func renderLoadingState() {
-        let spinner = NSProgressIndicator(frame: NSRect(x: (320 - 20) / 2, y: (480 - 20) / 2 + 10, width: 20, height: 20))
-        spinner.style = .spinning
-        spinner.startAnimation(nil)
-        addSubview(spinner)
-        managedSubviews.append(spinner)
-
-        let label = NSTextField(labelWithString: "Connecting to AI Hub…")
-        label.font = NSFont.systemFont(ofSize: 13)
-        label.textColor = .secondaryLabelColor
-        label.alignment = .center
-        label.frame = NSRect(x: 0, y: (480 - 20) / 2 - 20, width: 320, height: 18)
-        addSubview(label)
-        managedSubviews.append(label)
-
-        var footerY: CGFloat = 12
-        _ = makeFooter(isFresh: false, lastSuccessAt: nil, now: Date(), at: &footerY)
+    /// Loading state for the very first open (state == .neverFetched):
+    /// spinner + "Connecting to AI Hub…" centered in the fixed 320x480 frame.
+    /// main.swift calls this instead of building a separate throwaway panel,
+    /// so the loading view and the first real render share ONE panel — the
+    /// only resize is the single shrink-to-content when real data lands.
+    func renderLoadingState() {
+        update(state: .neverFetched, history: HistoryStore(directory: URL(fileURLWithPath: "/")),
+               exhaustedAt: nil, lastSuccessAt: nil, now: Date())
     }
 
     private func makeHeroRow(spent: Double, limit: Double, isNeverFetched: Bool = false, at yOffset: inout CGFloat) -> CGFloat {
@@ -559,10 +557,12 @@ public final class PopoverView: NSView {
 
     @objc private func periodChanged() {
         selectedPeriod = (periodControl?.selectedSegment == 0) ? .today : .month
-        if let history = latestHistory {
-            update(state: latestResponse.map { .fresh($0) } ?? .neverFetched,
-                   history: history, exhaustedAt: nil, lastSuccessAt: nil, now: Date())
-        }
+        guard let history = latestHistory else { return }
+        // Re-render from the REAL last state — never re-wrap latestResponse as
+        // .fresh. If the gateway is unreachable the reading is .stale, and the
+        // banner / amber dot / dimming must survive a period toggle.
+        update(state: latestState, history: history,
+               exhaustedAt: latestExhaustedAt, lastSuccessAt: latestSuccessAt, now: Date())
     }
 
     /// Aggregates model usage over the selected window. Month: the API's

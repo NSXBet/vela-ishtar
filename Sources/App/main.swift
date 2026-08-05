@@ -48,18 +48,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.render(state: state, burnBuffer: poller.machine.burnBuffer)
             // Persist on success — the curve and exhaustedAt survive relaunch.
             if case .fresh = state { poller.machine.saveHistory() }
-            // If the loading panel is showing, replace it with the real
-            // popover now that data has arrived.
-            if let panel = self.popover, panel.isShown, self.popoverView == nil {
-                panel.dismiss()
-                self.popover = nil
-                if let controller = self.statusItem {
-                    self.openPopover(relativeTo: controller)
-                }
-                return
-            }
             // An open popover is a live view, not a snapshot: refresh it on
             // every poll so the health dot, timestamp, and banner stay true.
+            // This also covers the loading state (state was .neverFetched):
+            // the same PopoverView shrinks to content height once, in place.
             if let panel = self.popover, panel.isShown, let view = self.popoverView {
                 view.update(state: state, history: poller.machine.history,
                             exhaustedAt: poller.machine.exhaustedAt,
@@ -111,35 +103,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             poller.pollNow()
         }
 
-        // Don't create the panel until we have real data — the popover is
-        // born at its final height, not resized after (the Month view's
-        // extra model rows made the resize visible as a "jump").
+        // Still waiting for the first poll — show the loading state in the
+        // REAL PopoverView (fixed 320x480), not a throwaway panel. When the
+        // first state lands, onState updates this same view in place and it
+        // shrinks to content height exactly once — no hero jump, no panel swap.
         if case .neverFetched = poller.machine.state, !needsToken {
-            // Still waiting for the first poll — open a minimal loading panel.
-            let loading = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
-            let label = NSTextField(labelWithString: "Connecting to AI Hub…")
-            label.font = NSFont.systemFont(ofSize: 13)
-            label.textColor = .secondaryLabelColor
-            label.alignment = .center
-            label.frame = NSRect(x: 0, y: 50, width: 320, height: 20)
-            loading.addSubview(label)
-            let panel = PopoverPanel(contentView: loading)
+            let view = self.popoverView ?? PopoverView()
+            self.popoverView = view
+            view.onReplaceToken = { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.popover?.dismiss()
+                self.popover = nil
+                self.openPopover(relativeTo: controller, firstRunPrompt: "Paste your new AI Hub token.")
+            }
+            view.renderLoadingState()
+            let panel = PopoverPanel(contentView: view)
             self.popover = panel
             panel.show(relativeTo: controller.button)
-            // When the first state lands, onState replaces this panel.
             return
         }
 
         if needsToken {
             let view = self.firstRunView ?? FirstRunView()
             self.firstRunView = view
+            // Re-arm the unauthorized latch on entry: if the user closes this
+            // panel WITHOUT saving (Cancel or outside-click), a still-dead
+            // token must re-prompt on the next 401 — not fail silently. A
+            // successful save leads to a poll that re-latches on failure, so
+            // resetting here is safe in every path.
+            poller.resetUnauthorizedNotification()
             if let firstRunPrompt { view.promptText = firstRunPrompt }
             // Cancel makes sense only when a token already exists (the
             // "replace token" flow) — on true first run there's nothing to
             // go back to, so the button stays hidden.
             view.showsCancel = self.keychain.read() != nil
-            view.onCancel = { [weak self, weak controller] in
+            view.onCancel = { [weak self, weak controller, weak poller] in
                 guard let self, let controller else { return }
+                // User backed out of the recovery flow without saving — the
+                // token is still dead, so re-arm the notification: the next
+                // 401 re-opens the prompt instead of failing silently forever.
+                poller?.resetUnauthorizedNotification()
                 self.popover?.dismiss()
                 self.popover = nil
                 self.openPopover(relativeTo: controller)

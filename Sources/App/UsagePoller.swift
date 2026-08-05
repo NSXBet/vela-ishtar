@@ -38,6 +38,14 @@ public final class UsagePoller {
     // dead credential triggers the recovery flow ONCE, not every 60s tick.
     private var didNotifyUnauthorized = false
 
+    /// Re-arms the unauthorized notification after the user dismisses the
+    /// token flow without saving (Cancel / closed panel). Without this, a
+    /// still-dead token 401s forever with no re-prompt — the "forever-amber
+    /// pill" the recovery flow exists to prevent.
+    public func resetUnauthorizedNotification() {
+        didNotifyUnauthorized = false
+    }
+
     public init(client: AIHubClientProtocol, machine: PollStateMachine) {
         self.client = client
         self.machine = machine
