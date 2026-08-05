@@ -47,7 +47,15 @@ Click the pill. One panel, no tabs — hairlines and whitespace only.
 
 ## Install
 
-**Homebrew (recommended):**
+**Direct download (recommended):**
+
+```bash
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.1.0/VelaIshtar-0.1.0.zip
+unzip VelaIshtar-0.1.0.zip -d /Applications/
+open -a "Vela Ishtar"
+```
+
+**Homebrew** (once the tap is public):
 
 ```bash
 brew tap NSXBet/tap
@@ -58,6 +66,12 @@ open -a "Vela Ishtar"
 The app is ad-hoc signed, so on first launch macOS may ask you to
 right-click → Open (or run `xattr -cr "/Applications/Vela Ishtar.app"`).
 That's expected — we don't have an Apple Developer account yet.
+
+**After launching:** there is no window — Vela Ishtar is a menu bar app.
+Look top-right, next to the clock: a small pill showing today's spend.
+Click it for the full popover. If you don't see the pill, your menu bar
+may be full (common on notched MacBooks) — quit a few other menu bar
+apps and relaunch.
 
 **From source** (no Xcode needed, Command Line Tools only):
 
