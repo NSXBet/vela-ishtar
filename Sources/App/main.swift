@@ -48,6 +48,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.render(state: state, burnBuffer: poller.machine.burnBuffer)
             // Persist on success — the curve and exhaustedAt survive relaunch.
             if case .fresh = state { poller.machine.saveHistory() }
+            // If the loading panel is showing, replace it with the real
+            // popover now that data has arrived.
+            if let panel = self.popover, panel.isShown, self.popoverView == nil {
+                panel.dismiss()
+                self.popover = nil
+                if let controller = self.statusItem {
+                    self.openPopover(relativeTo: controller)
+                }
+                return
+            }
             // An open popover is a live view, not a snapshot: refresh it on
             // every poll so the health dot, timestamp, and banner stay true.
             if let panel = self.popover, panel.isShown, let view = self.popoverView {
@@ -99,6 +109,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // with a dead token that's a guaranteed-failing extra request.
         if !needsToken {
             poller.pollNow()
+        }
+
+        // Don't create the panel until we have real data — the popover is
+        // born at its final height, not resized after (the Month view's
+        // extra model rows made the resize visible as a "jump").
+        if case .neverFetched = poller.machine.state, !needsToken {
+            // Still waiting for the first poll — open a minimal loading panel.
+            let loading = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
+            let label = NSTextField(labelWithString: "Connecting to AI Hub…")
+            label.font = NSFont.systemFont(ofSize: 13)
+            label.textColor = .secondaryLabelColor
+            label.alignment = .center
+            label.frame = NSRect(x: 0, y: 50, width: 320, height: 20)
+            loading.addSubview(label)
+            let panel = PopoverPanel(contentView: loading)
+            self.popover = panel
+            panel.show(relativeTo: controller.button)
+            // When the first state lands, onState replaces this panel.
+            return
         }
 
         if needsToken {

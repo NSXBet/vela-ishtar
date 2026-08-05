@@ -62,6 +62,27 @@ public final class PopoverView: NSView {
             usageResponse = response
             isFresh = false
         }
+
+        // Loading state: a spinner + one line, centered. The full layout
+        // renders once when the first real state arrives — no hero jump.
+        if usageResponse == nil {
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .small
+            spinner.frame = NSRect(x: (320 - 16) / 2, y: 240, width: 16, height: 16)
+            spinner.startAnimation(nil)
+            addSubview(spinner)
+            managedSubviews.append(spinner)
+
+            let connecting = NSTextField(labelWithString: "Connecting to AI Hub…")
+            connecting.font = NSFont.systemFont(ofSize: 13)
+            connecting.textColor = .secondaryLabelColor
+            connecting.alignment = .center
+            connecting.frame = NSRect(x: 0, y: 210, width: 320, height: 18)
+            addSubview(connecting)
+            managedSubviews.append(connecting)
+            return
+        }
         latestResponse = usageResponse
         latestHistory = history
         // If no draw-on animation is in flight, the curve must be fully
@@ -197,6 +218,28 @@ public final class PopoverView: NSView {
             curveAnimationItems.append(work)
             DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * (0.5 / Double(steps)), execute: work)
         }
+    }
+
+    /// Loading state: spinner + "Connecting to AI Hub…" centered, footer
+    /// at the bottom. The view stays at its full 480pt height so the first
+    /// real render doesn't resize the panel (the "hero jump" bug).
+    private func renderLoadingState() {
+        let spinner = NSProgressIndicator(frame: NSRect(x: (320 - 20) / 2, y: (480 - 20) / 2 + 10, width: 20, height: 20))
+        spinner.style = .spinning
+        spinner.startAnimation(nil)
+        addSubview(spinner)
+        managedSubviews.append(spinner)
+
+        let label = NSTextField(labelWithString: "Connecting to AI Hub…")
+        label.font = NSFont.systemFont(ofSize: 13)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .center
+        label.frame = NSRect(x: 0, y: (480 - 20) / 2 - 20, width: 320, height: 18)
+        addSubview(label)
+        managedSubviews.append(label)
+
+        var footerY: CGFloat = 12
+        _ = makeFooter(isFresh: false, lastSuccessAt: nil, now: Date(), at: &footerY)
     }
 
     private func makeHeroRow(spent: Double, limit: Double, isNeverFetched: Bool = false, at yOffset: inout CGFloat) -> CGFloat {
