@@ -37,9 +37,11 @@ Click the pill. One panel, no tabs — hairlines and whitespace only.
 - **$54.51 of $400 today**, plus one computed sentence:
   *"At this pace you'll reach budget around 9:40 pm."*
 - **Today's curve** — cumulative spend hour by hour, against the ceiling
-- **Models** — ranked by cost, with a Today / Week / Month switcher
+- **Models** — ranked by cost, with a Today / Month switcher
 - **● AI Hub** — a health dot that goes amber and dims everything when
   the gateway is unreachable (your data is never silently stale)
+- **Loading state** — on first open you get a calm "Connecting to AI Hub…"
+  panel that swaps to real data the moment the first poll lands
 
 <img src="docs/assets/popover-light.png" width="340" alt="Popover, light appearance">
 
@@ -85,9 +87,10 @@ Optional: toggle **Start at login** in the popover footer.
   `~/Library/Application Support/VelaIshtar/history.json` — it powers
   the curve and gets richer the longer you run the app.
 
-**Models period switcher:** the gateway's `/v1/me/usage` only exposes
-current-month per-model data, so the Today / Week segments are disabled for
-now — a platform endpoint would unlock true per-period numbers.
+**Models period switcher:** Today shows your real daily total from the
+API (per-model breakdown is monthly only on the gateway); Month ranks
+models by current-month cost. A Week segment was removed for now — the
+gateway's `/v1/me/usage` has no weekly per-model endpoint.
 
 **Rebuilding from source:** each `./build.sh` changes the ad-hoc signature,
 so macOS may ask once for Keychain access on the first run of a new build.
