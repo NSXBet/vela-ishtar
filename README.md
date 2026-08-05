@@ -45,7 +45,19 @@ Click the pill. One panel, no tabs — hairlines and whitespace only.
 
 ## Install
 
-Build from source — no Xcode needed, Command Line Tools only:
+**Homebrew (recommended):**
+
+```bash
+brew tap NSXBet/tap
+brew install --cask vela-ishtar
+open -a "Vela Ishtar"
+```
+
+The app is ad-hoc signed, so on first launch macOS may ask you to
+right-click → Open (or run `xattr -cr "/Applications/Vela Ishtar.app"`).
+That's expected — we don't have an Apple Developer account yet.
+
+**From source** (no Xcode needed, Command Line Tools only):
 
 ```bash
 git clone https://github.com/NSXBet/vela-ishtar.git
