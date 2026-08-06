@@ -58,6 +58,13 @@ public final class PopoverPanel: NSPanel {
         backgroundColor = .clear
         isOpaque = false
         hasShadow = true
+        // canBecomeKey=true (below) must not turn the NORMAL popover into
+        // a keyboard window: with the default (false), clicking ordinary
+        // content could make the panel key and steal typing from the
+        // user's real app. true = only views that need keys (text fields)
+        // pull key status; the token flow's explicit makeKey() is
+        // unaffected -- programmatic makeKey works regardless.
+        becomesKeyOnlyIfNeeded = true
         // The panel is reused across show/dismiss cycles (see AppDelegate's
         // lazy instantiation) -- it must survive orderOut(), not deallocate.
         isReleasedWhenClosed = false
@@ -83,6 +90,51 @@ public final class PopoverPanel: NSPanel {
     /// True while the panel is on-screen. NSPanel's own isVisible already
     /// tracks exactly this -- no separate flag to keep in sync.
     public var isShown: Bool { isVisible }
+
+    /// Borderless panels default canBecomeKey to false, which would make
+    /// keyboard input impossible (the token field could never receive
+    /// ⌘V or typed text reliably). We allow becoming key; the normal
+    /// popover flow stays nonactivating and never exercises this.
+    public override var canBecomeKey: Bool { true }
+
+    /// Edit-menu key equivalents, handled at the WINDOW level.
+    /// Why: this is an LSUIElement agent with no menu bar, so the normal
+    /// dispatch path (key equivalent → main menu → paste:) has no menu to
+    /// travel through -- ⌘V in the token field silently did nothing, and
+    /// users fell back to right-click → Paste (first field report).
+    /// NSApplication.sendEvent offers key equivalents to the key window
+    /// first (which then searches its view hierarchy), so overriding here
+    /// catches them deterministically -- even though the first responder
+    /// in a text field is the shared field editor (NSTextView), not the
+    /// field itself. We forward to the responder chain exactly like the
+    /// Edit menu would.
+    public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Compare only the modifier bits we MEAN: deviceIndependentFlagsMask
+        // also includes Caps Lock and fn, so an exact-mask comparison would
+        // silently reject ⌘V whenever the user has Caps Lock on.
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        // ⌘ alone, or ⌘⇧ for Redo. Anything else (⌘⌥…, ⌘⌃…) is not ours.
+        guard mods == .command || mods == [.command, .shift],
+              let chars = event.charactersIgnoringModifiers?.lowercased()
+        else { return super.performKeyEquivalent(with: event) }
+
+        let action: Selector?
+        switch chars {
+        case "v": action = #selector(NSText.paste(_:))
+        case "x": action = #selector(NSText.cut(_:))
+        case "c": action = #selector(NSText.copy(_:))
+        case "a": action = #selector(NSText.selectAll(_:))
+        case "z": action = mods.contains(.shift) ? Selector(("redo:")) : Selector(("undo:"))
+        default:  action = nil
+        }
+        guard let action else { return super.performKeyEquivalent(with: event) }
+        // If nothing in the responder chain handles it (e.g. focus left
+        // the token field), don't swallow the keystroke -- hand it back
+        // to the standard path so ⌘V can never "succeed into the void"
+        // and read as the exact bug this override exists to fix.
+        if NSApp.sendAction(action, to: nil, from: self) { return true }
+        return super.performKeyEquivalent(with: event)
+    }
 
     // MARK: - Show
 
@@ -125,6 +177,40 @@ public final class PopoverPanel: NSPanel {
             }
         }
 
+        installClickMonitors()
+    }
+
+    /// Shows the panel as a KEYBOARD-OWNING window: activates the app and
+    /// makes the panel key, so a text field inside gets typed input AND
+    /// key equivalents. Used only by the token-entry flow -- a menu bar
+    /// app must never steal activation just to show numbers, but asking
+    /// for a credential is exactly the moment the user expects to type.
+    public func showForKeyboardInput(relativeTo button: NSStatusBarButton?) {
+        show(relativeTo: button)
+        NSApp.activate(ignoringOtherApps: true)
+        makeKey()
+    }
+
+    /// Shows the panel centered on the screen that currently has keyboard
+    /// focus (falls back to the main screen). Used at first launch, when
+    /// there was no click and the status item's backing window may not
+    /// have a realized frame yet -- anchoring under the pill in that
+    /// moment can compute off a garbage origin and pin the panel to a
+    /// corner (reported: token prompt appeared bottom-left).
+    public func showCenteredForKeyboardInput() {
+        let screen = NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first
+        let visible = screen?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: panelSize.width, height: panelSize.height)
+        let centered = NSRect(
+            x: visible.midX - panelSize.width / 2,
+            y: visible.midY - panelSize.height / 2,
+            width: panelSize.width,
+            height: panelSize.height
+        )
+        setFrame(centered, display: false)
+        alphaValue = 1
+        NSApp.activate(ignoringOtherApps: true)
+        makeKeyAndOrderFront(nil)
         installClickMonitors()
     }
 
@@ -181,8 +267,21 @@ public final class PopoverPanel: NSPanel {
     /// windowDidResignKey to hook -- the click monitors below are the
     /// only dismissal signal.
     public func dismiss() {
+        // Capture BEFORE orderOut: only a panel that actually held key
+        // status (the token flow's keyboard-owning shows) should hand
+        // activation back. A normal popover that never became key must
+        // not deactivate an app it never activated.
+        let wasKey = isKeyWindow
         removeClickMonitors()
         orderOut(nil)
+        // If the token flow activated us (showForKeyboardInput /
+        // showCenteredForKeyboardInput), hand activation back so the app
+        // returns to being a quiet background agent -- an LSUIElement app
+        // that stays "active" after its one keyboard moment is over is
+        // exactly the kind of focus theft the nonactivating design avoids.
+        if wasKey, NSApp.isActive {
+            NSApp.deactivate()
+        }
     }
 
     // MARK: - Outside-click monitors

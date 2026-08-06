@@ -19,6 +19,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var firstRunView: FirstRunView?
     private let keychain = KeychainStore()
 
+    /// True once the user has clicked the status item at least once. The
+    /// first-launch token prompt happens BEFORE any click, when the status
+    /// item's backing window may not have a realized frame yet -- anchoring
+    /// under the pill in that moment can pin the panel to a screen corner
+    /// (reported: token prompt appeared bottom-left), so that one show is
+    /// centered on screen instead.
+    private var hasUserClickedPill = false
+
     /// Explicit nonisolated init: the top-level bootstrap below is
     /// nonisolated, so the delegate must be constructible from there;
     /// its methods stay @MainActor via the class annotation.
@@ -36,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.install()
         controller.onClick = { [weak self, weak controller] in
             guard let self, let controller else { return }
+            self.hasUserClickedPill = true
             if let popover = self.popover, popover.isShown {
                 popover.dismiss()
                 return
@@ -162,7 +171,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let panel = PopoverPanel(contentView: view)
             self.popover = panel
-            panel.show(relativeTo: controller.button)
+            // Token entry needs REAL keyboard ownership: activate the app
+            // and make the panel key, otherwise ⌘V has no menu to travel
+            // through and typing goes nowhere. Pre-first-click (launch,
+            // or a 401 before any click) the pill's backing window may
+            // not have a real frame yet -- center on screen instead of
+            // anchoring into a corner.
+            if hasUserClickedPill {
+                panel.showForKeyboardInput(relativeTo: controller.button)
+            } else {
+                panel.showCenteredForKeyboardInput()
+            }
             view.focusField()
             return
         }
