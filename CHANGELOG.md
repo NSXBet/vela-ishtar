@@ -4,6 +4,43 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.3.4] — 2026-08-07
+
+Cold-open fix: the last reading shows instantly instead of a blank spinner.
+
+### Fixed
+
+- **Cold-open shows the last reading instantly.** On a cold start (or the
+  first open after launch) the popover used to render a bare spinner with
+  no cost for the 0.5–1s until the first fetch landed. Now, if today's
+  local history holds a reading, the popover rehydrates from it: the hero
+  number and curve render immediately in the dimmed stale treatment with a
+  "Last reading · Nm ago" caption, then the live poll brightens them in
+  place — a brightness change, not a numbers jump. It never shows
+  yesterday's figures as today's; a true first run still shows the spinner.
+- **Popover re-opens at the right size.** `PopoverPanel.panelSize` was a
+  frozen `let` captured at init, so after the panel resized itself live the
+  next open snapped back to the stale 480pt height before settling. It now
+  reads the panel's live frame, so a re-open starts from the correct size.
+- **"Start at login" checkmark tells the truth.** Toggling it called
+  `needsDisplay`, which redraws pixels but doesn't rebuild the button title
+  the checkmark is baked into — so the glyph lagged the real status until
+  the next poll. The toggle now re-renders through the same path the period
+  switcher uses, so the checkmark always reflects `SMAppService` status.
+
+### Changed
+
+- **What's-new list is generated from the changelog at build time.** The
+  version bullet's notes were a hand-kept array in the view that drifted
+  from the shipped release more than once. `build.sh` now extracts the top
+  three changelog sections into the app bundle, so the bullet can never
+  drift ahead of (or behind) the binary. Falls back to a built-in list when
+  running outside a packaged build.
+- **README syncs itself.** A `make readme-version` target derives the
+  version and test count from their sources of truth (`Info.plist`, the
+  test suite) and rewrites the README's badge and install URL, wired into
+  `make release` — no more hand-edited drift.
+
 ## [0.3.3] — 2026-08-07
 
 The version bullet's tooltip now actually shows.
@@ -167,6 +204,7 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[0.3.4]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.4
 [0.3.3]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.3
 [0.3.2]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.2
 [0.3.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.1

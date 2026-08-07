@@ -27,6 +27,33 @@ swiftc -O -target arm64-apple-macos14.0 \
 
 cp Info.plist "$APP/Contents/Info.plist"
 
+# Generate the version bullet's what's-new list from CHANGELOG.md so it can
+# never drift from the shipped release (the hand-kept array in PopoverView
+# did). One `version<TAB>one-liner` per line, top 3 sections; the one-liner
+# is the summary paragraph right after each `## [x.y.z]` header. Parsed by
+# Sources/VelaCore/WhatsNew.swift at runtime.
+mkdir -p "$APP/Contents/Resources"
+awk '
+  /^## \[/ {
+    if (section < 3) {
+      section++
+      # Pull the bare version from between the brackets.
+      match($0, /\[[^]]+\]/)
+      ver = substr($0, RSTART + 1, RLENGTH - 2)
+      grab = 1   # next non-empty line is this section one-liner
+    } else { grab = 0 }
+    next
+  }
+  grab && NF && $0 !~ /^#/ {
+    # First non-empty, non-heading line after the header: the summary
+    # sentence. The !~ /^#/ guard stops a section with no summary paragraph
+    # from emitting its "### Fixed" subheading as the one-liner.
+    gsub(/\r/, "")
+    printf "%s\t%s\n", ver, $0
+    grab = 0
+  }
+' CHANGELOG.md > "$APP/Contents/Resources/whatsnew.txt"
+
 # Strip quarantine (dev machines may have copied this repo) and ad-hoc sign
 # so the Keychain item and login item behave consistently between rebuilds.
 xattr -cr "$APP"

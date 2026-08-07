@@ -81,6 +81,50 @@ public struct PollStateMachine: Sendable {
         self.snapshots = ModelSnapshots(directory: historyDirectory)
     }
 
+    /// A snapshot of today's last known reading, rehydrated from history for
+    /// the cold-open path. Why: on a cold start the popover's first paint has
+    /// no fetch result yet (state is `.neverFetched`), and the loading branch
+    /// blanks the hero for 0.5–1s until the network lands. If history already
+    /// holds a reading keyed to TODAY's UTC day, we can show it immediately —
+    /// dimmed and labeled "Last reading" — so the user sees a number, not a
+    /// spinner.
+    ///
+    /// The hard invariant: NEVER show yesterday as today. The record's day
+    /// key must BE today's UTC day key, else this returns nil and the spinner
+    /// stays. Around the midnight seam the gateway's `spendDate` lags the
+    /// local clock, so a reading recorded late yesterday carries yesterday's
+    /// key and is correctly refused.
+    ///
+    /// - Returns: `(spentUSD, limitUSD, ageMinutes)` of the most recent
+    ///   observed hour today, or nil when there's no today-keyed record.
+    public func coldOpenSnapshot(now: Date) -> (spentUSD: Double, limitUSD: Double, ageMinutes: Int)? {
+        Self.coldOpenSnapshot(in: history, now: now)
+    }
+
+    /// The history-only form, for the App layer's loading path which holds a
+    /// `HistoryStore` but shouldn't need a whole machine to ask this.
+    public static func coldOpenSnapshot(in history: HistoryStore, now: Date) -> (spentUSD: Double, limitUSD: Double, ageMinutes: Int)? {
+        guard let today = history.day(utcDate: now) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let nowHour = calendar.component(.hour, from: now)
+
+        // The freshest reading is the last non-nil slot AT OR BEFORE the
+        // current hour. Normally a future slot can't exist for a today-keyed
+        // record — but a clock correction or a hand-edited history file could
+        // leave one, and the naive last-non-nil search would then read it and
+        // clamp its negative age to "just now". Capping at nowHour refuses
+        // future data: a reading from later "today" is never shown as current.
+        guard let lastHour = today.hourly.indices.reversed().first(where: { $0 <= nowHour && today.hourly[$0] != nil }),
+              let spent = today.hourly[lastHour] else { return nil }
+
+        // Age = whole minutes between the recorded hour-slot START and now.
+        // Slot times are hour-granular, so use the START of each hour; the
+        // cap above guarantees nowHour >= lastHour, so the value is honest.
+        let ageMinutes = (nowHour - lastHour) * 60 + calendar.component(.minute, from: now)
+        return (spentUSD: spent, limitUSD: today.limit, ageMinutes: ageMinutes)
+    }
+
     /// Feeds one fetch result into the machine and returns the resulting
     /// state (also available afterwards as `self.state`).
     ///

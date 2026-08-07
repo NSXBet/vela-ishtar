@@ -41,14 +41,18 @@ public final class PopoverView: NSView {
     private let sectionSpacing: CGFloat = 12
     private let hairlineHeight: CGFloat = 0.5
 
-    /// Version + what's-new shown in the top-right bullet's tooltip. The
-    /// version string comes from the bundle at runtime; the notes are a
-    /// hand-maintained one-liner per recent release — updated at release
-    /// time, so the tooltip can never drift ahead of the shipped binary.
-    private static let whatsNew: [(version: String, note: String)] = [
+    /// The version bullet's what's-new list. Read from the build-generated
+    /// Contents/Resources/whatsnew.txt (awk-extracted from CHANGELOG.md by
+    /// build.sh), so the bullet can never drift from the shipped release.
+    /// The static array below is only a fallback for runs without the build
+    /// artifact (e.g. a bare swiftc invocation that skipped the copy step).
+    private static var whatsNew: [(version: String, note: String)] {
+        WhatsNew.bundled(fallback: whatsNewFallback)
+    }
+    private static let whatsNewFallback: [(version: String, note: String)] = [
+        ("0.3.4", "cold-open fix — last reading shows instantly"),
         ("0.3.3", "version bullet tooltip works on the nonactivating panel"),
         ("0.3.2", "day strip reads as a week; version bullet"),
-        ("0.3.1", "trust patch — calendar-label days, ghost gaps, Other row"),
     ]
 
     public init() {
@@ -115,7 +119,10 @@ public final class PopoverView: NSView {
         latestModelSplit = todayModelSplit
         // If no draw-on animation is in flight, the curve must be fully
         // visible — poll-triggered updates shouldn't leave it half-drawn.
-        if !curveAnimationRunning && curveView.drawProgress == 0 {
+        // `drawProgress < 1` (not `== 0`) so the cold-open landing — where the
+        // shared curveView was never animated on — also flips to fully drawn,
+        // instead of sitting invisible until the next poll (v0.3.4 review).
+        if !curveAnimationRunning && curveView.drawProgress < 1 {
             curveView.drawProgress = 1
         }
 
@@ -323,14 +330,115 @@ public final class PopoverView: NSView {
         }
     }
 
-    /// Loading state for the very first open (state == .neverFetched):
-    /// spinner + "Connecting to AI Hub…" centered in the fixed 320x480 frame.
+    /// Loading state for the very first open (state == .neverFetched).
     /// main.swift calls this instead of building a separate throwaway panel,
     /// so the loading view and the first real render share ONE panel — the
-    /// only resize is the single shrink-to-content when real data lands.
-    func renderLoadingState() {
-        update(state: .neverFetched, history: HistoryStore(directory: URL(fileURLWithPath: "/")),
-               exhaustedAt: nil, lastSuccessAt: nil, now: Date())
+    /// only resize is the single settle-to-content when real data lands.
+    ///
+    /// Cold-open fix (v0.3.4): when history already holds a TODAY reading,
+    /// the loading view shows it dimmed + a "Last reading" caption instead of
+    /// a bare spinner — so the hero never sits blank for the 0.5–1s the first
+    /// fetch takes. The frame is sized to its FINAL height up front (before
+    /// any subview is laid out against `bounds.height`), then the hero,
+    /// caption, and curve render in the SAME slots the live path uses. The
+    /// live path is taller (it adds hairlines, models, footer), so the first
+    /// real render still settles once — but it's a content swap in place, and
+    /// the hero number the user is reading never moves or blanks out.
+    func renderLoadingState(history: HistoryStore, now: Date) {
+        subviews.forEach { $0.removeFromSuperview() }
+        managedSubviews.removeAll()
+
+        // Rehydrate today's last reading from history. nil on a true first
+        // run (or past the midnight seam) → keep the honest spinner.
+        let snapshot = PollStateMachine.coldOpenSnapshot(in: history, now: now)
+
+        // Open at the FINAL content height BEFORE laying out any subview. The
+        // row helpers position against `bounds.height` (bottom-anchored,
+        // non-flipped view), so the frame must already be the target height —
+        // otherwise everything is placed against the stale 480pt init bounds
+        // and clipped away when the panel shrinks. nil → spinner at 200.
+        let height: CGFloat = snapshot != nil
+            ? (12 + 36 + 18 + sectionSpacing + 14 + sectionSpacing + 92 + 12)
+            : 200
+        if abs(frame.height - height) > 1 {
+            setFrameSize(NSSize(width: 320, height: height))
+        }
+
+        // Same top margin + row stack as update()'s live path.
+        var yOffset: CGFloat = 12
+
+        if let snapshot {
+            yOffset += makeHeroRow(spent: snapshot.spentUSD, limit: snapshot.limitUSD, at: &yOffset)
+            // Caption takes the pace-sentence slot (same 18pt line height).
+            let age = snapshot.ageMinutes
+            let ageText = age < 1 ? "Last reading · just now"
+                : age < 60 ? "Last reading · \(age)m ago"
+                : "Last reading · \(age / 60)h ago"
+            yOffset += makePaceRow(ageText, at: &yOffset)
+            yOffset += sectionSpacing
+            // The real curve lane — today's history points, fully drawn. Same
+            // 92pt slot as the live curve so the open height is final.
+            yOffset += makeLoadingCurve(history: history, limit: snapshot.limitUSD, now: now, at: &yOffset)
+            addVersionBullet()
+            // Dimmed like a stale reading: it IS a cached figure until the
+            // first fetch confirms it. Everything except chrome.
+            for subview in managedSubviews where !(subview is NSButton) {
+                subview.alphaValue = 0.55
+            }
+        } else {
+            // True first run: no today reading to show. Centered spinner in
+            // the same content region the cold-open path occupies, so the
+            // panel opens at a matching height and the first real render is a
+            // clean swap, not a jump.
+            let spinner = NSProgressIndicator()
+            spinner.style = .spinning
+            spinner.controlSize = .small
+            spinner.frame = NSRect(x: (320 - 16) / 2, y: 110, width: 16, height: 16)
+            spinner.startAnimation(nil)
+            addSubview(spinner)
+            managedSubviews.append(spinner)
+
+            let connecting = NSTextField(labelWithString: "Connecting to AI Hub…")
+            connecting.font = NSFont.systemFont(ofSize: 13)
+            connecting.textColor = .secondaryLabelColor
+            connecting.alignment = .center
+            connecting.frame = NSRect(x: 0, y: 82, width: 320, height: 18)
+            addSubview(connecting)
+            managedSubviews.append(connecting)
+            addVersionBullet()
+        }
+        // Frame was set to the final height up front, before layout — no
+        // trailing resize here (that was the v0.3.4 blocker: subviews placed
+        // against stale bounds got clipped when the panel shrank).
+    }
+
+    /// The loading path's curve: today's recorded history points in the same
+    /// lane the live curve occupies (284×92, centered, below a TODAY label),
+    /// fully drawn — no draw-on animation, this is a cached preview and the
+    /// live open re-animates on top. Height includes the label so it matches
+    /// the live section's total.
+    private func makeLoadingCurve(history: HistoryStore, limit: Double, now: Date, at yOffset: inout CGFloat) -> CGFloat {
+        let labelHeight: CGFloat = 14
+        let label = NSTextField(labelWithString: "TODAY")
+        label.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
+        label.textColor = .labelColor.withAlphaComponent(0.42)
+        label.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - labelHeight, width: 50, height: labelHeight)
+        addSubview(label)
+        managedSubviews.append(label)
+
+        let curveY = bounds.height - yOffset - labelHeight - sectionSpacing - 92
+        let curve = CurveView(frame: NSRect(x: (320 - 284) / 2, y: curveY, width: 284, height: 92))
+        curve.drawProgress = 1
+        if let today = history.day(utcDate: now) {
+            var utcCalendar = Calendar(identifier: .gregorian)
+            utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+            let utcHour = utcCalendar.component(.hour, from: now)
+            curve.configure(hourly: today.hourly, limit: limit, nowHourUTC: utcHour, ghost: nil, drawGhostStroke: false)
+        }
+        addSubview(curve)
+        managedSubviews.append(curve)
+
+        return labelHeight + sectionSpacing + 92
     }
 
     private func makeHeroRow(spent: Double, limit: Double, isNeverFetched: Bool = false, at yOffset: inout CGFloat) -> CGFloat {
@@ -692,8 +800,15 @@ public final class PopoverView: NSView {
             // See comment above — the button re-reads status on the next
             // popover open, so a failed toggle just looks like no change.
         }
-        // Re-render the footer immediately so the checkmark follows reality.
-        if let panel = window as? PopoverPanel { panel.contentView?.needsDisplay = true }
+        // Re-render so the checkmark follows reality. The old code set
+        // needsDisplay, but the ✓ is baked into the button TITLE (makeFooter
+        // reads SMAppService status) — needsDisplay redraws pixels, it does
+        // not rebuild the title, so the mark stayed stale until the next
+        // poll. Rebuild via the same path periodChanged() uses; makeFooter
+        // re-reads the live status, so the checkmark is always true.
+        guard let history = latestHistory else { return }
+        update(state: latestState, history: history,
+               exhaustedAt: latestExhaustedAt, lastSuccessAt: latestSuccessAt, now: Date(), todayModelSplit: latestModelSplit)
     }
 
     /// Swaps the popover into token-entry mode. Deliberately does NOT copy

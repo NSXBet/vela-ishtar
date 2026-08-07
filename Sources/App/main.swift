@@ -61,6 +61,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // every poll so the health dot, timestamp, and banner stay true.
             // This also covers the loading state (state was .neverFetched):
             // the same PopoverView shrinks to content height once, in place.
+            //
+            // v0.3.4: while still .neverFetched, DON'T rebuild. A failed
+            // first poll keeps the state .neverFetched, and update()'s
+            // loading branch would wipe the rehydrated cold-open view for a
+            // spinner positioned for a 480pt panel — clipped on the short
+            // panel the cold-open path opens. renderLoadingState already
+            // rendered the right thing (cached reading dimmed, or the honest
+            // spinner); leave it up until real data (.fresh / .stale) lands.
+            if case .neverFetched = state { return }
             if let panel = self.popover, panel.isShown, let view = self.popoverView {
                 view.update(state: state, history: poller.machine.history,
                             exhaustedAt: poller.machine.exhaustedAt,
@@ -126,7 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.popover = nil
                 self.openPopover(relativeTo: controller, firstRunPrompt: "Paste your new AI Hub token.")
             }
-            view.renderLoadingState()
+            // Cold-open fix (v0.3.4): pass the loaded history + now so the
+            // loading view can show today's last reading dimmed instead of a
+            // blank spinner for the 0.5–1s the first fetch takes.
+            view.renderLoadingState(history: poller.machine.history, now: Date())
             let panel = PopoverPanel(contentView: view)
             self.popover = panel
             panel.show(relativeTo: controller.button)

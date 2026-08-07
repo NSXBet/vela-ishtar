@@ -9,7 +9,7 @@ usage at a glance. An instrument, not a scoreboard.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-137%20passing-30d158?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-147%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 [![Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-blue?style=flat-square)](CHANGELOG.md)
 
@@ -51,8 +51,8 @@ Click the pill. One panel, no tabs — hairlines and whitespace only.
 **Direct download (recommended):**
 
 ```bash
-curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.1.1/VelaIshtar-0.1.1.zip
-unzip VelaIshtar-0.1.1.zip -d /Applications/
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.3.4/VelaIshtar-0.3.4.zip
+unzip VelaIshtar-0.3.4.zip -d /Applications/
 open -a "Vela Ishtar"
 ```
 
@@ -135,9 +135,30 @@ Pure AppKit + Swift, zero dependencies, ~1,400 LOC. Builds with bare
 `VelaCore` unit tests.
 
 ```bash
-make test     # 137 unit tests (pace math, burn buffer, border dash, history)
+make test     # 147 unit tests (pace math, burn buffer, border dash, history)
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 ```
+
+## Release checklist
+
+Single source of truth for the version is `Info.plist`. Everything else
+(README badge, install URL, what's-new list) derives from it or from
+`CHANGELOG.md` at build time — edit those two files, never the derived
+bits by hand.
+
+1. Bump **both** `CFBundleShortVersionString` and `CFBundleVersion` in
+   `Info.plist` to the new version.
+2. Add a `## [x.y.z]` section to the top of `CHANGELOG.md`; the first
+   line after each header is the one-liner that ships in the version
+   bullet's what's-new list.
+3. `make test` — all green.
+4. `make release` — syncs the README (`readme-version`), rebuilds, and
+   zips `build/VelaIshtar-x.y.z.zip` with its SHA256.
+5. Commit, tag `vx.y.z`, push branch + tag.
+6. `gh release create vx.y.z build/VelaIshtar-x.y.z.zip …`, then bump
+   the cask in `NSXBet/homebrew-tap` (version + sha256).
+7. Verify the 3-way match: tag commit == release asset digest == cask
+   sha256.
 
 ## Privacy
 

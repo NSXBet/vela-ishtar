@@ -18,10 +18,13 @@ import QuartzCore
 /// dismiss(), isShown.
 @MainActor
 public final class PopoverPanel: NSPanel {
-    /// Fixed panel size, taken from the content view at init time. The
-    /// panel doesn't resize itself later -- content that needs a
-    /// different size gets a new PopoverPanel.
-    private let panelSize: NSSize
+    /// The size the panel should anchor at. Read LIVE from the panel's own
+    /// frame, not frozen at init: PopoverView.update() resizes the panel in
+    /// place as content height changes (hero vs. stale banner, model rows),
+    /// so a value captured at init goes stale within the first poll and the
+    /// next cold open would snap back to the birth height. Reading
+    /// `frame.size` keeps every show() anchored to the panel's real size.
+    private var panelSize: NSSize { frame.size }
 
     /// The status item button that anchored the panel on the most recent
     /// show() call. Local outside-click monitoring ignores clicks on this
@@ -39,11 +42,13 @@ public final class PopoverPanel: NSPanel {
     private var dismissGeneration = 0
 
     public init(contentView: NSView) {
-        panelSize = contentView.frame.size
+        // Birth size comes from the content view's frame; after super.init
+        // the live `panelSize` (above) reads the panel's own frame.
+        let birthSize = contentView.frame.size
 
         // Vibrancy background: .popover material is the exact system look
         // for a status-item popover (frosted, adapts to light/dark).
-        let effectView = NSVisualEffectView(frame: NSRect(origin: .zero, size: panelSize))
+        let effectView = NSVisualEffectView(frame: NSRect(origin: .zero, size: birthSize))
         effectView.material = .popover
         effectView.state = .active
         effectView.blendingMode = .behindWindow
@@ -52,7 +57,7 @@ public final class PopoverPanel: NSPanel {
         effectView.layer?.masksToBounds = true
 
         super.init(
-            contentRect: NSRect(origin: .zero, size: panelSize),
+            contentRect: NSRect(origin: .zero, size: birthSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -77,7 +82,9 @@ public final class PopoverPanel: NSPanel {
         self.contentView = effectView
 
         // The caller's content view is pinned edge-to-edge inside the
-        // vibrant background via Auto Layout, so it tracks panelSize.
+        // vibrant background via Auto Layout, so it tracks the panel's size —
+        // which is what makes the live `panelSize` (frame.size) reflect
+        // PopoverView's in-place resizes.
         contentView.translatesAutoresizingMaskIntoConstraints = false
         effectView.addSubview(contentView)
         NSLayoutConstraint.activate([
