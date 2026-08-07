@@ -11,6 +11,7 @@ usage at a glance. An instrument, not a scoreboard.
 ![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-137%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
+[![Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-blue?style=flat-square)](CHANGELOG.md)
 
 <img src="docs/assets/popover-dark.png" width="340" alt="Vela Ishtar popover">
 
