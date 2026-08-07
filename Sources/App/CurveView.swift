@@ -29,6 +29,11 @@ public final class CurveView: NSView {
     // v0.3.0 ghost: the median day's cumulative curve (same 24-slot shape),
     // drawn beneath today's. nil = no ghost (below the history gate).
     private var ghost: [Double?]? = nil
+    // The ghost ALWAYS joins the y-scale even when its stroke is suppressed
+    // (stale data): otherwise the scale would jump on every fresh↔stale flap,
+    // visibly resizing today's curve for a reason the user can't see. The
+    // stroke hides when stale; the scale stays put.
+    private var drawGhostStroke = true
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
@@ -41,11 +46,14 @@ public final class CurveView: NSView {
     /// Stores the day's data and triggers a redraw. `limit` and `hourly`
     /// come straight from HistoryStore.DayRecord; nowHourUTC positions the
     /// "now" tick. `ghost` is PaceEngine.ghostCurve's output (or nil).
-    public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int, ghost: [Double?]? = nil) {
+    /// `drawGhostStroke` suppresses ONLY the stroke (stale data) — the ghost
+    /// still contributes to the y-scale so the scale never flaps.
+    public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int, ghost: [Double?]? = nil, drawGhostStroke: Bool = true) {
         self.hourly = hourly
         self.limit = limit
         self.nowHourUTC = nowHourUTC
         self.ghost = ghost
+        self.drawGhostStroke = drawGhostStroke
         needsDisplay = true
     }
 
@@ -77,7 +85,7 @@ public final class CurveView: NSView {
     /// the shape is the sentence ("here's what a normal day looks like").
     /// Not clipped by drawProgress: the ghost is context, not the reveal.
     private func drawGhost(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
-        guard let ghost else { return }
+        guard let ghost, drawGhostStroke else { return }
         let points: [CGPoint] = ghost.enumerated().compactMap { hour, value in
             guard let value else { return nil }
             return CGPoint(x: x(hour), y: y(value))

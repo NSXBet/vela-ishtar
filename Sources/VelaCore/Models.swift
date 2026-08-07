@@ -123,14 +123,28 @@ public enum ISODate {
         return dateOnly.date(from: s)
     }
 
-    /// The canonical gateway-day key ("yyyy-MM-dd", UTC) for a spend_date in
-    /// ANY shape the API emits. The gateway has sent both a bare date
-    /// ("2026-08-06") and a full timestamp ("2026-08-07T00:00:00Z") for the
-    /// same logical day; keying stores by the raw string splits one day
-    /// across two keys and silently under-counts history. Everything that
-    /// uses spend_date as a dictionary key normalizes through here first.
-    /// Falls back to the raw string only if it can't be parsed at all.
+    /// The calendar-day label ("yyyy-MM-dd") a spend_date CARRIES, in any
+    /// shape the API emits: bare dates return verbatim, timestamps return
+    /// their first 10 characters. Why the prefix and not parse→reformat:
+    /// spend_date is the gateway's billing-day LABEL, not an instant — the
+    /// API has emitted both "2026-08-06" and "2026-08-07T00:00:00Z" for the
+    /// same logical day, and Models.swift's parse() handles numeric offsets
+    /// ("...+03:00") too. Parsing a timestamp as an instant and reformatting
+    /// in UTC would shift a non-UTC-midnight label onto the wrong day
+    /// ("2026-08-07T00:00:00+03:00" is the gateway's Aug 7, not UTC's Aug 6),
+    /// re-splitting one day across two history keys — the exact bug this
+    /// normalization exists to fix. Anything not matching the expected
+    /// shapes falls back to parse→UTC-format, then to the raw string.
     public static func dayKey(_ s: String) -> String {
+        // yyyy-MM-dd (bare date or the date portion of a timestamp).
+        if s.count >= 10 {
+            let prefix = s.prefix(10)
+            let digits = prefix.filter(\.isNumber)
+            if digits.count == 8, prefix.dropFirst(4).first == "-", prefix.dropFirst(7).first == "-" {
+                return String(prefix)
+            }
+        }
+        // Fallback for anything unexpected: parse as an instant, format UTC.
         guard let date = parse(s) else { return s }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!

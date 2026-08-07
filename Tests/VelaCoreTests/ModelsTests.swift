@@ -50,4 +50,23 @@ struct ModelsTests {
     func parsesDateOnly() {
         #expect(ISODate.parse("2026-08-01") != nil)
     }
+
+    @Test("dayKey keeps the gateway's calendar label, never the UTC instant's date")
+    func dayKeyTreatsSpendDateAsCalendarLabel() {
+        // Bare dates pass through verbatim.
+        #expect(ISODate.dayKey("2026-08-07") == "2026-08-07")
+        // Z-suffixed timestamps keep their date portion.
+        #expect(ISODate.dayKey("2026-08-07T00:00:00Z") == "2026-08-07")
+        // The regression this guards: a numeric-offset timestamp whose LOCAL
+        // date is the gateway's billing day must not be shifted onto the UTC
+        // instant's date — "the gateway's Aug 7" stays Aug 7 even though the
+        // instant is Aug 6 21:00 UTC. Parse→reformat-in-UTC returned
+        // "2026-08-06" here, splitting one gateway day across two keys.
+        #expect(ISODate.dayKey("2026-08-07T00:00:00+03:00") == "2026-08-07")
+        #expect(ISODate.dayKey("2026-08-06T23:00:00-03:00") == "2026-08-06")
+        // Fractional seconds + offset, the other observed wire shape.
+        #expect(ISODate.dayKey("2026-08-07T00:00:00.608728233Z") == "2026-08-07")
+        // Garbage falls back to the raw string (never crashes, never invents).
+        #expect(ISODate.dayKey("not-a-date") == "not-a-date")
+    }
 }

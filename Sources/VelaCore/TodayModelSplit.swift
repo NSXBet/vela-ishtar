@@ -69,7 +69,12 @@ public enum TodayModelSplitResult: Equatable, Sendable {
             case .monthChanged, .monthRegressed:
                 return "Per-model split resumes tomorrow (new month)"
             case .overAttributed:
-                return "Per-model split unavailable"
+                // The baseline was untrustworthy — almost always because the
+                // app wasn't running at yesterday's close, so yesterday's
+                // stored snapshot is stale and folds yesterday-afternoon
+                // spend into "today". Say THAT, not a permanent-sounding
+                // error: the split self-heals from tomorrow's baseline.
+                return "Per-model split needs one full day of the app running"
             case .noSpendYet:
                 return nil
             }

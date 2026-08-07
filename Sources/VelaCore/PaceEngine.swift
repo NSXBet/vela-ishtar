@@ -132,7 +132,8 @@ public enum PaceEngine {
         atHourUTC hour: Int,
         in days: [String: DayRecord],
         excluding todayKey: String,
-        minDays: Int = 5
+        minDays: Int = 5,
+        maxDays: Int = 14
     ) -> Double? {
         guard (0..<24).contains(hour) else { return nil }
         // Normalize the exclusion key: callers pass the gateway's raw
@@ -140,8 +141,13 @@ public enum PaceEngine {
         // history keys are canonical, so a raw full-ISO key would fail to
         // exclude today and pollute the median with today's own reading.
         let excludeKey = ISODate.dayKey(todayKey)
+        // The same ≤14-day recency window ghostCurve uses, so the sentence
+        // and the ghost can never disagree about what "a typical day" is:
+        // both track how the user spends NOW, not months-old behavior.
         let samples = days
             .filter { $0.key != excludeKey }
+            .sorted { $0.key > $1.key }
+            .prefix(maxDays)
             .compactMap { $0.value.hourly[hour] }
             .sorted()
         guard samples.count >= minDays else { return nil }

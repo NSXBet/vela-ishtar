@@ -369,15 +369,15 @@ public final class PopoverView: NSView {
         var utcCalendar = Calendar(identifier: .gregorian)
         utcCalendar.timeZone = TimeZone(identifier: "UTC")!
         let utcHour = utcCalendar.component(.hour, from: now)
-        // Ghost curve (v0.3.0): the median day behind today. Only when fresh —
-        // a stale response would pin the "now" tick against hours-old data.
-        let ghost: [Double?]?
-        if isFresh, let usage = usageResponse {
-            ghost = PaceEngine.ghostCurve(in: history.allDays, excluding: usage.dailyBudget.spendDate)
-        } else {
-            ghost = nil
-        }
-        curveView.configure(hourly: hourly, limit: limit, nowHourUTC: utcHour, ghost: ghost)
+        // Ghost curve (v0.3.0): the median day behind today. The ghost is
+        // COMPUTED whenever there's a response (so its peak always joins the
+        // y-scale — otherwise the scale would visibly jump on every
+        // fresh↔stale flap), but its STROKE only draws when fresh: a stale
+        // response would pin the "typical day" shape against hours-old data.
+        let ghost = usageResponse.map {
+            PaceEngine.ghostCurve(in: history.allDays, excluding: $0.dailyBudget.spendDate)
+        } ?? nil
+        curveView.configure(hourly: hourly, limit: limit, nowHourUTC: utcHour, ghost: ghost, drawGhostStroke: isFresh)
 
         addSubview(curveView)
         managedSubviews.append(curveView)

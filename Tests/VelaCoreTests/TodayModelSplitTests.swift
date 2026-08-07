@@ -206,7 +206,7 @@ struct TodayModelSplitTests {
         #expect(TodayModelSplitResult.Reason.baselineNotAdjacent.note == "Per-model split starts after the next midnight UTC")
         #expect(TodayModelSplitResult.Reason.monthChanged.note == "Per-model split resumes tomorrow (new month)")
         #expect(TodayModelSplitResult.Reason.monthRegressed.note == "Per-model split resumes tomorrow (new month)")
-        #expect(TodayModelSplitResult.Reason.overAttributed.note == "Per-model split unavailable")
+        #expect(TodayModelSplitResult.Reason.overAttributed.note == "Per-model split needs one full day of the app running")
         #expect(TodayModelSplitResult.Reason.noSpendYet.note == nil)
     }
 }

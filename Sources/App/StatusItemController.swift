@@ -63,10 +63,12 @@ public final class StatusItemController: NSObject {
 
     /// True when the status item's button window is occluded by the notch —
     /// the known adoption killer on notched MacBooks. Detection: the button's
-    /// window is either absent (hidden by the system) or its visible frame
-    /// is smaller than the pill needs. Conservative: any doubt = not clipped.
+    /// window is absent or hidden by the system. Failure direction matters:
+    /// an absent window reports CLIPPED (narrow is the safe failure — a
+    /// hairline where a full pill would fit costs nothing, a full pill
+    /// behind the notch is invisible spend data).
     private var isClipped: Bool {
-        guard let window = statusItem?.button?.window else { return false }
+        guard let window = statusItem?.button?.window else { return true }
         return !window.isVisible
     }
 
@@ -110,15 +112,25 @@ public final class StatusItemController: NSObject {
 
     /// Re-renders only if `state` or `burnBuffer` actually changed since the last call (or install()'s initial draw).
     public func render(state: PollState, burnBuffer: BurnBuffer) {
+        // The condensation level re-evaluates on EVERY call, before the
+        // unchanged-guard: clipping changes arrive with no event of their
+        // own, so a poll that returns an identical reading (common
+        // overnight) must still be able to shrink the pill — otherwise the
+        // notch-clipped state persists indefinitely, the exact failure the
+        // ladder exists to fix.
+        let width = effectivePillSize.width
+        if statusItem?.length != width {
+            statusItem?.length = width
+            if let button = statusItem?.button {
+                button.image = makeImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
+            }
+        }
         if let lastState, let lastBurnBuffer, lastState == state, lastBurnBuffer == burnBuffer {
             return
         }
         lastState = state
         lastBurnBuffer = burnBuffer
         guard let button = statusItem?.button else { return }
-        // The status item's length must follow the condensation level, or
-        // the system keeps reserving full width for a shrunken image.
-        statusItem?.length = effectivePillSize.width
         button.image = makeImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
         button.setAccessibilityValue(Self.accessibilityValue(for: state))
     }
@@ -252,7 +264,7 @@ public final class StatusItemController: NSObject {
             // The lane gets whatever width the amount doesn't need (6pt gap) --
             // a fixed-width lane overlapped long amounts like "$231.40".
             let amountWidth = drawsContents ? Self.amountWidth(for: state, compact: !drawsSparkline) : 0
-            let laneWidth = max(rect.width - 8 - 6 - amountWidth - 8 - rect.minX * 0, 0)
+            let laneWidth = max(rect.width - 8 - 6 - amountWidth - 8, 0)
             let sparklineLane = CGRect(x: rect.minX + 8, y: rect.minY + (rect.height - 14) / 2, width: laneWidth, height: 14)
 
             switch state {
