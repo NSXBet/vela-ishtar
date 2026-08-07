@@ -30,6 +30,10 @@ public struct HistoryStore: Sendable {
     private let directory: URL
     private var days: [String: DayRecord] = [:]
 
+    /// Read-only view of the loaded days (post-contamination-filter), keyed
+    /// by gateway spend_date. Exposed for PaceEngine's median-day benchmark.
+    public var allDays: [String: DayRecord] { days }
+
     // Computed, not `static let`: Calendar and DateFormatter are not
     // thread-safe to share, so building a fresh instance per call is the
     // safe choice here rather than caching one behind a lock.
@@ -78,7 +82,25 @@ public struct HistoryStore: Sendable {
 
         var day = days[spendDate] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
         day.limit = limit
-        day.hourly[hour] = spentToday
+        // Monotonic guard: a cumulative "spent today" reading never goes
+        // DOWN within a gateway day, so never overwrite an occupied slot
+        // with a smaller value. Two ways that could otherwise happen:
+        // (1) the gateway restates an hour downward by a few cents on the
+        // next poll, and (2) if the gateway's day boundary ever LEADS the
+        // local clock, a 00:30 poll would write a small value into hour 0
+        // of a day that already holds a large hour-23 reading — a visible
+        // right-to-left zigzag. Tolerance mirrors isContaminated's so an
+        // honest tiny restatement doesn't wedge the slot forever.
+        if let existing = day.hourly[hour] {
+            let tolerance = max(existing * 0.01, 0.50)
+            if spentToday < existing - tolerance {
+                historyLog.notice("ignored downward restatement for \(spendDate, privacy: .public) hour \(hour, privacy: .public): \(existing, privacy: .public) -> \(spentToday, privacy: .public)")
+            } else {
+                day.hourly[hour] = spentToday
+            }
+        } else {
+            day.hourly[hour] = spentToday
+        }
         if day.exhaustedAt == nil, spentToday >= limit {
             day.exhaustedAt = date
         }
@@ -134,6 +156,14 @@ public struct HistoryStore: Sendable {
         }
 
         days = decoded
+
+        // Persist the cleaned history so the dropped days are gone for good —
+        // otherwise every launch re-reads the same contaminated file, re-drops
+        // the same days, and re-fires the log line above. Best-effort: a
+        // failed save just means we clean again next launch.
+        if !contaminated.isEmpty {
+            try? save()
+        }
     }
 
     /// True when a day's observed hourly readings decrease by more than the

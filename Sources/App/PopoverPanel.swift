@@ -141,6 +141,12 @@ public final class PopoverPanel: NSPanel {
     /// Positions the panel top-center under `button`'s bottom-center (4pt
     /// gap), then shows it with the open animation (or instantly, under
     /// Reduce Motion).
+    ///
+    /// Open choreography (v0.2.0): the panel fades in while translating 4pt
+    /// downward from the pill — a subtle "settling" motion that reads as
+    /// premium without being distracting. The curve draw-on animation
+    /// (PopoverView.animateCurveDrawOn) starts 60ms into this, driven by
+    /// AppDelegate. Close: 80ms fade-out (see dismiss()).
     public func show(relativeTo button: NSStatusBarButton?) {
         anchorButton = button
         let targetFrame = anchoredFrame(relativeTo: button)
@@ -151,10 +157,9 @@ public final class PopoverPanel: NSPanel {
             alphaValue = 1
             orderFrontRegardless()
         } else {
-            // Start scaled to 96% of the target size, anchored at the same
-            // top-center point as the final frame, so the scale reads as
-            // "growing from the pill" rather than growing from a corner.
-            let anchor = CGPoint(x: targetFrame.midX, y: targetFrame.maxY)
+            // Start 4pt above the target (so the panel "settles" downward)
+            // and at 96% scale, anchored at the same top-center point.
+            let anchor = CGPoint(x: targetFrame.midX, y: targetFrame.maxY + 4)
             let startSize = NSSize(width: targetFrame.width * 0.96, height: targetFrame.height * 0.96)
             let startFrame = NSRect(
                 x: anchor.x - startSize.width / 2,
@@ -172,7 +177,7 @@ public final class PopoverPanel: NSPanel {
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 self.animator().alphaValue = 1
                 // NSWindow's animator proxy supports setFrame(_:display:)
-                // directly -- this is what makes the "scale" part work.
+                // directly -- this is what makes the "settle" part work.
                 self.animator().setFrame(targetFrame, display: true)
             }
         }
@@ -266,6 +271,9 @@ public final class PopoverPanel: NSPanel {
     /// nonactivating panel never becomes key, so there's no
     /// windowDidResignKey to hook -- the click monitors below are the
     /// only dismissal signal.
+    ///
+    /// Close choreography (v0.2.0): 80ms fade-out before orderOut, so the
+    /// panel doesn't just vanish. Skipped under Reduce Motion.
     public func dismiss() {
         // Capture BEFORE orderOut: only a panel that actually held key
         // status (the token flow's keyboard-owning shows) should hand
@@ -273,7 +281,22 @@ public final class PopoverPanel: NSPanel {
         // not deactivate an app it never activated.
         let wasKey = isKeyWindow
         removeClickMonitors()
-        orderOut(nil)
+
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            // 80ms fade, then orderOut. NSAnimationContext completion fires
+            // even if the window is already off-screen (no-op).
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.08
+                self.animator().alphaValue = 0
+            }, completionHandler: { [weak self] in
+                self?.orderOut(nil)
+                // Restore alpha for the next show() — orderOut preserves it.
+                self?.alphaValue = 1
+            })
+        } else {
+            orderOut(nil)
+        }
+
         // If the token flow activated us (showForKeyboardInput /
         // showCenteredForKeyboardInput), hand activation back so the app
         // returns to being a quiet background agent -- an LSUIElement app

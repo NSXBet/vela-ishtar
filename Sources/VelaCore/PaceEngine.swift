@@ -77,7 +77,13 @@ public enum PaceEngine {
     /// clock — in the running app sentence() is called right after
     /// verdict() with the same instant, so this stays accurate in
     /// production while letting tests pin a deterministic `now`.
-    public static func sentence(for verdict: PaceVerdict, now: Date = Date()) -> String {
+    ///
+    /// `typical` is an optional median-day benchmark (from `medianSpend`).
+    /// When non-nil AND the verdict is the inert pace-past-midnight branch,
+    /// the generic line is replaced by a comparison against the user's own
+    /// history. Every other branch ignores `typical` — those lines already
+    /// say something concrete.
+    public static func sentence(for verdict: PaceVerdict, now: Date = Date(), typical: (median: Double, spent: Double)? = nil) -> String {
         switch verdict {
         case .idle:
             return "No spend yet today."
@@ -92,9 +98,48 @@ public enum PaceEngine {
             let midnightBoundary = Self.nextMidnightUTC(after: now)
             if eta < midnightBoundary {
                 return "At this pace you'll reach budget around \(localTime(eta))."
+            } else if let typical {
+                // Median-day comparison (v0.2.0): replaces the inert
+                // "On pace to stay under budget today." with a benchmark
+                // from the user's own history. Whole-dollar formatting
+                // matches the hero suffix style.
+                return String(format: "Typical day by now: $%.0f — you're at $%.0f.", typical.median, typical.spent)
             } else {
                 return "On pace to stay under budget today."
             }
+        }
+    }
+
+    /// Median cumulative spend at UTC hour `hour` across eligible past days.
+    /// Returns nil when fewer than `minDays` eligible days have a reading at
+    /// that hour — the caller must then fall back to the generic line.
+    ///
+    /// A day is eligible iff (1) it's present in the post-load `days` dict
+    /// (contaminated days were already dropped by load()), (2) its key is
+    /// NOT today's gateway spend_date (the in-progress day's mid-hour
+    /// reading would bias the median), and (3) `hourly[hour] != nil`.
+    ///
+    /// Caveat: record() overwrites an occupied hour slot, so a past day's
+    /// hourly[H] is the LAST reading observed within that hour (≈ end-of-hour
+    /// cumulative), while today's spend is mid-hour. This slightly flatters
+    /// the user early in each hour — a bounded, one-sided bias of at most
+    /// one hour of burn. Not worth interpolating past days to mid-hour.
+    public static func medianSpend(
+        atHourUTC hour: Int,
+        in days: [String: DayRecord],
+        excluding todayKey: String,
+        minDays: Int = 5
+    ) -> Double? {
+        let samples = days
+            .filter { $0.key != todayKey }
+            .compactMap { $0.value.hourly[hour] }
+            .sorted()
+        guard samples.count >= minDays else { return nil }
+        let mid = samples.count / 2
+        if samples.count % 2 == 1 {
+            return samples[mid]
+        } else {
+            return (samples[mid - 1] + samples[mid]) / 2
         }
     }
 

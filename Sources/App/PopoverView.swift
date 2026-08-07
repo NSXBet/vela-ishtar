@@ -121,8 +121,29 @@ public final class PopoverView: NSView {
                 now: now,
                 exhaustedAt: exhaustedAt
             )
-            let paceSentence = PaceEngine.sentence(for: paceVerdict, now: now)
+            // Median-day benchmark: compare today's spend against the median
+            // of past days at this same UTC hour. Only used when the pace
+            // sentence would otherwise be the inert "stay under budget" line.
+            var utcCalendar = Calendar(identifier: .gregorian)
+            utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+            let hourUTC = utcCalendar.component(.hour, from: now)
+            let median = PaceEngine.medianSpend(
+                atHourUTC: hourUTC,
+                in: history.allDays,
+                excluding: usage.dailyBudget.spendDate
+            )
+            let typical = median.map { (median: $0, spent: usage.dailyBudget.spentUSD) }
+            let paceSentence = PaceEngine.sentence(for: paceVerdict, now: now, typical: typical)
             yOffset += makePaceRow(paceSentence, at: &yOffset)
+
+            // 2b. Month runway: "On track for ~$X this month." — linear
+            // extrapolation of the month's spend so far. Suppressed during
+            // the first 7 days of the month (too noisy to be honest) and
+            // when there's no spend yet. A quiet second line under the
+            // pace sentence, same 13pt secondary style.
+            if let runway = monthRunway(monthSpent: usage.currentMonth.totalCostUSD, now: now) {
+                yOffset += makePaceRow(runway, at: &yOffset)
+            }
         } else {
             yOffset += makePaceRow("No data yet.", at: &yOffset)
         }
@@ -283,6 +304,22 @@ public final class PopoverView: NSView {
         return 18
     }
 
+    /// Linear month extrapolation: "On track for ~$X this month."
+    /// Suppressed during the first 7 days of the month — projecting from 2
+    /// days of data produces a confidently wrong number, which is worse than
+    /// no number. Also suppressed when there's no spend yet ($0.00).
+    /// Returns nil when the line should not appear.
+    private func monthRunway(monthSpent: Double, now: Date) -> String? {
+        guard monthSpent > 0 else { return nil }
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        let dayOfMonth = utcCalendar.component(.day, from: now)
+        guard dayOfMonth >= 7 else { return nil }
+        let daysInMonth = utcCalendar.range(of: .day, in: .month, for: now)?.count ?? 30
+        let projected = monthSpent / Double(dayOfMonth) * Double(daysInMonth)
+        return String(format: "On track for ~$%.0f this month.", projected)
+    }
+
     private func makeHairline(at yOffset: inout CGFloat) -> CGFloat {
         let hairline = NSView(frame: NSRect(x: sidePadding, y: bounds.height - yOffset - hairlineHeight, width: 320 - 2 * sidePadding, height: hairlineHeight))
         hairline.wantsLayer = true
@@ -393,37 +430,34 @@ public final class PopoverView: NSView {
         addSubview(bar)
         managedSubviews.append(bar)
 
-        // Cost (13pt, tabular right, 52 wide)
+        // Cost (13pt, tabular right, 52 wide; sits left of the 64pt
+        // efficiency column, so its x accounts for the wider right column).
         let costLabel = NSTextField(labelWithString: String(format: "$%.2f", cost))
         costLabel.font = NSFont.systemFont(ofSize: 13)
         costLabel.textColor = .labelColor
         costLabel.alignment = .right
-        costLabel.frame = NSRect(x: 320 - sidePadding - 52 - 56, y: bounds.height - yOffset - rowHeight, width: 52, height: rowHeight)
+        costLabel.frame = NSRect(x: 320 - sidePadding - 52 - 64, y: bounds.height - yOffset - rowHeight, width: 52, height: rowHeight)
         addSubview(costLabel)
         managedSubviews.append(costLabel)
 
-        // Tokens (11pt, 40% alpha, right, 56 wide)
-        let tokensFormatted: String
-        if tokens >= 1_000_000 {
-            let millions = tokens / 1_000_000
-            var formatted = String(format: "%.2fM", millions)
-            // Trim trailing zeros but never the decimal point ("5.00M" -> "5M",
-            // "4.96M" stays) — the naive trim turned "5.00M" into "5.M".
-            while formatted.hasSuffix("0") && !formatted.hasSuffix(".0M") { formatted.removeLast() }
-            if formatted.hasSuffix(".0M") { formatted = formatted.replacingOccurrences(of: ".0M", with: "M") }
-            tokensFormatted = formatted
-        } else if tokens >= 1_000 {
-            let thousands = tokens / 1_000
-            tokensFormatted = String(format: "%.0fK", thousands)
+        // Efficiency (11pt, 40% alpha, right, 64 wide): cost per million
+        // tokens. Raw token counts are a vanity metric — two models can burn
+        // the same tokens at wildly different prices, so $/1M tok is the
+        // number that actually compares them. Tokens == 0 (no usage) shows
+        // an em-dash rather than a divide-by-zero or a meaningless $0.00.
+        let efficiencyText: String
+        if tokens > 0 {
+            let perMillion = cost / (tokens / 1_000_000)
+            efficiencyText = String(format: "$%.2f/M", perMillion)
         } else {
-            tokensFormatted = String(format: "%.0f", tokens)
+            efficiencyText = "—"
         }
 
-        let tokenLabel = NSTextField(labelWithString: tokensFormatted)
+        let tokenLabel = NSTextField(labelWithString: efficiencyText)
         tokenLabel.font = NSFont.systemFont(ofSize: 11)
         tokenLabel.textColor = .labelColor.withAlphaComponent(0.40)
         tokenLabel.alignment = .right
-        tokenLabel.frame = NSRect(x: 320 - sidePadding - 56, y: bounds.height - yOffset - rowHeight, width: 56, height: rowHeight)
+        tokenLabel.frame = NSRect(x: 320 - sidePadding - 64, y: bounds.height - yOffset - rowHeight, width: 64, height: rowHeight)
         addSubview(tokenLabel)
         managedSubviews.append(tokenLabel)
 

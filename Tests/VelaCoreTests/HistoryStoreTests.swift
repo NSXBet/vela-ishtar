@@ -88,6 +88,53 @@ struct HistoryStoreTests {
         #expect(store.day(spendDate: "2026-08-01")?.hourly[0] == 160.42)
     }
 
+    // MARK: - Monotonic guard (v0.2.0)
+
+    @Test("record never overwrites an occupied slot with a smaller value (same-slot restatement)")
+    func recordIgnoresDownwardRestatementInSameSlot() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let t1 = ISODate.parse("2026-08-01T14:10:00Z")!
+        let t2 = ISODate.parse("2026-08-01T14:40:00Z")!
+        store.record(spentToday: 100.0, limit: 400, at: t1, spendDate: "2026-08-01")
+        // Same UTC hour (14), gateway restates the reading DOWN by $30.
+        // A cumulative total never decreases, so the slot must keep 100.
+        store.record(spentToday: 70.0, limit: 400, at: t2, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[14] == 100.0)
+    }
+
+    @Test("record allows an upward write into an occupied slot (normal growth)")
+    func recordAllowsUpwardWriteInSameSlot() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let t1 = ISODate.parse("2026-08-01T14:10:00Z")!
+        let t2 = ISODate.parse("2026-08-01T14:40:00Z")!
+        store.record(spentToday: 100.0, limit: 400, at: t1, spendDate: "2026-08-01")
+        store.record(spentToday: 131.5, limit: 400, at: t2, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[14] == 131.5)
+    }
+
+    @Test("record keeps a tiny downward restatement within tolerance from wedging the slot")
+    func recordKeepsTinyRestatementWithinTolerance() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let t1 = ISODate.parse("2026-08-01T14:10:00Z")!
+        let t2 = ISODate.parse("2026-08-01T14:40:00Z")!
+        store.record(spentToday: 100.0, limit: 400, at: t1, spendDate: "2026-08-01")
+        // A $0.30 dip (0.3%, under the 1%-of-existing tolerance) is written
+        // through so the slot doesn't get stuck slightly high forever.
+        store.record(spentToday: 99.70, limit: 400, at: t2, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[14] == 99.70)
+    }
+
+    @Test("record still stamps exhaustedAt on the first crossing even when the slot write is guarded")
+    func recordStampsExhaustedAtWithGuard() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let t1 = ISODate.parse("2026-08-01T14:10:00Z")!
+        store.record(spentToday: 50.0, limit: 400, at: t1, spendDate: "2026-08-01")
+        // A same-hour poll that reaches the limit (upward) must still set exhaustedAt.
+        let t2 = ISODate.parse("2026-08-01T14:40:00Z")!
+        store.record(spentToday: 400.0, limit: 400, at: t2, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.exhaustedAt == t2)
+    }
+
     // MARK: - Contaminated-day filter (v0.1.2)
 
     @Test("load drops a day whose spend decreases sharply mid-day (pre-fix contaminated data)")
@@ -246,5 +293,69 @@ struct HistoryStoreTests {
         let lateHour = ISODate.parse("2026-08-01T23:00:00Z")!
         store.record(spentToday: 10, limit: 50, at: lateHour, spendDate: "2026-08-01")
         #expect(store.day(utcDate: lateHour)?.hourly[23] == 10)
+    }
+
+    // MARK: - allDays accessor (v0.2.0)
+
+    @Test("allDays exposes the post-filter dict for PaceEngine's median benchmark")
+    func allDaysExposesFilteredDict() throws {
+        let directory = Self.freshDirectory()
+        var store = HistoryStore(directory: directory)
+
+        // Record 5 clean past days + today.
+        let pastDates = ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05"]
+        for (i, dateStr) in pastDates.enumerated() {
+            let t = ISODate.parse("\(dateStr)T14:00:00Z")!
+            store.record(spentToday: Double(10 + i * 10), limit: 400, at: t, spendDate: dateStr)
+        }
+        // Today (in-progress).
+        let today = ISODate.parse("2026-08-06T14:00:00Z")!
+        store.record(spentToday: 999, limit: 400, at: today, spendDate: "2026-08-06")
+        try store.save()
+
+        // Load into a fresh instance — allDays must include all 6 days.
+        var reader = HistoryStore(directory: directory)
+        try reader.load()
+        #expect(reader.allDays.count == 6)
+
+        // Median at hour 14 excluding today: [10, 20, 30, 40, 50] → 30.
+        let median = PaceEngine.medianSpend(atHourUTC: 14, in: reader.allDays, excluding: "2026-08-06")
+        #expect(median == 30)
+    }
+
+    @Test("a contaminated past day is dropped by load and absent from allDays, so it can never feed the median")
+    func allDaysOmitsContaminatedDays() throws {
+        let directory = Self.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // Write 4 clean days + 1 contaminated day (decreasing series) as
+        // a single JSON fixture — avoids JSONSerialization round-trip issues.
+        let cleanDays = (0..<4).map { i -> String in
+            let dateStr = "2026-08-0\(i + 1)"
+            let value = 10.0 + Double(i) * 10.0
+            var h = Array(repeating: "null", count: 24)
+            h[14] = "\(value)"
+            return """
+            "\(dateStr)":{"hourly":[\(h.joined(separator: ","))],"limit":400,"exhaustedAt":null}
+            """
+        }
+        var contaminatedHourly = Array(repeating: "null", count: 24)
+        contaminatedHourly[0] = "160.42"; contaminatedHourly[1] = "160.42"; contaminatedHourly[2] = "160.42"
+        contaminatedHourly[7] = "15.33"; contaminatedHourly[8] = "31.60"
+        let contaminated = """
+        "2026-08-05":{"hourly":[\(contaminatedHourly.joined(separator: ","))],"limit":400,"exhaustedAt":null}
+        """
+        let json = "{" + (cleanDays + [contaminated]).joined(separator: ",") + "}"
+        try json.data(using: .utf8)!.write(to: directory.appendingPathComponent("history.json"))
+
+        var reader = HistoryStore(directory: directory)
+        try reader.load()
+
+        // Contaminated day dropped: only 4 clean days remain.
+        #expect(reader.allDays.count == 4)
+        #expect(reader.allDays["2026-08-05"] == nil)
+
+        // 4 days < 5-day gate → median is nil.
+        #expect(PaceEngine.medianSpend(atHourUTC: 14, in: reader.allDays, excluding: "2026-08-06") == nil)
     }
 }
