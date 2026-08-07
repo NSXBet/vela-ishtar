@@ -29,7 +29,11 @@ anything — because there's no longer a height difference to animate.
   against a bug that can no longer occur — so they're gone. The rare
   content-driven resize that remains (a stale banner appearing, the first
   live render settling over the loading view) is a plain synchronous snap,
-  which is all it ever needed to be.
+  which is all it ever needed to be. (The latest-tap-only rebuild guard
+  survived the cleanup — a rapid double-tap's stale rebuild could otherwise
+  land mid-way through the second tap's indicator slide. Under Reduce
+  Motion the switch now rebuilds immediately, since there's no slide to
+  wait past.)
 
 ## [0.4.2] — 2026-08-07
 
