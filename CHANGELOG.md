@@ -4,6 +4,22 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.3.3] — 2026-08-07
+
+The version bullet's tooltip now actually shows.
+
+### Fixed
+
+- **Version bullet tooltip works on the nonactivating panel.** The popover
+  is a borderless NSPanel that never becomes key, and AppKit's native
+  `toolTip` only resolves through the key window — so hovering the dot
+  silently showed nothing in 0.3.2. The tip is now a custom floating card:
+  a 400ms discoverability delay, placed beside the popover (never over the
+  hero numbers, flipping left on a right-anchored menu bar), with a quick
+  fade in and a snappier fade out. Respects Reduce Motion. The bullet also
+  shows before the first poll lands, so an offline first run can still
+  answer "what am I running".
+
 ## [0.3.2] — 2026-08-07
 
 Legibility patch: the strip reads as a week, and the app can tell you what
@@ -151,6 +167,7 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[0.3.3]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.3
 [0.3.2]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.2
 [0.3.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.1
 [0.3.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.0

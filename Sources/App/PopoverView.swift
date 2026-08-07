@@ -46,9 +46,9 @@ public final class PopoverView: NSView {
     /// hand-maintained one-liner per recent release — updated at release
     /// time, so the tooltip can never drift ahead of the shipped binary.
     private static let whatsNew: [(version: String, note: String)] = [
+        ("0.3.3", "version bullet tooltip works on the nonactivating panel"),
         ("0.3.2", "day strip reads as a week; version bullet"),
         ("0.3.1", "trust patch — calendar-label days, ghost gaps, Other row"),
-        ("0.3.0", "memory — ghost curve, 7-day strip, per-model Today"),
     ]
 
     public init() {
@@ -101,6 +101,10 @@ public final class PopoverView: NSView {
             connecting.frame = NSRect(x: 0, y: 210, width: 320, height: 18)
             addSubview(connecting)
             managedSubviews.append(connecting)
+            // Chrome, not data: the version bullet shows even before the
+            // first poll lands (offline first-run is exactly when a bug
+            // report needs "what am I running").
+            addVersionBullet()
             return
         }
         latestResponse = usageResponse
@@ -649,23 +653,20 @@ public final class PopoverView: NSView {
         return button
     }
 
-    /// The top-right version bullet: a 6pt dot, tooltip = "vX.Y.Z" plus the
-    /// embedded what's-new list. NSView.toolTip gives native hover behavior
-    /// for free — no tracking areas to manage across the full-rebuild
-    /// update cycle. The dot's alpha matches the footer's quiet register.
+    /// The top-right version bullet: a 6pt dot that shows "vX.Y.Z" plus the
+    /// embedded what's-new list on hover. Custom-drawn tip (VersionBulletView)
+    /// because this popover is a nonactivating panel — native tooltips never
+    /// fire on windows that can't become key (the v0.3.2 report).
     private func addVersionBullet() {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let size: CGFloat = 6
-        let margin: CGFloat = 10
-        let bullet = NSView(frame: NSRect(x: 320 - margin - size, y: bounds.height - margin - size, width: size, height: size))
-        bullet.wantsLayer = true
-        bullet.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.35).cgColor
-        bullet.layer?.cornerRadius = size / 2
+        let hitSize: CGFloat = 20
+        let margin: CGFloat = 6
 
-        var lines = ["Vela Ishtar v\(version)", ""]
-        lines += Self.whatsNew.map { "\($0.version) — \($0.note)" }
-        bullet.toolTip = lines.joined(separator: "\n")
-
+        let bullet = VersionBulletView(version: version, notes: Self.whatsNew)
+        // bounds.width, not the 320 literal: during the 96%-scale open
+        // animation the view is narrower, and a hardcoded 320 can push the
+        // bullet outside the layer-masked content and swallow mouseEntered.
+        bullet.frame = NSRect(x: bounds.width - margin - hitSize, y: bounds.height - margin - hitSize, width: hitSize, height: hitSize)
         addSubview(bullet)
         managedSubviews.append(bullet)
     }
