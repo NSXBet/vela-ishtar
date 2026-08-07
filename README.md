@@ -51,8 +51,8 @@ Click the pill. One panel, no tabs — hairlines and whitespace only.
 **Direct download (recommended):**
 
 ```bash
-curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.4.1/VelaIshtar-0.4.1.zip
-unzip VelaIshtar-0.4.1.zip -d /Applications/
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.4.2/VelaIshtar-0.4.2.zip
+unzip VelaIshtar-0.4.2.zip -d /Applications/
 open -a "Vela Ishtar"
 ```
 

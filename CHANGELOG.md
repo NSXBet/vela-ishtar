@@ -4,6 +4,22 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.4.2] — 2026-08-07
+
+Motion polish, take two: the tab switch is now a true crossfade morph.
+
+### Fixed
+
+- **The Today / Month switch no longer resizes under you.** 0.4.1 crossfaded
+  the old period's snapshot away while the panel frame was still animating —
+  but the rebuild had already happened, so the live rows re-laid-out against
+  the interpolating panel height on every frame, and the bottom of the card
+  visibly re-flowed. The switch is now a morph: both periods are rendered to
+  bitmaps, the panel snaps to its final size while fully covered (invisible),
+  and the old card crossfades into the new one over content that never moves.
+  The only motion is the fade itself. A failsafe cleanup guarantees no frozen
+  overlay can linger on the panel. Reduce Motion still snaps instantly.
+
 ## [0.4.1] — 2026-08-07
 
 Motion polish: the Today / Month switch is now one coordinated transition.
@@ -246,6 +262,7 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[0.4.2]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.2
 [0.4.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.1
 [0.4.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.0
 [0.3.4]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.4

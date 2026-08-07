@@ -49,9 +49,9 @@ public final class PopoverView: NSView {
         WhatsNew.bundled(fallback: whatsNewFallback)
     }
     private static let whatsNewFallback: [(version: String, note: String)] = [
+        ("0.4.2", "motion polish — tab switch is a true crossfade morph"),
         ("0.4.1", "motion polish — tab switch is one smooth transition"),
         ("0.4.0", "motion release — 60fps curve, sliding tabs, settling card"),
-        ("0.3.4", "cold-open fix — last reading shows instantly"),
     ]
 
     public init() {
@@ -933,20 +933,21 @@ public final class PopoverView: NSView {
     /// as an index.
     ///
     /// The rebuild is deferred past the indicator's 0.2s slide: update() begins
-    /// by removing ALL subviews (PopoverView.update line ~76), so rebuilding
-    /// synchronously would destroy the switcher mid-slide and the indicator
-    /// would jump instead of gliding. Letting the slide commit first keeps the
-    /// motion visible; the rebuild then re-asserts the same selection
-    /// (positioned, not re-slid) on the fresh switcher.
+    /// by removing ALL subviews, so rebuilding synchronously would destroy the
+    /// switcher mid-slide and the indicator would jump instead of gliding.
+    /// Letting the slide commit first keeps the motion visible; the rebuild
+    /// then re-asserts the same selection (positioned, not re-slid) on the
+    /// fresh switcher.
     ///
-    /// v0.4.1: the rebuild used to be a bare deferred update() — which both
-    /// recreated the switcher (a visible indicator blink) AND fired the card's
-    /// settle animation against rows that had just been torn down, so the whole
-    /// card shook. Now the switch is ONE coordinated motion: snapshot the old
-    /// period's card, rebuild the new period underneath (resize block silenced
-    /// via periodTransitioning), then settle the panel height and crossfade the
-    /// snapshot away on a single timeline. The eye sees: indicator glides,
-    /// content crossfades, card edge settles — nothing mid-flight.
+    /// v0.4.2: v0.4.1 crossfaded a snapshot of the OLD period away while the
+    /// panel frame ANIMATED to its new height — but the rebuild had already
+    /// happened, so the live (bottom-anchored) rows re-laid-out against the
+    /// interpolating bounds.height on every frame. The snapshot hid the top
+    /// of the swap; the bottom region visibly re-flowed. That's the clash the
+    /// user reported. The fix is a MORPH, not a rebuild-under-a-resizing-frame:
+    /// render BOTH periods to bitmaps, snap the panel to its final frame
+    /// instantly (invisible — it's fully covered), then crossfade old→new over
+    /// content that never moves. The only visible motion is the fade itself.
     private func periodSelected(_ index: Int) {
         selectedPeriod = (index == 0) ? .today : .month
         guard let history = latestHistory else { return }
@@ -961,11 +962,14 @@ public final class PopoverView: NSView {
         }
     }
 
-    /// Runs the period rebuild under a snapshot of the old content, then
-    /// settles the panel and fades the snapshot away. Falls back to a plain
-    /// update() whenever animation is impossible or unwanted (no panel, Reduce
-    /// Motion, another resize already in flight) — the data is never held
-    /// hostage to the choreography.
+    /// Morphs the popover from the old period's content to the new one's.
+    /// Both periods are rendered to bitmaps; the panel is snapped to its final
+    /// frame while fully covered (so the snap is invisible); the new bitmap is
+    /// placed at full opacity and the old one crossfades away on top. Because
+    /// the panel never animates its frame here, the live bottom-anchored rows
+    /// never re-lay-out mid-motion — the v0.4.1 clash is designed out, not
+    /// patched over. Falls back to a plain update() whenever animation is
+    /// impossible or unwanted — the data is never hostage to the choreography.
     @MainActor
     private func animatePeriodTransition(state: PollState, history: HistoryStore) {
         let runUpdate = {
@@ -983,55 +987,100 @@ public final class PopoverView: NSView {
 
         periodTransitioning = true
 
-        // Snapshot the OLD period's content, top-anchored — same idiom as the
-        // card-settle overlay above (.minYMargin pins the top in bottom-up
-        // window coords). Force a deterministic render first so the bitmap is
-        // a complete frame; on any snapshot failure, just rebuild plainly.
+        // 1. Bitmap A: the OLD period's card, rendered deterministically.
         layoutSubtreeIfNeeded()
         displayIfNeeded()
-        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
+        guard let repA = bitmapImageRepForCachingDisplay(in: bounds) else {
             periodTransitioning = false
             runUpdate()
             return
         }
-        cacheDisplay(in: bounds, to: rep)
-        let snapshotImage = NSImage(size: bounds.size)
-        snapshotImage.addRepresentation(rep)
-        let snapshot = NSImageView(image: snapshotImage)
-        snapshot.frame = NSRect(x: 0, y: effectView.bounds.height - bounds.height,
-                                width: bounds.width, height: bounds.height)
-        snapshot.autoresizingMask = [.minYMargin]
-        // Same cross-motion guard as the resize path: the snapshot bypasses
-        // the curve's reveal mask, so clear it to keep the two in agreement.
+        cacheDisplay(in: bounds, to: repA)
+        let imageA = NSImage(size: bounds.size)
+        imageA.addRepresentation(repA)
+        // The bitmap paths below bypass the curve's reveal mask — clear it so
+        // old snapshot, new snapshot, and live curve all agree.
         curveView.layer?.mask = nil
-        effectView.addSubview(snapshot, positioned: .above, relativeTo: self)
 
-        // Rebuild at the new period UNDERNEATH the snapshot. The resize block
-        // in update() takes its synchronous path (periodTransitioning = true),
-        // which sets the view's final size but leaves the panel frame to us.
+        // 2. Rebuild at the new period. The resize block takes its synchronous
+        //    path (periodTransitioning = true): it sets the view's final size
+        //    but leaves the panel frame to us.
         runUpdate()
+        layoutSubtreeIfNeeded()
+        displayIfNeeded()
 
-        // Settle the panel to its new height (top edge anchored) and crossfade
-        // the snapshot away — one timeline, so the card edge and the content
-        // swap read as a single motion. Height unchanged collapses this to a
-        // pure content crossfade (the frame animation is a no-op).
-        var panelFrame = panel.frame
-        let delta = frame.height - panelFrame.height
-        panelFrame.size.height = frame.height
-        panelFrame.origin.y -= delta
+        // 3. Bitmap B: the NEW period's card, rendered NOW (before it has ever
+        //    been composited on screen) so the crossfade's destination already
+        //    exists as pixels.
+        guard let repB = bitmapImageRepForCachingDisplay(in: bounds) else {
+            periodTransitioning = false
+            // The rebuild already landed; just snap the panel to match.
+            snapPanel(panel, toViewHeight: frame.height)
+            return
+        }
+        cacheDisplay(in: bounds, to: repB)
+        let imageB = NSImage(size: bounds.size)
+        imageB.addRepresentation(repB)
+
+        // 4. Snap the panel to its final frame INSTANTLY. From here the panel
+        //    is fully covered by bitmaps, so the user never sees the snap —
+        //    and, crucially, no animation means the live rows never re-lay-out
+        //    against an interpolating height.
+        snapPanel(panel, toViewHeight: frame.height)
+
+        // 5. Place B (the new period) at full opacity, top-anchored, covering
+        //    the live content. Then A (the old period) on top of B, and fade
+        //    A away: the eye reads old crossfading into new, nothing else moves.
+        let viewB = NSImageView(image: imageB)
+        viewB.frame = NSRect(x: 0, y: effectView.bounds.height - bounds.height,
+                             width: bounds.width, height: bounds.height)
+        viewB.autoresizingMask = [.minYMargin]
+        effectView.addSubview(viewB, positioned: .above, relativeTo: self)
+
+        let viewA = NSImageView(image: imageA)
+        viewA.frame = NSRect(x: 0, y: effectView.bounds.height - imageA.size.height,
+                             width: imageA.size.width, height: imageA.size.height)
+        viewA.autoresizingMask = [.minYMargin]
+        effectView.addSubview(viewA, positioned: .above, relativeTo: viewB)
+
+        var cleanedUp = false
+        let cleanup = {
+            guard !cleanedUp else { return }
+            cleanedUp = true
+            viewA.removeFromSuperview()
+            viewB.removeFromSuperview()
+            self.periodTransitioning = false
+        }
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.25
+            context.duration = 0.2
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            panel.animator().setFrame(panelFrame, display: false)
-            snapshot.animator().alphaValue = 0
-        }, completionHandler: { [weak self, weak snapshot] in
+            viewA.animator().alphaValue = 0
+        }, completionHandler: {
             // Main thread, but the closure type isn't main-actor-annotated —
             // same assumeIsolated bridge as finishResizeAnimation.
-            MainActor.assumeIsolated {
-                snapshot?.removeFromSuperview()
-                self?.periodTransitioning = false
-            }
+            MainActor.assumeIsolated { cleanup() }
         })
+        // Failsafe: if the completion ever DOESN'T fire (e.g. orderOut aborts
+        // the window animation), don't leave two overlay bitmaps sitting on the
+        // retained panel — re-opening would show a frozen old card. 1s is far
+        // past the 0.2s fade; cleanup is idempotent so the normal path is
+        // unaffected.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self, self.periodTransitioning else { return }
+            cleanup()
+        }
+    }
+
+    /// Snaps the panel to the given content height, top edge anchored
+    /// (origin.y pre-adjusted), without animation. Used by the period morph:
+    /// the panel reaches its final size while fully covered by bitmaps.
+    @MainActor
+    private func snapPanel(_ panel: NSPanel, toViewHeight height: CGFloat) {
+        var panelFrame = panel.frame
+        let delta = height - panelFrame.height
+        panelFrame.size.height = height
+        panelFrame.origin.y -= delta
+        panel.setFrame(panelFrame, display: false, animate: false)
     }
 
     /// Aggregates model usage over the selected window. Month: the API's
