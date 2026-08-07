@@ -415,7 +415,13 @@ public final class CurveView: NSView {
             .font: font,
             .foregroundColor: NSColor.labelColor,
         ])
-        let textSize = attributed.size()
+        // Measure with a probe label's fittingSize, NOT attributed.size(): the
+        // attributed string's tight glyph box under-measures by ~4.5pt (75.1 vs
+        // 80.0 for "3 pm · $35.00"), which clipped the trailing money on screen.
+        // The label's own fittingSize is the width the text actually needs.
+        let probe = NSTextField(labelWithString: "")
+        probe.attributedStringValue = attributed
+        let textSize = probe.fittingSize
         let padding: CGFloat = 7
         let cardWidth = textSize.width + padding * 2
         let cardHeight = textSize.height + padding * 2
@@ -462,12 +468,9 @@ public final class CurveView: NSView {
             panel.contentView?.addSubview(label)
         }
         label.attributedStringValue = attributed
-        // attributed.size() is the tight glyph bounding box — a hair under the
-        // field's own fitting width (75.1 vs 80.0 for "3 pm · $35.00"). Give
-        // the label 2pt of slack so the last glyph never clips on a fractional
-        // pixel; the panel is sized from the same width, so the extra sits
-        // inside the card's padding.
-        label.frame = NSRect(x: padding, y: padding, width: textSize.width + 2, height: textSize.height)
+        // textSize is now the label's OWN fittingSize (measured by the probe
+        // above), so the frame is exactly wide enough — no slack guesswork.
+        label.frame = NSRect(x: padding, y: padding, width: textSize.width, height: textSize.height)
 
         // Anchor beside the dot: prefer right, flip left near the lane's right
         // edge; vertically centered on the dot. Clamp inside the screen.
