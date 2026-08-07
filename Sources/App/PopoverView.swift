@@ -78,10 +78,13 @@ public final class PopoverView: NSView {
     /// blank air), so the section is the same height whichever tab is up —
     /// the second half of the never-resize-on-switch guarantee above.
     private static let maxModelRows = 5
-    /// One model row's height (must match makeModelRow's rowHeight). The
-    /// padding loop adds this per empty slot; keep them in sync or the two
-    /// periods drift by a few points and the card breathes on a switch.
-    private static let modelRowSlotHeight: CGFloat = 24
+    /// One model row's FULL stride: makeModelRow's 24pt row + its 8pt of air
+    /// (it returns rowHeight + 8). The padding loop adds this per empty slot
+    /// and makeTodayTotalRow claims maxModelRows × it, so every models-block
+    /// branch lands on exactly maxModelRows × stride — v0.4.3's first cut used
+    /// the bare rowHeight and under-charged rendered rows by 8pt each, which
+    /// made a Today-total ↔ Month switch resize the card again.
+    private static let modelRowSlotHeight: CGFloat = 32
 
     @MainActor
     public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date, todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)) {
@@ -283,9 +286,10 @@ public final class PopoverView: NSView {
                 modelRowsRendered += 1
             }
         }
-        // Pad the block out to its constant height. A slot row is 24pt of
-        // blank air — invisible, but it keeps the models section (and so the
-        // whole card) the same height whether Today shows 1 model or 5.
+        // Pad the block out to its constant height. A slot is one full row
+        // stride (32pt) of blank air — invisible, but it keeps the models
+        // section (and so the whole card) the same height whether Today
+        // shows 1 model or 5, and equal to the total row's claimed block.
         while modelRowsRendered < Self.maxModelRows {
             yOffset += Self.modelRowSlotHeight
             modelRowsRendered += 1
@@ -620,11 +624,11 @@ public final class PopoverView: NSView {
     /// isn't shown (stale data, or the split is unavailable today). `note`
     /// overrides the quiet sub-line; nil falls back to the plain "monthly
     /// only" explanation.
-    /// v0.4.3: returns the FULL models-block height (maxModelRows × slot), not
-    /// just the row+note's visible height — the caller pads to a constant 5
-    /// rows, and the total row + note already visually occupy the top of the
-    /// block, so its consumed height must claim the whole thing to keep the
-    /// card equal-height across periods.
+    /// v0.4.3: returns the FULL models-block height (maxModelRows × the 32pt
+    /// row stride), not just the row+note's visible height — the split and
+    /// Month branches consume one stride per rendered row plus one per padded
+    /// slot, so the total row + note must claim the same 160pt or a tab
+    /// switch in the stale/unavailable state would resize the card.
     private func makeTodayTotalRow(spent: Double, note: String? = nil, at yOffset: inout CGFloat) -> CGFloat {
         let rowHeight: CGFloat = 24
         let totalLabel = NSTextField(labelWithString: String(format: "$%.2f across all models", spent))
@@ -885,11 +889,23 @@ public final class PopoverView: NSView {
     /// the indicator slide plus an in-place content rebuild. Nothing resizes,
     /// nothing re-flows, the top edge and the curve never move — and the whole
     /// class of shake/clip bugs is designed out rather than animated around.
+    ///
+    /// The generation guard survives the cleanup: rapid Today→Month→Today taps
+    /// each queue a deferred rebuild, and without the guard the FIRST tap's
+    /// rebuild would land mid-way through the SECOND tap's indicator slide and
+    /// destroy the switcher mid-glide — the exact blink the defer exists to
+    /// prevent. Only the latest tap's rebuild runs. Under Reduce Motion the
+    /// indicator snaps instantly (no slide to wait past), so the defer drops
+    /// to zero rather than adding 210ms of dead latency.
+    private var periodRebuildGeneration = 0
     private func periodSelected(_ index: Int) {
         selectedPeriod = (index == 0) ? .today : .month
         guard let history = latestHistory else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.21) { [weak self] in
-            guard let self else { return }
+        periodRebuildGeneration += 1
+        let generation = periodRebuildGeneration
+        let delay: TimeInterval = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.21
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.periodRebuildGeneration == generation else { return }
             // Re-render from the REAL last state — never re-wrap latestResponse
             // as .fresh. If the gateway is unreachable the reading is .stale,
             // and the banner / amber dot / dimming must survive a period toggle.
