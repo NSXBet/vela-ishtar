@@ -28,9 +28,47 @@ public final class StatusItemController: NSObject {
     private var lastState: PollState?
     private var lastBurnBuffer: BurnBuffer?
 
-    // Pill geometry, in points -- matches the locked design spec.
-    private static let pillSize = NSSize(width: 88, height: 22)
+    // Pill geometry, in points -- matches the locked design spec. The three
+    // widths are the condensation ladder (v0.3.0): full shows sparkline +
+    // exact amount, compact drops the sparkline and rounds the amount,
+    // hairline is the border gauge alone.
+    private static let pillSizeFull = NSSize(width: 88, height: 22)
+    private static let pillSizeCompact = NSSize(width: 52, height: 22)
+    private static let pillSizeHairline = NSSize(width: 26, height: 22)
     private static let cornerRadius: CGFloat = 6
+
+    /// The condensation level. `automatic` follows notch clipping; the user
+    /// can pin a level from the right-click menu. Persisted across launches.
+    private enum CalmLevel: Int {
+        case automatic = 0, full, compact, hairline
+    }
+    private static let calmLevelDefaultsKey = "vela.calmLevel"
+    private var calmLevel: CalmLevel {
+        get { CalmLevel(rawValue: UserDefaults.standard.integer(forKey: Self.calmLevelDefaultsKey)) ?? .automatic }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.calmLevelDefaultsKey) }
+    }
+
+    /// The effective pill size for the current calm level + clipping state.
+    /// Automatic resolves to hairline when the status item is being clipped
+    /// (notch), else full. An explicit user choice always wins.
+    private var effectivePillSize: NSSize {
+        switch calmLevel {
+        case .full: return Self.pillSizeFull
+        case .compact: return Self.pillSizeCompact
+        case .hairline: return Self.pillSizeHairline
+        case .automatic:
+            return isClipped ? Self.pillSizeHairline : Self.pillSizeFull
+        }
+    }
+
+    /// True when the status item's button window is occluded by the notch —
+    /// the known adoption killer on notched MacBooks. Detection: the button's
+    /// window is either absent (hidden by the system) or its visible frame
+    /// is smaller than the pill needs. Conservative: any doubt = not clipped.
+    private var isClipped: Bool {
+        guard let window = statusItem?.button?.window else { return false }
+        return !window.isVisible
+    }
 
     public override init() {
         super.init()
@@ -55,6 +93,7 @@ public final class StatusItemController: NSObject {
         button.setAccessibilityValue("no data yet")
 
         let initialBuffer = BurnBuffer()
+        statusItem?.length = effectivePillSize.width
         button.image = makeImage(state: .neverFetched, burnBuffer: initialBuffer, appearance: button.effectiveAppearance)
         lastState = .neverFetched
         lastBurnBuffer = initialBuffer
@@ -77,6 +116,9 @@ public final class StatusItemController: NSObject {
         lastState = state
         lastBurnBuffer = burnBuffer
         guard let button = statusItem?.button else { return }
+        // The status item's length must follow the condensation level, or
+        // the system keeps reserving full width for a shrunken image.
+        statusItem?.length = effectivePillSize.width
         button.image = makeImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
         button.setAccessibilityValue(Self.accessibilityValue(for: state))
     }
@@ -120,6 +162,28 @@ public final class StatusItemController: NSObject {
 
         menu.addItem(.separator())
 
+        // Calm level (v0.3.0): how much chrome the pill shows. A submenu of
+        // four mutually-exclusive choices with a checkmark on the active one.
+        let calmMenu = NSMenu()
+        let choices: [(String, CalmLevel)] = [
+            ("Automatic", .automatic),
+            ("Full", .full),
+            ("Compact", .compact),
+            ("Minimal", .hairline),
+        ]
+        for (title, level) in choices {
+            let item = NSMenuItem(title: title, action: #selector(calmLevelPicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = level.rawValue
+            item.state = (level == calmLevel) ? .on : .off
+            calmMenu.addItem(item)
+        }
+        let calmItem = NSMenuItem(title: "Pill size", action: nil, keyEquivalent: "")
+        calmItem.submenu = calmMenu
+        menu.addItem(calmItem)
+
+        menu.addItem(.separator())
+
         let quitItem = NSMenuItem(title: "Quit Vela Ishtar", action: #selector(quitApp), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -154,13 +218,29 @@ public final class StatusItemController: NSObject {
         NSApp.terminate(nil)
     }
 
+    /// Applies a calm-level choice from the Pill size submenu and forces a
+    /// redraw (render() would skip it — neither state nor burnBuffer changed).
+    @objc private func calmLevelPicked(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? Int, let level = CalmLevel(rawValue: raw) else { return }
+        calmLevel = level
+        statusItem?.length = effectivePillSize.width
+        guard let button = statusItem?.button, let state = lastState, let buffer = lastBurnBuffer else { return }
+        button.image = makeImage(state: state, burnBuffer: buffer, appearance: button.effectiveAppearance)
+    }
+
     // MARK: - Rendering
 
     /// Pure render: turns a (state, burnBuffer) pair into an NSImage under
     /// the given appearance. Used by install() and by the snapshot tool
     /// (which fabricates arbitrary states without a real UsagePoller).
     public func makeImage(state: PollState, burnBuffer: BurnBuffer, appearance: NSAppearance) -> NSImage {
-        let image = NSImage(size: Self.pillSize, flipped: false) { rect in
+        let size = effectivePillSize
+        // What the current level draws: hairline is the border gauge alone;
+        // compact adds a rounded amount; full adds the sparkline + exact amount.
+        let drawsContents = size.width > Self.pillSizeHairline.width
+        let drawsSparkline = size.width >= Self.pillSizeFull.width
+
+        let image = NSImage(size: size, flipped: false) { rect in
             // Resolve semantic colors under the TARGET appearance, not the ambient one -- snapshots need to force light/dark.
             var (ink, secondary, orange, red) = (NSColor.labelColor, NSColor.secondaryLabelColor, NSColor.systemOrange, NSColor.systemRed)
             appearance.performAsCurrentDrawingAppearance {
@@ -171,7 +251,7 @@ public final class StatusItemController: NSObject {
             let (usedPercent, limitEnabled) = Self.budgetFields(for: state)
             // The lane gets whatever width the amount doesn't need (6pt gap) --
             // a fixed-width lane overlapped long amounts like "$231.40".
-            let amountWidth = Self.amountWidth(for: state)
+            let amountWidth = drawsContents ? Self.amountWidth(for: state, compact: !drawsSparkline) : 0
             let laneWidth = max(rect.width - 8 - 6 - amountWidth - 8 - rect.minX * 0, 0)
             let sparklineLane = CGRect(x: rect.minX + 8, y: rect.minY + (rect.height - 14) / 2, width: laneWidth, height: 14)
 
@@ -183,8 +263,8 @@ public final class StatusItemController: NSObject {
                 ctx.saveGState()
                 ctx.setAlpha(0.55)
                 Self.drawBorder(rect: rect, usedPercent: usedPercent, limitEnabled: limitEnabled, ink: ink, orange: orange, red: red)
-                Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink)
-                Self.drawAmount(pillRect: rect, text: Self.amountText(for: state), color: secondary)
+                if drawsSparkline { Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink) }
+                if drawsContents { Self.drawAmount(pillRect: rect, text: Self.amountText(for: state, compact: !drawsSparkline), color: secondary) }
                 ctx.restoreGState()
 
             case .fresh, .neverFetched:
@@ -194,8 +274,8 @@ public final class StatusItemController: NSObject {
                 Self.drawBorder(rect: rect, usedPercent: usedPercent, limitEnabled: limitEnabled, ink: ink, orange: orange, red: red)
                 ctx.saveGState()
                 ctx.setAlpha(exhausted ? 0.55 : 1.0)
-                Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink)
-                Self.drawAmount(pillRect: rect, text: Self.amountText(for: state), color: ink)
+                if drawsSparkline { Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink) }
+                if drawsContents { Self.drawAmount(pillRect: rect, text: Self.amountText(for: state, compact: !drawsSparkline), color: ink) }
                 ctx.restoreGState()
             }
             return true
@@ -216,12 +296,16 @@ public final class StatusItemController: NSObject {
         }
     }
 
-    private static func amountText(for state: PollState) -> String {
+    private static func amountText(for state: PollState, compact: Bool = false) -> String {
         switch state {
         case .neverFetched:
             return "—"
         case .fresh(let usage), .stale(let usage, _):
-            return String(format: "$%.2f", usage.dailyBudget.spentUSD)
+            // Compact mode rounds to whole dollars — at 52pt wide there's no
+            // room for cents, and "$231" reads fine at a glance.
+            return compact
+                ? String(format: "$%.0f", usage.dailyBudget.spentUSD)
+                : String(format: "$%.2f", usage.dailyBudget.spentUSD)
         }
     }
 
@@ -338,9 +422,9 @@ public final class StatusItemController: NSObject {
     /// Right-aligned, 8pt from the pill's right edge, vertically centered.
     /// Measured width of the amount text at the pill's font, so the
     /// sparkline lane can give it exactly the room it needs.
-    private static func amountWidth(for state: PollState) -> CGFloat {
+    private static func amountWidth(for state: PollState, compact: Bool = false) -> CGFloat {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        let text = amountText(for: state)
+        let text = amountText(for: state, compact: compact)
         return ceil((text as NSString).size(withAttributes: [.font: font]).width)
     }
 

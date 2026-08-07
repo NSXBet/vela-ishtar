@@ -64,7 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let panel = self.popover, panel.isShown, let view = self.popoverView {
                 view.update(state: state, history: poller.machine.history,
                             exhaustedAt: poller.machine.exhaustedAt,
-                            lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
+                            lastSuccessAt: poller.machine.lastSuccessAt, now: Date(),
+                            todayModelSplit: poller.machine.todayModelSplit)
             }
         }
 
@@ -201,7 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // jump from the initial 480pt frame down to content.
         view.update(state: poller.machine.state, history: poller.machine.history,
                     exhaustedAt: poller.machine.exhaustedAt,
-                    lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
+                    lastSuccessAt: poller.machine.lastSuccessAt, now: Date(),
+                    todayModelSplit: poller.machine.todayModelSplit)
         let panel = self.popover ?? PopoverPanel(contentView: view)
         self.popover = panel
         panel.show(relativeTo: controller.button)

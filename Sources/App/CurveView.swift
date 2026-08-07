@@ -26,6 +26,9 @@ public final class CurveView: NSView {
     private var hourly: [Double?] = Array(repeating: nil, count: 24)
     private var limit: Double = 0
     private var nowHourUTC: Int = 0
+    // v0.3.0 ghost: the median day's cumulative curve (same 24-slot shape),
+    // drawn beneath today's. nil = no ghost (below the history gate).
+    private var ghost: [Double?]? = nil
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
@@ -37,11 +40,12 @@ public final class CurveView: NSView {
 
     /// Stores the day's data and triggers a redraw. `limit` and `hourly`
     /// come straight from HistoryStore.DayRecord; nowHourUTC positions the
-    /// "now" tick.
-    public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int) {
+    /// "now" tick. `ghost` is PaceEngine.ghostCurve's output (or nil).
+    public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int, ghost: [Double?]? = nil) {
         self.hourly = hourly
         self.limit = limit
         self.nowHourUTC = nowHourUTC
+        self.ghost = ghost
         needsDisplay = true
     }
 
@@ -49,11 +53,12 @@ public final class CurveView: NSView {
         let lane = bounds
 
         // Y scale: driven by the day's data, not the budget ceiling, so
-        // the curve occupies real vertical space. The $400 ceiling line still
-        // reads as "far above" via the dotted hairline (drawn at the lane top
-        // when off-scale). Floor at 25% of limit so a tiny-peak day doesn't
-        // zoom to absurdity.
-        let peak = hourly.compactMap { $0 }.max() ?? 0
+        // the curve occupies real vertical space. The ghost's peak joins
+        // the scale too — a big median day must not push the ghost off the
+        // top of the lane. The $400 ceiling line still reads as "far above"
+        // via the dotted hairline (drawn at the lane top when off-scale).
+        // Floor at 25% of limit so a tiny-peak day doesn't zoom to absurdity.
+        let peak = max(hourly.compactMap { $0 }.max() ?? 0, ghost?.compactMap { $0 }.max() ?? 0)
         let yMax = max(limit, peak, 1) * 1.08
         func y(for value: Double) -> CGFloat { lane.minY + lane.height * CGFloat(value / yMax) }
         func x(for hour: Int) -> CGFloat { lane.minX + lane.width * CGFloat(hour) / 23.0 }
@@ -62,8 +67,30 @@ public final class CurveView: NSView {
         // dotted line to the lane top so it still reads as "way up there".
         let ceilingY = min(y(for: limit), lane.maxY - 8)
         drawBudgetCeiling(in: lane, y: ceilingY)
+        drawGhost(in: lane, x: x, y: y)
         drawCurve(in: lane, x: x, y: y)
         drawNowTick(in: lane, x: x(for: nowHourUTC))
+    }
+
+    /// The median-day ghost: same polyline shape as today's curve, 20%
+    /// opacity hairline, drawn BENEATH the main curve. No fill, no label —
+    /// the shape is the sentence ("here's what a normal day looks like").
+    /// Not clipped by drawProgress: the ghost is context, not the reveal.
+    private func drawGhost(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
+        guard let ghost else { return }
+        let points: [CGPoint] = ghost.enumerated().compactMap { hour, value in
+            guard let value else { return nil }
+            return CGPoint(x: x(hour), y: y(value))
+        }
+        guard points.count > 1 else { return }
+
+        let stroke = NSBezierPath()
+        stroke.move(to: points[0])
+        points.dropFirst().forEach { stroke.line(to: $0) }
+        stroke.lineWidth = Self.hairlineWidth
+        stroke.lineJoinStyle = .round
+        NSColor.labelColor.withAlphaComponent(0.20).setStroke()
+        stroke.stroke()
     }
 
     /// Dotted hairline at the budget ceiling, with a faint "$400"-style

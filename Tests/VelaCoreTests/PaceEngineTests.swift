@@ -310,4 +310,71 @@ struct PaceEngineTests {
         // Gate at 5 → 6.04 ≥ 5 → shown.
         #expect(PaceEngine.monthRunway(monthSpent: 620, now: now, minElapsedDays: 5) != nil)
     }
+
+    // MARK: - ghostCurve (v0.3.0)
+
+    /// Builds a DayRecord with the same cumulative value at every hour
+    /// 0...maxHour — a full observed day up to that hour.
+    private func makeFullDay(valueAtHour: [Int: Double]) -> DayRecord {
+        var hourly: [Double?] = Array(repeating: nil, count: 24)
+        for (hour, value) in valueAtHour { hourly[hour] = value }
+        return DayRecord(hourly: hourly, limit: 100, exhaustedAt: nil)
+    }
+
+    @Test("ghostCurve returns nil below the 5-day gate")
+    func ghostCurveBelowGate() {
+        var days: [String: DayRecord] = [:]
+        for i in 1...4 {
+            days["2026-08-0\(i)"] = makeFullDay(valueAtHour: [10: 100])
+        }
+        #expect(PaceEngine.ghostCurve(in: days, excluding: "2026-08-09") == nil)
+    }
+
+    @Test("ghostCurve is the per-hour-slot median across the most recent ≤14 days")
+    func ghostCurveMedianPerSlot() {
+        // 5 days, all with hour-10 values 10/20/30/40/50 → median 30.
+        // Hour 11 values 100/200/300/400/500 → median 300.
+        var days: [String: DayRecord] = [:]
+        let values: [Double] = [10, 20, 30, 40, 50]
+        for (i, v) in values.enumerated() {
+            days["2026-08-0\(i + 1)"] = makeFullDay(valueAtHour: [10: v, 11: v * 10])
+        }
+        let ghost = PaceEngine.ghostCurve(in: days, excluding: "2026-08-09")
+        #expect(ghost?[10] == 30)
+        #expect(ghost?[11] == 300)
+        // Hours with no readings stay nil (gaps stay gaps).
+        #expect(ghost?[12] == nil)
+    }
+
+    @Test("ghostCurve ignores days older than the 14-day window")
+    func ghostCurveRecencyWindow() {
+        var days: [String: DayRecord] = [:]
+        // 15 eligible days; the OLDEST has a wildly different value and
+        // must be excluded by the recency window.
+        for i in 1...15 {
+            let key = String(format: "2026-08-%02d", i)
+            days[key] = makeFullDay(valueAtHour: [10: i == 1 ? 9999 : 100])
+        }
+        let ghost = PaceEngine.ghostCurve(in: days, excluding: "2026-08-20")
+        // Window keeps the 14 most recent (08-02 ... 08-15); all are 100.
+        #expect(ghost?[10] == 100)
+    }
+
+    @Test("ghostCurve excludes today's key and skips slots with too few samples")
+    func ghostCurveExcludesTodayAndSparseSlots() {
+        var days: [String: DayRecord] = [:]
+        for i in 1...5 {
+            let key = String(format: "2026-08-0%d", i)
+            // Hour 10 present in all 5 days; hour 11 present in only 4.
+            var slots = [10: 100.0]
+            if i < 5 { slots[11] = 200 }
+            days[key] = makeFullDay(valueAtHour: slots)
+        }
+        // Today's key must never feed the ghost.
+        days["2026-08-09"] = makeFullDay(valueAtHour: [10: 9999])
+        let ghost = PaceEngine.ghostCurve(in: days, excluding: "2026-08-09")
+        #expect(ghost?[10] == 100)
+        // Hour 11 has only 4 samples < 5 → nil.
+        #expect(ghost?[11] == nil)
+    }
 }

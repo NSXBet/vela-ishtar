@@ -135,16 +135,65 @@ public enum PaceEngine {
         minDays: Int = 5
     ) -> Double? {
         guard (0..<24).contains(hour) else { return nil }
+        // Normalize the exclusion key: callers pass the gateway's raw
+        // spend_date, which arrives in two shapes for the same logical day —
+        // history keys are canonical, so a raw full-ISO key would fail to
+        // exclude today and pollute the median with today's own reading.
+        let excludeKey = ISODate.dayKey(todayKey)
         let samples = days
-            .filter { $0.key != todayKey }
+            .filter { $0.key != excludeKey }
             .compactMap { $0.value.hourly[hour] }
             .sorted()
         guard samples.count >= minDays else { return nil }
-        let mid = samples.count / 2
-        if samples.count % 2 == 1 {
-            return samples[mid]
+        return median(of: samples)
+    }
+
+    /// The ghost curve for v0.3.0: the per-hour-slot median across the
+    /// `maxDays` most recent eligible past days, as a 24-slot array parallel
+    /// to `DayRecord.hourly`. Returns nil when NO hour has enough samples
+    /// (the caller then draws no ghost). Slots with fewer than `minDays`
+    /// samples stay nil — gaps stay gaps, the ghost simply doesn't draw
+    /// there.
+    ///
+    /// Eligibility mirrors `medianSpend` (post-load days only, today's key
+    /// excluded). The recency window keeps the ghost tracking how the user
+    /// spends NOW, not how they spent months ago — gateway spend_date keys
+    /// sort lexicographically, so "most recent" is a plain string sort.
+    public static func ghostCurve(
+        in days: [String: DayRecord],
+        excluding todayKey: String,
+        minDays: Int = 5,
+        maxDays: Int = 14
+    ) -> [Double?]? {
+        let excludeKey = ISODate.dayKey(todayKey)
+        let eligible = days
+            .filter { $0.key != excludeKey }
+            .sorted { $0.key > $1.key }   // most recent first
+            .prefix(maxDays)
+            .map(\.value)
+        guard !eligible.isEmpty else { return nil }
+
+        var ghost: [Double?] = Array(repeating: nil, count: 24)
+        var anySlot = false
+        for hour in 0..<24 {
+            let samples = eligible.compactMap { $0.hourly[hour] }.sorted()
+            if samples.count >= minDays {
+                ghost[hour] = median(of: samples)
+                anySlot = true
+            }
+        }
+        return anySlot ? ghost : nil
+    }
+
+    /// Median of an already-sorted, non-empty array. Even counts average the
+    /// two middle values. Single shared implementation so medianSpend and
+    /// ghostCurve can never drift apart.
+    private static func median(of sorted: [Double]) -> Double {
+        let mid = sorted.count / 2
+        if sorted.count % 2 == 1 {
+            return sorted[mid]
         } else {
-            return (samples[mid - 1] + samples[mid]) / 2
+            return (sorted[mid - 1] + sorted[mid]) / 2
         }
     }
 

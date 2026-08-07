@@ -101,10 +101,19 @@ Optional: toggle **Start at login** in the popover footer.
   `~/Library/Application Support/VelaIshtar/history.json` — it powers
   the curve and gets richer the longer you run the app.
 
-**Models period switcher:** Today shows your real daily total from the
-API (per-model breakdown is monthly only on the gateway); Month ranks
-models by current-month cost. A Week segment was removed for now — the
-gateway's `/v1/me/usage` has no weekly per-model endpoint.
+**Models period switcher:** Today derives a per-model split by
+differencing the gateway's month-cumulative figures against a locally
+stored snapshot of yesterday — reconciled against your real daily total,
+so the rows always tie (any truncation residue lands in an explicit
+"Other" row). The split unlocks after the app has observed one midnight
+UTC; before that, Today shows your real daily total from the API. Month
+ranks models by current-month cost. A Week segment was removed for now —
+the gateway's `/v1/me/usage` has no weekly per-model endpoint.
+
+**Comparison surfaces** (the ghost curve behind today's, the median-day
+sentence, and the 7-day strip) switch on after ~5 days of clean local
+history — the app prefers silence over a confident number computed from
+thin data.
 
 **Rebuilding from source:** each `./build.sh` changes the ad-hoc signature,
 so macOS may ask once for Keychain access on the first run of a new build.

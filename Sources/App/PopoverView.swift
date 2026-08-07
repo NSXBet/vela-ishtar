@@ -33,6 +33,9 @@ public final class PopoverView: NSView {
     private var latestState: PollState = .neverFetched
     private var latestExhaustedAt: Date?
     private var latestSuccessAt: Date?
+    // The latest Today-by-model split, captured in update() like latestState
+    // so periodChanged() can re-render the Today segment without a fresh poll.
+    private var latestModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)
 
     private let sidePadding: CGFloat = 18
     private let sectionSpacing: CGFloat = 12
@@ -50,7 +53,7 @@ public final class PopoverView: NSView {
 
     private var isRelayout = false
 
-    public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date) {
+    public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date, todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)) {
         // Clear all subviews and rebuild from scratch on each update.
         subviews.forEach { $0.removeFromSuperview() }
         managedSubviews.removeAll()
@@ -95,6 +98,7 @@ public final class PopoverView: NSView {
         latestState = state
         latestExhaustedAt = exhaustedAt
         latestSuccessAt = lastSuccessAt
+        latestModelSplit = todayModelSplit
         // If no draw-on animation is in flight, the curve must be fully
         // visible — poll-triggered updates shouldn't leave it half-drawn.
         if !curveAnimationRunning && curveView.drawProgress == 0 {
@@ -164,7 +168,7 @@ public final class PopoverView: NSView {
         yOffset += sectionSpacing
 
         // 4. "TODAY" + CurveView
-        yOffset += makeTodayLabelAndCurve(history: history, limit: usageResponse?.dailyBudget.limitUSD ?? 0, usageResponse: usageResponse, now: now, at: &yOffset)
+        yOffset += makeTodayLabelAndCurve(history: history, limit: usageResponse?.dailyBudget.limitUSD ?? 0, usageResponse: usageResponse, isFresh: isFresh, now: now, at: &yOffset)
         yOffset += sectionSpacing
 
         // 5. Hairline
@@ -175,9 +179,29 @@ public final class PopoverView: NSView {
         let modelsForPeriod = aggregatedModels(response: usageResponse, history: history, now: now)
         yOffset += makeModelsHeader(at: &yOffset)
         if selectedPeriod == .today, let usage = usageResponse {
-            // Today: no per-model split exists on the API, so show today's
-            // total (which IS real, from daily_budget) and an honest note.
-            yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, at: &yOffset)
+            // Today segment, three states. The split is the snapshot-derived
+            // per-model breakdown (v0.3.0) — only trustable when the data is
+            // fresh, so a stale reading falls back to the honest total-only
+            // row and never shows a derived split against hours-old data.
+            if isFresh, case .split(let s) = todayModelSplit {
+                // Bars normalize against the largest NAMED cost — Other is a
+                // residual bucket, not a model, so it must not set the scale.
+                let maxNamedCost = s.rows.filter { !$0.isOther }.map(\.costUSD).max() ?? 1
+                for row in s.rows.prefix(5) {
+                    let displayName = row.name.split(separator: "/").last.map(String.init) ?? row.name
+                    yOffset += makeModelRow(name: displayName, cost: row.costUSD, tokens: Double(row.tokens), maxCost: maxNamedCost, showsBar: !row.isOther, at: &yOffset)
+                }
+            } else if isFresh, case .unavailable(let reason) = todayModelSplit {
+                // Fresh but not derivable (first day, month seam, gap): the
+                // honest total plus WHY there's no split. noSpendYet's nil
+                // note keeps the plain "monthly only" line.
+                yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: reason.note, at: &yOffset)
+            } else {
+                // Stale: total only, no split note — the banner already says
+                // the data is old, and a split note would claim a freshness
+                // the rows below don't have.
+                yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: nil, at: &yOffset)
+            }
         } else if !modelsForPeriod.isEmpty {
             for model in modelsForPeriod.prefix(5) {
                 // Display strips the provider prefix ("moonshotai/kimi-k3" -> "kimi-k3").
@@ -227,7 +251,7 @@ public final class PopoverView: NSView {
             // Rows were laid out against the OLD height — re-lay against the
             // new one so the hero isn't cut off on first open.
             isRelayout = true
-            update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now)
+            update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
             isRelayout = false
         }
     }
@@ -322,7 +346,7 @@ public final class PopoverView: NSView {
         return hairlineHeight
     }
 
-    private func makeTodayLabelAndCurve(history: HistoryStore, limit: Double, usageResponse: UsageResponse?, now: Date, at yOffset: inout CGFloat) -> CGFloat {
+    private func makeTodayLabelAndCurve(history: HistoryStore, limit: Double, usageResponse: UsageResponse?, isFresh: Bool, now: Date, at yOffset: inout CGFloat) -> CGFloat {
         let labelHeight: CGFloat = 14
         let label = NSTextField(labelWithString: "TODAY")
         label.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
@@ -345,12 +369,32 @@ public final class PopoverView: NSView {
         var utcCalendar = Calendar(identifier: .gregorian)
         utcCalendar.timeZone = TimeZone(identifier: "UTC")!
         let utcHour = utcCalendar.component(.hour, from: now)
-        curveView.configure(hourly: hourly, limit: limit, nowHourUTC: utcHour)
+        // Ghost curve (v0.3.0): the median day behind today. Only when fresh —
+        // a stale response would pin the "now" tick against hours-old data.
+        let ghost: [Double?]?
+        if isFresh, let usage = usageResponse {
+            ghost = PaceEngine.ghostCurve(in: history.allDays, excluding: usage.dailyBudget.spendDate)
+        } else {
+            ghost = nil
+        }
+        curveView.configure(hourly: hourly, limit: limit, nowHourUTC: utcHour, ghost: ghost)
 
         addSubview(curveView)
         managedSubviews.append(curveView)
 
-        return labelHeight + sectionSpacing + 92
+        // 7-day strip (v0.3.0): hairline bars under the curve, one per
+        // gateway day ending at today. Same freshness gate as the ghost.
+        var stripHeight: CGFloat = 0
+        if let usage = usageResponse, isFresh {
+            let week = DayStrip.week(in: history.allDays, today: usage.dailyBudget.spendDate)
+            let stripY = curveY - 6 - DayStripView.height
+            let strip = DayStripView(week: week, frame: NSRect(x: (320 - 284) / 2, y: stripY, width: 284, height: DayStripView.height))
+            addSubview(strip)
+            managedSubviews.append(strip)
+            stripHeight = DayStripView.height + 6
+        }
+
+        return labelHeight + sectionSpacing + 92 + stripHeight
     }
 
     private func makeModelsHeader(at yOffset: inout CGFloat) -> CGFloat {
@@ -380,10 +424,11 @@ public final class PopoverView: NSView {
         return 26   // 20pt control + 6pt air before the rows below
     }
 
-    /// Today's total spend as a single row — the API gives daily_budget
-    /// per-credential but no per-day model split, so this is the honest
-    /// "Today" view: one real number + a quiet note.
-    private func makeTodayTotalRow(spent: Double, at yOffset: inout CGFloat) -> CGFloat {
+    /// Today's total spend as a single row — used when the per-model split
+    /// isn't shown (stale data, or the split is unavailable today). `note`
+    /// overrides the quiet sub-line; nil falls back to the plain "monthly
+    /// only" explanation.
+    private func makeTodayTotalRow(spent: Double, note: String? = nil, at yOffset: inout CGFloat) -> CGFloat {
         let rowHeight: CGFloat = 24
         let totalLabel = NSTextField(labelWithString: String(format: "$%.2f across all models", spent))
         totalLabel.font = NSFont.systemFont(ofSize: 13)
@@ -392,16 +437,16 @@ public final class PopoverView: NSView {
         addSubview(totalLabel)
         managedSubviews.append(totalLabel)
 
-        let note = NSTextField(labelWithString: "Per-model breakdown is monthly only")
-        note.font = NSFont.systemFont(ofSize: 10.5)
-        note.textColor = .labelColor.withAlphaComponent(0.40)
-        note.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 16, width: 320 - 2 * sidePadding, height: 14)
-        addSubview(note)
-        managedSubviews.append(note)
+        let noteLabel = NSTextField(labelWithString: note ?? "Per-model breakdown is monthly only")
+        noteLabel.font = NSFont.systemFont(ofSize: 10.5)
+        noteLabel.textColor = .labelColor.withAlphaComponent(0.40)
+        noteLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 16, width: 320 - 2 * sidePadding, height: 14)
+        addSubview(noteLabel)
+        managedSubviews.append(noteLabel)
         return rowHeight + 24
     }
 
-    private func makeModelRow(name: String, cost: Double, tokens: Double, maxCost: Double, at yOffset: inout CGFloat) -> CGFloat {
+    private func makeModelRow(name: String, cost: Double, tokens: Double, maxCost: Double, showsBar: Bool = true, at yOffset: inout CGFloat) -> CGFloat {
         let rowHeight: CGFloat = 24
 
         // Name (13pt, 118 wide)
@@ -412,16 +457,20 @@ public final class PopoverView: NSView {
         addSubview(nameLabel)
         managedSubviews.append(nameLabel)
 
-        // Bar (2pt tall, width proportional to cost)
-        // Capped so the bar never reaches the cost label (starts x=194; bar
-        // starts x=138; 8pt gap -> 48pt max). Pre-cap it ran 100pt and cut
-        // straight through the dollar figure on the top model.
-        let barWidth = maxCost > 0 ? min(CGFloat(cost / maxCost) * 100, 48) : 0
-        let bar = NSView(frame: NSRect(x: sidePadding + 120, y: bounds.height - yOffset - 8, width: barWidth, height: 2))
-        bar.wantsLayer = true
-        bar.layer?.backgroundColor = NSColor.labelColor.cgColor
-        addSubview(bar)
-        managedSubviews.append(bar)
+        // Bar (2pt tall, width proportional to cost). The "Other" residual
+        // bucket passes showsBar=false — it isn't a model, so a bar would
+        // imply a magnitude the number doesn't carry.
+        if showsBar {
+            // Capped so the bar never reaches the cost label (starts x=194;
+            // bar starts x=138; 8pt gap -> 48pt max). Pre-cap it ran 100pt
+            // and cut straight through the dollar figure on the top model.
+            let barWidth = maxCost > 0 ? min(CGFloat(cost / maxCost) * 100, 48) : 0
+            let bar = NSView(frame: NSRect(x: sidePadding + 120, y: bounds.height - yOffset - 8, width: barWidth, height: 2))
+            bar.wantsLayer = true
+            bar.layer?.backgroundColor = NSColor.labelColor.cgColor
+            addSubview(bar)
+            managedSubviews.append(bar)
+        }
 
         // Cost (13pt, tabular right, 52 wide; sits left of the 64pt
         // efficiency column, so its x accounts for the wider right column).
@@ -600,7 +649,7 @@ public final class PopoverView: NSView {
         // .fresh. If the gateway is unreachable the reading is .stale, and the
         // banner / amber dot / dimming must survive a period toggle.
         update(state: latestState, history: history,
-               exhaustedAt: latestExhaustedAt, lastSuccessAt: latestSuccessAt, now: Date())
+               exhaustedAt: latestExhaustedAt, lastSuccessAt: latestSuccessAt, now: Date(), todayModelSplit: latestModelSplit)
     }
 
     /// Aggregates model usage over the selected window. Month: the API's

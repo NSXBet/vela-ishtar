@@ -434,4 +434,68 @@ struct HistoryStoreTests {
         #expect(persistedDict.count == 1)
         #expect(persistedDict["2026-08-02"] == nil)
     }
+
+    // MARK: - spend_date key normalization (v0.3.0)
+
+    // The gateway has emitted spend_date in two shapes — a bare date
+    // ("2026-08-06") and a full ISO timestamp ("2026-08-07T00:00:00Z") — for
+    // the SAME logical day. Keying the store by the raw string splits one day
+    // across two keys, under-counting history and breaking the ghost/strip
+    // windows. The canonical key is always the bare "yyyy-MM-dd".
+
+    @Test("record normalizes a full-ISO spend_date to the bare day key")
+    func recordNormalizesFullISOSpendDate() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let now = ISODate.parse("2026-08-07T14:23:00Z")!
+        store.record(spentToday: 12.5, limit: 50, at: now, spendDate: "2026-08-07T00:00:00Z")
+
+        #expect(store.allDays["2026-08-07"] != nil)
+        #expect(store.allDays["2026-08-07T00:00:00Z"] == nil)
+    }
+
+    @Test("a bare-date and a full-ISO spend_date for the same day merge into one record")
+    func recordMergesBareAndISOKeysForOneDay() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        store.record(spentToday: 10, limit: 50, at: ISODate.parse("2026-08-07T09:00:00Z")!, spendDate: "2026-08-07")
+        store.record(spentToday: 20, limit: 50, at: ISODate.parse("2026-08-07T15:00:00Z")!, spendDate: "2026-08-07T00:00:00Z")
+
+        #expect(store.allDays.count == 1)
+        let day = store.allDays["2026-08-07"]
+        #expect(day?.hourly[9] == 10)
+        #expect(day?.hourly[15] == 20)
+    }
+
+    @Test("day(spendDate:) finds a record whether asked with a bare or full-ISO key")
+    func dayLookupNormalizesTheQueryKey() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        store.record(spentToday: 42, limit: 50, at: ISODate.parse("2026-08-07T10:00:00Z")!, spendDate: "2026-08-07")
+
+        #expect(store.day(spendDate: "2026-08-07T00:00:00Z")?.hourly[10] == 42)
+        #expect(store.day(spendDate: "2026-08-07")?.hourly[10] == 42)
+    }
+
+    @Test("load migrates full-ISO keys on disk to bare day keys, merging collisions")
+    func loadMigratesISOKeysToBareDayKeys() throws {
+        let directory = Self.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // One bare-keyed day and one ISO-keyed day for the SAME logical day,
+        // plus one ISO-keyed day with no bare counterpart.
+        var h1 = Array(repeating: "null", count: 24); h1[9] = "10.0"
+        var h2 = Array(repeating: "null", count: 24); h2[15] = "20.0"
+        var h3 = Array(repeating: "null", count: 24); h3[12] = "7.0"
+        let json = """
+        {"2026-08-07":{"hourly":[\(h1.joined(separator: ","))],"limit":400,"exhaustedAt":null},"2026-08-07T00:00:00Z":{"hourly":[\(h2.joined(separator: ","))],"limit":400,"exhaustedAt":null},"2026-08-08T00:00:00Z":{"hourly":[\(h3.joined(separator: ","))],"limit":400,"exhaustedAt":null}}
+        """
+        try json.data(using: .utf8)!.write(to: directory.appendingPathComponent("history.json"))
+
+        var store = HistoryStore(directory: directory)
+        try store.load()
+
+        // Two logical days, both bare-keyed. The 08-07 collision merged hourly.
+        #expect(store.allDays["2026-08-07"]?.hourly[9] == 10)
+        #expect(store.allDays["2026-08-07"]?.hourly[15] == 20)
+        #expect(store.allDays["2026-08-08"]?.hourly[12] == 7)
+        #expect(store.allDays["2026-08-07T00:00:00Z"] == nil)
+        #expect(store.allDays["2026-08-08T00:00:00Z"] == nil)
+    }
 }

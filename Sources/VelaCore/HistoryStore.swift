@@ -79,8 +79,13 @@ public struct HistoryStore: Sendable {
     /// budget is already blown.
     public mutating func record(spentToday: Double, limit: Double, at date: Date, spendDate: String) {
         let hour = Self.utcCalendar.component(.hour, from: date)
+        // Normalize the gateway's spend_date to the canonical bare day key —
+        // the API has emitted both "2026-08-06" and "2026-08-07T00:00:00Z"
+        // for the same logical day, and keying by the raw string would split
+        // one day across two records.
+        let key = ISODate.dayKey(spendDate)
 
-        var day = days[spendDate] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
+        var day = days[key] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
         day.limit = limit
         // Monotonic guard: a cumulative "spent today" reading never goes
         // DOWN within a gateway day, so never accept a value that drops
@@ -103,7 +108,7 @@ public struct HistoryStore: Sendable {
         if let peak = runningMax {
             let tolerance = max(peak * 0.01, 0.50)
             if spentToday < peak - tolerance {
-                historyLog.notice("ignored downward restatement for \(spendDate, privacy: .public) hour \(hour, privacy: .public): peak \(peak, privacy: .public) -> \(spentToday, privacy: .public)")
+                historyLog.notice("ignored downward restatement for \(key, privacy: .public) hour \(hour, privacy: .public): peak \(peak, privacy: .public) -> \(spentToday, privacy: .public)")
             } else {
                 day.hourly[hour] = spentToday
             }
@@ -113,7 +118,7 @@ public struct HistoryStore: Sendable {
         if day.exhaustedAt == nil, spentToday >= limit {
             day.exhaustedAt = date
         }
-        days[spendDate] = day
+        days[key] = day
     }
 
     /// Looks up the record for the UTC day containing `utcDate`.
@@ -128,7 +133,7 @@ public struct HistoryStore: Sendable {
     /// this lookup — the local UTC date and the gateway's day disagree
     /// around the midnight-UTC seam.
     public func day(spendDate: String) -> DayRecord? {
-        days[spendDate]
+        days[ISODate.dayKey(spendDate)]
     }
 
     /// Loads history.json from `directory`. A missing file simply means
@@ -141,6 +146,35 @@ public struct HistoryStore: Sendable {
         }
         let data = try Data(contentsOf: fileURL)
         var decoded = try JSONDecoder().decode([String: DayRecord].self, from: data)
+
+        // Migrate pre-normalization keys: any full-ISO day key
+        // ("2026-08-07T00:00:00Z") is re-keyed to its bare day form, merging
+        // into an existing bare-keyed record for the same logical day. Merge
+        // takes the max per hour slot (cumulative spend is non-decreasing
+        // within a day, so the max is the truthful reading) and the earliest
+        // non-nil exhaustedAt.
+        var migrated = false
+        for key in decoded.keys {
+            let bare = ISODate.dayKey(key)
+            guard bare != key, let isoRecord = decoded[key] else { continue }
+            decoded.removeValue(forKey: key)
+            if var existing = decoded[bare] {
+                for hour in 0..<min(existing.hourly.count, isoRecord.hourly.count) {
+                    switch (existing.hourly[hour], isoRecord.hourly[hour]) {
+                    case let (a?, b?): existing.hourly[hour] = max(a, b)
+                    case (nil, let b?): existing.hourly[hour] = b
+                    default: break  // keep existing (a?, nil) or (nil, nil)
+                    }
+                }
+                existing.limit = max(existing.limit, isoRecord.limit)
+                if existing.exhaustedAt == nil { existing.exhaustedAt = isoRecord.exhaustedAt }
+                decoded[bare] = existing
+            } else {
+                decoded[bare] = isoRecord
+            }
+            migrated = true
+            historyLog.notice("migrated history day key \(key, privacy: .public) -> \(bare, privacy: .public)")
+        }
 
         // Defend against a hand-edited or corrupted history.json where a
         // day's hourly array isn't exactly 24 slots -- record() indexes it
@@ -166,11 +200,12 @@ public struct HistoryStore: Sendable {
 
         days = decoded
 
-        // Persist the cleaned history so the dropped days are gone for good —
-        // otherwise every launch re-reads the same contaminated file, re-drops
-        // the same days, and re-fires the log line above. Best-effort: a
-        // failed save just means we clean again next launch.
-        if !contaminated.isEmpty {
+        // Persist the cleaned/migrated history so the dropped days and the
+        // re-keyed ISO days are gone for good — otherwise every launch
+        // re-reads the same file, re-drops/re-migrates, and re-fires the log
+        // lines above. Best-effort: a failed save just means we redo it next
+        // launch.
+        if !contaminated.isEmpty || migrated {
             try? save()
         }
     }

@@ -1,0 +1,181 @@
+// Tests/VelaCoreTests/ModelSnapshotsTests.swift
+// Verifies ModelSnapshots: the per-gateway-day persistence of month-cumulative
+// top_models snapshots, and the adjacency-checked baseline lookup the split
+// engine depends on.
+// Why: the Today-models split is only as trustworthy as its baseline. A
+// baseline that isn't exactly one gateway-day behind "today" silently
+// produces a wrong split, so the adjacency rule and the round-trip fidelity
+// are pinned here against a throwaway directory.
+// RELEVANT FILES: Sources/VelaCore/ModelSnapshots.swift, Sources/VelaCore/TodayModelSplit.swift, Tests/VelaCoreTests/TodayModelSplitTests.swift
+
+import Testing
+import Foundation
+@testable import VelaCore
+
+struct ModelSnapshotsTests {
+    // MARK: - Fixtures
+
+    private func makeDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vela-snapshots-\(UUID().uuidString)")
+        return url
+    }
+
+    private func usage(spendDate: String, monthTotal: Double, models: [(String, Double, Int)]) -> UsageResponse {
+        UsageResponse(
+            tokenId: "t",
+            dailyBudget: DailyBudget(limitUSD: 400, spentUSD: 10, remainingUSD: 390, usedPercent: 2.5, limitEnabled: true, spendDate: spendDate),
+            currentMonth: MonthStats(totalCostUSD: monthTotal, totalTokens: 1, requests: 1),
+            topModels: models.map { ModelUsage(model: $0.0, totalCostUSD: $0.1, totalTokens: $0.2, requests: 1) }
+        )
+    }
+
+    // MARK: - Recording and round-trip
+
+    @Test("record stores the snapshot under the gateway spend_date key, not the local date")
+    func recordKeysBySpendDate() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-10", monthTotal: 130, models: [("a", 70, 100)]), at: Date())
+        #expect(store.snapshot(for: "2026-08-10") != nil)
+        #expect(store.snapshot(for: "2026-08-11") == nil)
+    }
+
+    @Test("the stored snapshot captures the month key, month total, and per-model points")
+    func recordCapturesMonthKeyTotalAndModels() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-10T00:00:00Z", monthTotal: 130, models: [("a", 70, 2_000_000)]), at: Date())
+        let snap = store.snapshot(for: "2026-08-10T00:00:00Z")
+        #expect(snap?.monthKey == "2026-08")
+        #expect(snap?.monthTotalUSD == 130)
+        #expect(snap?.models["a"]?.costUSD == 70)
+        #expect(snap?.models["a"]?.tokens == 2_000_000)
+    }
+
+    @Test("save then load round-trips every snapshot intact")
+    func saveLoadRoundTrips() throws {
+        let directory = makeDirectory()
+        var store = ModelSnapshots(directory: directory)
+        store.record(usage(spendDate: "2026-08-09", monthTotal: 100, models: [("a", 40, 1000)]), at: Date())
+        store.record(usage(spendDate: "2026-08-10", monthTotal: 130, models: [("a", 70, 2000), ("b", 5, 50)]), at: Date())
+        try store.save()
+
+        var reloaded = ModelSnapshots(directory: directory)
+        try reloaded.load()
+        #expect(reloaded.snapshot(for: "2026-08-09")?.monthTotalUSD == 100)
+        #expect(reloaded.snapshot(for: "2026-08-10")?.models["b"]?.costUSD == 5)
+    }
+
+    @Test("load on a missing file leaves the store empty — normal first-run state")
+    func loadMissingFileIsEmpty() throws {
+        var store = ModelSnapshots(directory: makeDirectory())
+        try store.load()
+        #expect(store.snapshot(for: "2026-08-10") == nil)
+    }
+
+    @Test("save creates the directory if it doesn't exist")
+    func saveCreatesDirectory() throws {
+        let directory = makeDirectory().appendingPathComponent("nested")
+        var store = ModelSnapshots(directory: directory)
+        store.record(usage(spendDate: "2026-08-10", monthTotal: 130, models: [("a", 70, 100)]), at: Date())
+        try store.save()
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("snapshots.json").path))
+    }
+
+    // MARK: - Baseline adjacency
+
+    @Test("baseline returns the snapshot exactly one gateway-day before today")
+    func baselineFindsYesterdaysSnapshot() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-09", monthTotal: 100, models: [("a", 40, 100)]), at: Date())
+        let baseline = store.baseline(before: "2026-08-10")
+        #expect(baseline?.monthTotalUSD == 100)
+    }
+
+    @Test("a baseline two or more days behind is rejected as not adjacent (app was off over the seam)")
+    func baselineRejectsAGap() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-08", monthTotal: 90, models: [("a", 30, 100)]), at: Date())
+        #expect(store.baseline(before: "2026-08-10") == nil)
+    }
+
+    @Test("adjacency holds across a month boundary (Jul 31 → Aug 01)")
+    func baselineCrossesMonthBoundary() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-07-31", monthTotal: 500, models: [("a", 40, 100)]), at: Date())
+        // Adjacent by date even though monthKey differs — the split engine's
+        // own monthChanged guard is what rejects this pair, not the lookup.
+        #expect(store.baseline(before: "2026-08-01") != nil)
+    }
+
+    @Test("adjacency parses a full-ISO spend_date identically to a bare date")
+    func baselineParsesFullISOSpendDate() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-09", monthTotal: 100, models: [("a", 40, 100)]), at: Date())
+        #expect(store.baseline(before: "2026-08-10T00:00:00Z") != nil)
+    }
+
+    @Test("no snapshot at all yields a nil baseline")
+    func baselineNilWhenStoreEmpty() {
+        let store = ModelSnapshots(directory: makeDirectory())
+        #expect(store.baseline(before: "2026-08-10") == nil)
+    }
+
+    // MARK: - Pruning
+
+    @Test("record prunes to the 3 most recent day keys")
+    func recordPrunesToThreeMostRecent() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        for day in 5...12 {
+            let key = String(format: "2026-08-%02d", day)
+            store.record(usage(spendDate: key, monthTotal: Double(day * 10), models: [("a", 1, 1)]), at: Date())
+        }
+        #expect(store.snapshot(for: "2026-08-05") == nil)
+        #expect(store.snapshot(for: "2026-08-09") == nil)
+        #expect(store.snapshot(for: "2026-08-10") != nil)
+        #expect(store.snapshot(for: "2026-08-11") != nil)
+        #expect(store.snapshot(for: "2026-08-12") != nil)
+    }
+
+    @Test("re-recording the same day replaces the snapshot rather than duplicating it")
+    func reRecordSameDayReplaces() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-10", monthTotal: 130, models: [("a", 70, 100)]), at: Date())
+        store.record(usage(spendDate: "2026-08-10", monthTotal: 135, models: [("a", 75, 150)]), at: Date())
+        #expect(store.snapshot(for: "2026-08-10")?.monthTotalUSD == 135)
+    }
+
+    // MARK: - spend_date key normalization (v0.3.0)
+
+    @Test("record normalizes a full-ISO spend_date to the bare day key")
+    func recordNormalizesFullISOSpendDate() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-10T00:00:00Z", monthTotal: 130, models: [("a", 70, 100)]), at: Date())
+        // One logical day, one record — reachable under either key shape.
+        #expect(store.snapshot(for: "2026-08-10")?.monthTotalUSD == 130)
+        #expect(store.snapshot(for: "2026-08-10T00:00:00Z")?.monthTotalUSD == 130)
+    }
+
+    @Test("baseline is found whether today is keyed bare and yesterday ISO, or vice versa")
+    func baselineNormalizesMixedKeyShapes() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-09T00:00:00Z", monthTotal: 100, models: [("a", 40, 100)]), at: Date())
+        // Today bare, yesterday ISO → still exactly one day apart.
+        #expect(store.baseline(before: "2026-08-10")?.monthTotalUSD == 100)
+    }
+
+    @Test("prune recency treats bare and ISO keys for the same day as one")
+    func pruneRecencyNormalizesKeys() {
+        var store = ModelSnapshots(directory: makeDirectory())
+        // Four logical days, but 08-10 appears in both shapes.
+        store.record(usage(spendDate: "2026-08-09", monthTotal: 90, models: [("a", 1, 1)]), at: Date())
+        store.record(usage(spendDate: "2026-08-10", monthTotal: 100, models: [("a", 1, 1)]), at: Date())
+        store.record(usage(spendDate: "2026-08-10T00:00:00Z", monthTotal: 100, models: [("a", 1, 1)]), at: Date())
+        store.record(usage(spendDate: "2026-08-11", monthTotal: 110, models: [("a", 1, 1)]), at: Date())
+        store.record(usage(spendDate: "2026-08-12", monthTotal: 120, models: [("a", 1, 1)]), at: Date())
+        // Three most recent logical days survive: 10, 11, 12. 08-09 pruned.
+        #expect(store.snapshot(for: "2026-08-09") == nil)
+        #expect(store.snapshot(for: "2026-08-10") != nil)
+        #expect(store.snapshot(for: "2026-08-11") != nil)
+        #expect(store.snapshot(for: "2026-08-12") != nil)
+    }
+}

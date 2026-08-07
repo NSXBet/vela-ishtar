@@ -135,4 +135,86 @@ struct PollStateMachineTests {
         machine.ingest(.success(Self.usage(spentUSD: 55, limitUSD: 50)), at: laterStillOver)
         #expect(machine.exhaustedAt == crossing)
     }
+
+    // MARK: - Today-models split (v0.3.0)
+
+    // A response pinned to a specific gateway day, so the split tests control
+    // the baseline adjacency. topModels carries month-cumulative figures.
+    static func usageOn(spendDate: String, spentToday: Double, monthTotal: Double, models: [(String, Double, Int)]) -> UsageResponse {
+        UsageResponse(
+            tokenId: "tok_test",
+            dailyBudget: DailyBudget(
+                limitUSD: 400,
+                spentUSD: spentToday,
+                remainingUSD: 400 - spentToday,
+                usedPercent: spentToday / 4,
+                limitEnabled: true,
+                spendDate: spendDate
+            ),
+            currentMonth: MonthStats(totalCostUSD: monthTotal, totalTokens: 1, requests: 1),
+            topModels: models.map { ModelUsage(model: $0.0, totalCostUSD: $0.1, totalTokens: $0.2, requests: 1) }
+        )
+    }
+
+    @Test("ingest computes the split against yesterday's snapshot BEFORE writing today's")
+    func ingestComputesTheSplitAgainstYesterdaysSnapshotBeforeWritingTodays() {
+        var machine = PollStateMachine(historyDirectory: Self.freshDirectory())
+        // Day 1 seeds the baseline.
+        machine.ingest(.success(Self.usageOn(spendDate: "2026-08-09", spentToday: 30, monthTotal: 100, models: [("a", 40, 1000)])), at: ISODate.parse("2026-08-09T12:00:00Z")!)
+        // Day 2: the split must see day 1's snapshot as the baseline, even
+        // though day 2's own snapshot is being written in the SAME ingest.
+        machine.ingest(.success(Self.usageOn(spendDate: "2026-08-10", spentToday: 20, monthTotal: 120, models: [("a", 60, 2000)])), at: ISODate.parse("2026-08-10T12:00:00Z")!)
+
+        guard case .split(let s) = machine.todayModelSplit else {
+            Issue.record("expected a split, got \(machine.todayModelSplit)")
+            return
+        }
+        // Model "a" went 40 → 60 month-cumulative, so today = $20.
+        #expect(s.rows.first { $0.name == "a" }?.costUSD == 20)
+        #expect(s.totalUSD == 20)
+    }
+
+    @Test("the first-ever ingest leaves the split unavailable with noBaseline")
+    func firstEverIngestLeavesTheSplitUnavailableWithNoBaseline() {
+        var machine = PollStateMachine(historyDirectory: Self.freshDirectory())
+        machine.ingest(.success(Self.usageOn(spendDate: "2026-08-10", spentToday: 20, monthTotal: 120, models: [("a", 60, 2000)])), at: ISODate.parse("2026-08-10T12:00:00Z")!)
+
+        guard case .unavailable(let reason) = machine.todayModelSplit else {
+            Issue.record("expected unavailable, got \(machine.todayModelSplit)")
+            return
+        }
+        #expect(reason == .noBaseline)
+    }
+
+    @Test("the second gateway day produces a real split")
+    func theSecondGatewayDayProducesARealSplit() {
+        var machine = PollStateMachine(historyDirectory: Self.freshDirectory())
+        machine.ingest(.success(Self.usageOn(spendDate: "2026-08-09", spentToday: 30, monthTotal: 100, models: [("a", 40, 1000)])), at: ISODate.parse("2026-08-09T12:00:00Z")!)
+        machine.ingest(.success(Self.usageOn(spendDate: "2026-08-10", spentToday: 25, monthTotal: 125, models: [("a", 55, 1500), ("b", 10, 200)])), at: ISODate.parse("2026-08-10T12:00:00Z")!)
+
+        guard case .split(let s) = machine.todayModelSplit else {
+            Issue.record("expected a split, got \(machine.todayModelSplit)")
+            return
+        }
+        // "a" delta = 15 (named); "b" is new-in-current → absorbed into Other.
+        // Other = 25 − 15 = 10.
+        #expect(s.rows.first { $0.name == "a" }?.costUSD == 15)
+        #expect(s.rows.first { $0.isOther }?.costUSD == 10)
+        #expect(s.rows.reduce(0) { $0 + $1.costUSD } == 25)
+    }
+
+    @Test("a failed fetch leaves the last good split untouched")
+    func aFailedFetchLeavesTheLastGoodSplitUntouched() {
+        var machine = PollStateMachine(historyDirectory: Self.freshDirectory())
+        machine.ingest(.success(Self.usageOn(spendDate: "2026-08-09", spentToday: 30, monthTotal: 100, models: [("a", 40, 1000)])), at: ISODate.parse("2026-08-09T12:00:00Z")!)
+        machine.ingest(.success(Self.usageOn(spendDate: "2026-08-10", spentToday: 20, monthTotal: 120, models: [("a", 60, 2000)])), at: ISODate.parse("2026-08-10T12:00:00Z")!)
+        let goodSplit = machine.todayModelSplit
+
+        // Two failures → .stale, but the split must not be recomputed or cleared.
+        machine.ingest(.failure(.network("timeout")), at: ISODate.parse("2026-08-10T12:01:00Z")!)
+        machine.ingest(.failure(.network("timeout")), at: ISODate.parse("2026-08-10T12:02:00Z")!)
+
+        #expect(machine.todayModelSplit == goodSplit)
+        #expect(machine.state == .stale(Self.usageOn(spendDate: "2026-08-10", spentToday: 20, monthTotal: 120, models: [("a", 60, 2000)]), consecutiveFailures: 2))
+    }
 }

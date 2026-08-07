@@ -122,4 +122,20 @@ public enum ISODate {
         dateOnly.formatOptions = [.withFullDate]
         return dateOnly.date(from: s)
     }
+
+    /// The canonical gateway-day key ("yyyy-MM-dd", UTC) for a spend_date in
+    /// ANY shape the API emits. The gateway has sent both a bare date
+    /// ("2026-08-06") and a full timestamp ("2026-08-07T00:00:00Z") for the
+    /// same logical day; keying stores by the raw string splits one day
+    /// across two keys and silently under-counts history. Everything that
+    /// uses spend_date as a dictionary key normalizes through here first.
+    /// Falls back to the raw string only if it can't be parsed at all.
+    public static func dayKey(_ s: String) -> String {
+        guard let date = parse(s) else { return s }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = parts.year, let month = parts.month, let day = parts.day else { return s }
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
 }
