@@ -88,8 +88,11 @@ public struct PollStateMachine: Sendable {
             lastGood = usage
             lastSuccessAt = date
             burnBuffer.record(spentToday: usage.dailyBudget.spentUSD, at: date)
-            history.record(spentToday: usage.dailyBudget.spentUSD, limit: usage.dailyBudget.limitUSD, at: date)
-            exhaustedAt = history.day(utcDate: date)?.exhaustedAt
+            history.record(spentToday: usage.dailyBudget.spentUSD, limit: usage.dailyBudget.limitUSD, at: date, spendDate: usage.dailyBudget.spendDate)
+            // exhaustedAt must come from the GATEWAY's day, not the local
+            // clock's -- the two disagree around the UTC-midnight seam (the
+            // whole point of the spendDate keying above).
+            exhaustedAt = history.day(spendDate: usage.dailyBudget.spendDate)?.exhaustedAt
             state = .fresh(usage)
 
         case .failure:

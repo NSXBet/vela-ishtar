@@ -23,7 +23,7 @@ struct HistoryStoreTests {
     func recordFillsCurrentUTCHourSlot() {
         var store = HistoryStore(directory: Self.freshDirectory())
         let now = ISODate.parse("2026-08-01T14:23:00Z")!
-        store.record(spentToday: 12.5, limit: 50, at: now)
+        store.record(spentToday: 12.5, limit: 50, at: now, spendDate: "2026-08-01")
 
         let day = store.day(utcDate: now)
         #expect(day != nil)
@@ -42,7 +42,7 @@ struct HistoryStoreTests {
         var store = HistoryStore(directory: Self.freshDirectory())
         // Local (-03:00) 2026-08-01 22:30 is 2026-08-02 01:30 UTC.
         let localTimestamp = ISODate.parse("2026-08-01T22:30:00-03:00")!
-        store.record(spentToday: 5, limit: 20, at: localTimestamp)
+        store.record(spentToday: 5, limit: 20, at: localTimestamp, spendDate: "2026-08-02")
 
         // Looking up by the equivalent UTC-day instant finds the record.
         let utcDay = ISODate.parse("2026-08-02T01:30:00Z")!
@@ -62,12 +62,96 @@ struct HistoryStoreTests {
         #expect(store.day(utcDate: someDay) == nil)
     }
 
+    // MARK: - Day-boundary fix (v0.1.2 regression tests)
+
+    @Test("a poll just after local UTC midnight with the gateway still on yesterday files under the gateway's day, so spend never decreases within a day")
+    func recordKeysByGatewaySpendDateAcrossTheSeam() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        // The real-world bug: at 00:30 UTC on Aug 2, the gateway's
+        // spend_date is still Aug 1 (its day boundary lags the clock).
+        // Keying by the local date would file yesterday's total under
+        // today — and the next poll (spend_date now Aug 2, spend back to
+        // a small number) would make the curve DECREASE within "today".
+        let justAfterMidnight = ISODate.parse("2026-08-02T00:30:00Z")!
+        store.record(spentToday: 160.42, limit: 400, at: justAfterMidnight, spendDate: "2026-08-01")
+
+        // Filed under the gateway's day (Aug 1), NOT the clock's day (Aug 2).
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[0] == 160.42)
+        #expect(store.day(spendDate: "2026-08-02") == nil)
+
+        // The gateway ticks over; the next poll carries a fresh small total.
+        // Each day is internally non-decreasing — no within-day decrease.
+        let later = ISODate.parse("2026-08-02T01:15:00Z")!
+        store.record(spentToday: 2.74, limit: 400, at: later, spendDate: "2026-08-02")
+        #expect(store.day(spendDate: "2026-08-02")?.hourly[1] == 2.74)
+        // Yesterday's record is untouched.
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[0] == 160.42)
+    }
+
+    // MARK: - Contaminated-day filter (v0.1.2)
+
+    @Test("load drops a day whose spend decreases sharply mid-day (pre-fix contaminated data)")
+    func loadDropsContaminatedDay() throws {
+        let directory = Self.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // The exact shape the bug produced: hours 0-2 hold the previous
+        // day's total, then the day "restarts" small at hour 7. A real
+        // contaminated day has all 24 slots (record() always writes the
+        // full array), so the fixture must too -- a short array is the
+        // MALFORMED case (reset to 24-nil), not the contaminated case.
+        var hourly = Array(repeating: "null", count: 24)
+        hourly[0] = "160.42"; hourly[1] = "160.42"; hourly[2] = "160.42"
+        hourly[7] = "15.33"; hourly[8] = "31.60"
+        let contaminatedJSON = """
+        {"2026-08-05":{"hourly":[\(hourly.joined(separator: ","))],"limit":400,"exhaustedAt":null}}
+        """
+        try contaminatedJSON.data(using: .utf8)!.write(to: directory.appendingPathComponent("history.json"))
+
+        var store = HistoryStore(directory: directory)
+        try store.load()
+        #expect(store.day(spendDate: "2026-08-05") == nil)
+    }
+
+    @Test("load keeps an honest monotonic day")
+    func loadKeepsCleanDay() throws {
+        let directory = Self.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var cleanHourly = Array(repeating: "null", count: 24)
+        cleanHourly[0] = "2.74"; cleanHourly[1] = "13.01"; cleanHourly[2] = "13.01"; cleanHourly[3] = "28.40"
+        let cleanJSON = """
+        {"2026-08-04":{"hourly":[\(cleanHourly.joined(separator: ","))],"limit":400,"exhaustedAt":null}}
+        """
+        try cleanJSON.data(using: .utf8)!.write(to: directory.appendingPathComponent("history.json"))
+
+        var store = HistoryStore(directory: directory)
+        try store.load()
+        #expect(store.day(spendDate: "2026-08-04")?.hourly[3] == 28.40)
+    }
+
+    @Test("load keeps a day whose tiny mid-day dip is within the restatement tolerance")
+    func loadKeepsHonestRestatement() throws {
+        let directory = Self.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Peak 100, then a 0.30 dip (0.3% — under the 1%-of-peak tolerance):
+        // the gateway restated a reading downward by a few cents.
+        var restatedHourly = Array(repeating: "null", count: 24)
+        restatedHourly[0] = "50.0"; restatedHourly[1] = "100.0"; restatedHourly[2] = "99.70"; restatedHourly[3] = "120.0"
+        let restatedJSON = """
+        {"2026-08-03":{"hourly":[\(restatedHourly.joined(separator: ","))],"limit":400,"exhaustedAt":null}}
+        """
+        try restatedJSON.data(using: .utf8)!.write(to: directory.appendingPathComponent("history.json"))
+
+        var store = HistoryStore(directory: directory)
+        try store.load()
+        #expect(store.day(spendDate: "2026-08-03") != nil)
+    }
+
     @Test("save writes history.json, and load on a fresh instance reads it back")
     func saveThenLoadRoundTrips() throws {
         let directory = Self.freshDirectory()
         var writer = HistoryStore(directory: directory)
         let now = ISODate.parse("2026-08-01T14:23:00Z")!
-        writer.record(spentToday: 12.5, limit: 50, at: now)
+        writer.record(spentToday: 12.5, limit: 50, at: now, spendDate: "2026-08-01")
         try writer.save()
 
         var reader = HistoryStore(directory: directory)
@@ -93,7 +177,7 @@ struct HistoryStoreTests {
 
         var store = HistoryStore(directory: directory)
         let now = ISODate.parse("2026-08-01T14:23:00Z")!
-        store.record(spentToday: 1, limit: 10, at: now)
+        store.record(spentToday: 1, limit: 10, at: now, spendDate: "2026-08-01")
         try store.save()
 
         #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("history.json").path))
@@ -116,8 +200,8 @@ struct HistoryStoreTests {
         var store = HistoryStore(directory: Self.freshDirectory())
         let underLimit = ISODate.parse("2026-08-01T09:00:00Z")!
         let crossing = ISODate.parse("2026-08-01T14:23:00Z")!
-        store.record(spentToday: 40, limit: 50, at: underLimit)
-        store.record(spentToday: 50, limit: 50, at: crossing)
+        store.record(spentToday: 40, limit: 50, at: underLimit, spendDate: "2026-08-01")
+        store.record(spentToday: 50, limit: 50, at: crossing, spendDate: "2026-08-01")
 
         let day = store.day(utcDate: crossing)
         #expect(day?.exhaustedAt == crossing)
@@ -128,8 +212,8 @@ struct HistoryStoreTests {
         var store = HistoryStore(directory: Self.freshDirectory())
         let firstCrossing = ISODate.parse("2026-08-01T14:23:00Z")!
         let laterPoll = ISODate.parse("2026-08-01T16:00:00Z")!
-        store.record(spentToday: 50, limit: 50, at: firstCrossing)
-        store.record(spentToday: 55, limit: 50, at: laterPoll)
+        store.record(spentToday: 50, limit: 50, at: firstCrossing, spendDate: "2026-08-01")
+        store.record(spentToday: 55, limit: 50, at: laterPoll, spendDate: "2026-08-01")
 
         let day = store.day(utcDate: laterPoll)
         #expect(day?.exhaustedAt == firstCrossing)
@@ -160,7 +244,7 @@ struct HistoryStoreTests {
         // Recording at hour 23 (out of range for the original 3-slot array)
         // must not crash.
         let lateHour = ISODate.parse("2026-08-01T23:00:00Z")!
-        store.record(spentToday: 10, limit: 50, at: lateHour)
+        store.record(spentToday: 10, limit: 50, at: lateHour, spendDate: "2026-08-01")
         #expect(store.day(utcDate: lateHour)?.hourly[23] == 10)
     }
 }

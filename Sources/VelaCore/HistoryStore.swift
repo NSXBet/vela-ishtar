@@ -6,6 +6,9 @@
 // RELEVANT FILES: Tests/VelaCoreTests/HistoryStoreTests.swift, BurnBuffer.swift, PaceEngine.swift
 
 import Foundation
+import OSLog
+
+private let historyLog = Logger(subsystem: "com.nsxbet.velaishtar", category: "HistoryStore")
 
 /// One UTC day's worth of spend. `hourly[h]` is the cumulative "spent
 /// today" figure as of UTC hour `h`, or nil if that hour hasn't happened
@@ -56,30 +59,45 @@ public struct HistoryStore: Sendable {
         self.directory = directory
     }
 
-    /// Records a new cumulative "spent today" reading into the UTC hour
-    /// slot for `date`, creating that day's record if it doesn't exist yet.
+    /// Records a new cumulative "spent today" reading, keyed by the
+    /// GATEWAY's day (`spendDate`, the `daily_budget.spend_date` field),
+    /// not the local clock's UTC date. Why: the gateway buckets spend by
+    /// its own day boundary, which lags the local clock — a poll at
+    /// 00:30 UTC can still carry yesterday's spend_date. Keying by the
+    /// local date filed yesterday's total under today, and the cumulative
+    /// curve visibly DECREASED within a day (real history.json showed
+    /// hour 0–2 holding the previous day's total). The hour slot stays
+    /// local-UTC so the curve's x-axis remains "hours of my day."
     ///
     /// Also persists the FIRST instant spend reaches or exceeds the limit
     /// that day (`exhaustedAt`), so PaceEngine can report a true, stable
     /// exhaustion time instead of re-stamping "now" on every poll after the
     /// budget is already blown.
-    public mutating func record(spentToday: Double, limit: Double, at date: Date) {
-        let key = Self.dayKeyFormatter.string(from: date)
+    public mutating func record(spentToday: Double, limit: Double, at date: Date, spendDate: String) {
         let hour = Self.utcCalendar.component(.hour, from: date)
 
-        var day = days[key] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
+        var day = days[spendDate] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
         day.limit = limit
         day.hourly[hour] = spentToday
         if day.exhaustedAt == nil, spentToday >= limit {
             day.exhaustedAt = date
         }
-        days[key] = day
+        days[spendDate] = day
     }
 
     /// Looks up the record for the UTC day containing `utcDate`.
     public func day(utcDate: Date) -> DayRecord? {
         let key = Self.dayKeyFormatter.string(from: utcDate)
         return days[key]
+    }
+
+    /// Looks up the record by the GATEWAY's day key (`spend_date`
+    /// verbatim). The write path keys by this, so reads that need the
+    /// authoritative "today" (exhaustion state, the popover's curve) use
+    /// this lookup — the local UTC date and the gateway's day disagree
+    /// around the midnight-UTC seam.
+    public func day(spendDate: String) -> DayRecord? {
+        days[spendDate]
     }
 
     /// Loads history.json from `directory`. A missing file simply means
@@ -101,7 +119,38 @@ public struct HistoryStore: Sendable {
         for key in decoded.keys where decoded[key]!.hourly.count != 24 {
             decoded[key]!.hourly = Array(repeating: nil, count: 24)
         }
+
+        // Drop days written by the pre-0.1.2 local-clock day-keying bug:
+        // their early UTC hours hold the PREVIOUS day's total, so spend
+        // appears to decrease mid-day. A cumulative-within-a-gateway-day
+        // series is non-decreasing by construction, so a drop larger than
+        // the restatement tolerance marks the day as contaminated. Those
+        // days are wrong data, not missing data -- keeping them would
+        // poison every day-over-day comparison (median line, ghost curve).
+        let contaminated = decoded.keys.filter { Self.isContaminated(decoded[$0]!) }
+        for key in contaminated {
+            decoded.removeValue(forKey: key)
+            historyLog.notice("dropped contaminated day \(key, privacy: .public) (spend decreases within the gateway day)")
+        }
+
         days = decoded
+    }
+
+    /// True when a day's observed hourly readings decrease by more than the
+    /// gateway-restatement tolerance. Tolerance is the larger of 1% of the
+    /// day's peak or $0.50, so honest small restatements (the gateway
+    /// recomputing a reading downward by a few cents) don't drop a good day.
+    static func isContaminated(_ day: DayRecord) -> Bool {
+        let observed = day.hourly.compactMap { $0 }
+        guard observed.count > 1 else { return false }
+        let peak = observed.max() ?? 0
+        let tolerance = max(peak * 0.01, 0.50)
+        var previous = -Double.infinity
+        for value in observed {
+            if value < previous - tolerance { return true }
+            previous = max(previous, value)
+        }
+        return false
     }
 
     /// Saves the current history to history.json, creating `directory` if

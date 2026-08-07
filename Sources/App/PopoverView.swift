@@ -134,7 +134,7 @@ public final class PopoverView: NSView {
         yOffset += sectionSpacing
 
         // 4. "TODAY" + CurveView
-        yOffset += makeTodayLabelAndCurve(history: history, limit: usageResponse?.dailyBudget.limitUSD ?? 0, now: now, at: &yOffset)
+        yOffset += makeTodayLabelAndCurve(history: history, limit: usageResponse?.dailyBudget.limitUSD ?? 0, usageResponse: usageResponse, now: now, at: &yOffset)
         yOffset += sectionSpacing
 
         // 5. Hairline
@@ -292,7 +292,7 @@ public final class PopoverView: NSView {
         return hairlineHeight
     }
 
-    private func makeTodayLabelAndCurve(history: HistoryStore, limit: Double, now: Date, at yOffset: inout CGFloat) -> CGFloat {
+    private func makeTodayLabelAndCurve(history: HistoryStore, limit: Double, usageResponse: UsageResponse?, now: Date, at yOffset: inout CGFloat) -> CGFloat {
         let labelHeight: CGFloat = 14
         let label = NSTextField(labelWithString: "TODAY")
         label.font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
@@ -305,7 +305,12 @@ public final class PopoverView: NSView {
         let curveY = bounds.height - yOffset - labelHeight - sectionSpacing - 92
         curveView.frame = NSRect(x: (320 - 284) / 2, y: curveY, width: 284, height: 92)
 
-        let dayRecord = history.day(utcDate: now)
+        // Read the GATEWAY's day, not the local clock's: history is keyed by
+        // spend_date, and the two disagree around the UTC-midnight seam.
+        // Without a response (loading state) there's no spend_date to ask
+        // for, so the curve stays empty — correct, since there is no "today"
+        // until the gateway tells us which day it's billing.
+        let dayRecord = usageResponse.map { history.day(spendDate: $0.dailyBudget.spendDate) } ?? nil
         let hourly = dayRecord?.hourly ?? Array(repeating: nil, count: 24)
         var utcCalendar = Calendar(identifier: .gregorian)
         utcCalendar.timeZone = TimeZone(identifier: "UTC")!

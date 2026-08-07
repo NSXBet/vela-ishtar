@@ -44,6 +44,15 @@ public final class StatusItemController: NSObject {
         guard let button = item.button else { return }
         button.target = self
         button.action = #selector(clicked)
+        // Left-click toggles the popover (via onClick); right-click opens
+        // the utility menu. Without this mask the button swallows right
+        // clicks and the menu never fires.
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+        // VoiceOver: the pill is an image with no text, so it needs an
+        // explicit label + a value that tracks the spend reading.
+        button.setAccessibilityLabel("AI Hub spend")
+        button.setAccessibilityValue("no data yet")
 
         let initialBuffer = BurnBuffer()
         button.image = makeImage(state: .neverFetched, burnBuffer: initialBuffer, appearance: button.effectiveAppearance)
@@ -69,10 +78,80 @@ public final class StatusItemController: NSObject {
         lastBurnBuffer = burnBuffer
         guard let button = statusItem?.button else { return }
         button.image = makeImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
+        button.setAccessibilityValue(Self.accessibilityValue(for: state))
     }
 
-    @objc private func clicked() {
-        onClick?()
+    /// The VoiceOver reading of the pill's current state, e.g.
+    /// "$54.51 of $400, 14 percent". Kept terse — VoiceOver users hear
+    /// this every time the pill updates.
+    private static func accessibilityValue(for state: PollState) -> String {
+        switch state {
+        case .neverFetched:
+            return "no data yet"
+        case .fresh(let usage), .stale(let usage, _):
+            let budget = usage.dailyBudget
+            let percent = Int(budget.usedPercent.rounded())
+            return String(format: "$%.2f of $%.0f, %d percent", budget.spentUSD, budget.limitUSD, percent)
+        }
+    }
+
+    @objc private func clicked(_ sender: NSStatusBarButton?) {
+        guard let event = NSApp.currentEvent else { onClick?(); return }
+        if event.type == .rightMouseUp {
+            showUtilityMenu()
+        } else {
+            onClick?()
+        }
+    }
+
+    /// The right-click utility menu: three verbs, no settings, no clutter.
+    /// Platform table stakes for a menu bar app — and the only way to Quit
+    /// without Activity Monitor.
+    private func showUtilityMenu() {
+        let menu = NSMenu()
+
+        let copyItem = NSMenuItem(title: "Copy today's spend", action: #selector(copyTodaysSpend), keyEquivalent: "")
+        copyItem.target = self
+        menu.addItem(copyItem)
+
+        let historyItem = NSMenuItem(title: "Open history folder", action: #selector(openHistoryFolder), keyEquivalent: "")
+        historyItem.target = self
+        menu.addItem(historyItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit Vela Ishtar", action: #selector(quitApp), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        if let button = statusItem?.button {
+            // Pop the menu under the pill. statusItem.menu would hijack the
+            // left-click too, so we present manually on right-click only.
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+        }
+    }
+
+    @objc private func copyTodaysSpend() {
+        guard let state = lastState else { return }
+        let text: String
+        switch state {
+        case .neverFetched:
+            text = "AI Hub — no data yet"
+        case .fresh(let usage), .stale(let usage, _):
+            let budget = usage.dailyBudget
+            text = String(format: "AI Hub — today $%.2f of $%.0f (%d%%)",
+                          budget.spentUSD, budget.limitUSD, Int(budget.usedPercent.rounded()))
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func openHistoryFolder() {
+        NSWorkspace.shared.open(HistoryStore.defaultDirectory)
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 
     // MARK: - Rendering
