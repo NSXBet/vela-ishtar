@@ -7,34 +7,32 @@ this up cold.
 
 ## Current state (as of 2026-08-08)
 
-- **Shipped:** v0.5.0 is live (tag `v0.5.0`, commit `6db4f06`, cask updated,
-  installed on your Mac via brew).
-- **In progress:** v0.5.1 — the curve hover scrubber. **Code is done and all
-  168 tests pass**, but it is **NOT released yet**. The changes sit uncommitted
-  in the working tree (`git status` shows them as modified/untracked).
-- **Blocked on one bug:** the hover readout card shows `3 pm ·` but the money
-  (`$35.00`) is cut off. Layout is provably correct (offscreen renders show the
-  full text), so it's environmental — top suspect is the **60s rebuild firing
-  mid-hover** and leaving the floating readout panel stale/clipped.
+- **Shipped:** v0.5.0 and **v0.5.1** are both live. v0.5.1 (curve hover
+  scrubber) is tagged (`v0.5.1`, commit `21ccb6e`), released on GitHub, cask
+  bumped, 3-way verify green, and installed on your Mac.
+- **Still open — the readout truncation.** The hover readout card shows
+  `3 pm ·` but the money (`$35.00`) is cut off. Layout is provably correct
+  (offscreen renders show the full text), so it's environmental — top suspect
+  is the **60s rebuild firing mid-hover** and leaving the floating readout
+  panel stale/clipped. This fix now lands in **v0.5.2** alongside the update
+  bell.
 
-### v0.5.1 already done (in the working tree, uncommitted)
-- `Sources/VelaCore/CurveScrub.swift` — the seam math (hour snap, gaps-stay-gaps,
-  readout text). TDD'd.
-- `Tests/VelaCoreTests/CurveScrubTests.swift` — 13 tests.
+### What shipped in v0.5.1 (committed at `21ccb6e`)
+- `Sources/VelaCore/CurveScrub.swift` — seam math (hour snap, gaps-stay-gaps,
+  readout text). TDD'd, 13 tests.
 - `Sources/App/CurveView.swift` — crosshair + dot, floating readout NSPanel,
   one-shot sonar ring (Reduce-Motion gated), rebuild-safe scrub re-derive,
   midnight-rollover stale-card fix, label width slack.
-- `Sources/VelaCore/WhatsNew.swift` + `Tests/.../WhatsNewTests.swift` —
-  changelog card now LEADS with the running version's note instead of dropping
-  it (your screenshot catch). 4 tests updated/added.
+- `Sources/VelaCore/WhatsNew.swift` — changelog card now LEADS with the running
+  version's note (your screenshot catch). Confirmed working on your screen.
 - `Sources/App/PopoverView.swift` — one-line wire-up (`rearmScrubRing()`).
 
-Review (kimi k3, deep-reasoner) verdict was **ship**; its two findings are
-already fixed above.
+Review (kimi k3, deep-reasoner) verdict was **ship**; both its findings were
+fixed before release.
 
 ---
 
-## Immediate next step (do this FIRST tomorrow)
+## Immediate next step (do this FIRST)
 
 **Fix the readout truncation with real data, not mocks.** Stop rendering
 offscreen probes — they look fine and don't reproduce it. Instrument the real
@@ -51,38 +49,19 @@ truncation in the act:
    Console.app).
 4. Find the mismatch, fix it, remove the logging.
 
-Only after the readout shows the full `3 pm · $35.00` on YOUR screen do we
-release v0.5.1.
+Only after the readout shows the full `3 pm · $35.00` on YOUR screen is this
+bug actually closed. Fold the fix into the v0.5.2 release below.
 
 ---
 
-## v0.5.1 release pipeline (once truncation is confirmed fixed)
+## v0.5.2 — readout truncation fix + update bell (last of the five features)
 
-1. `make test` — all green (168).
-2. `./build.sh` — clean.
-3. CHANGELOG: prepend `## [0.5.1] — <date>` entry (curve hover scrubber:
-   crosshair + snapping dot + floating readout + one-shot sonar ring; changelog
-   card now leads with the running version's note).
-4. Info.plist: bump BOTH `CFBundleShortVersionString` and `CFBundleVersion` to
-   `0.5.1`.
-5. README: `make readme-version` to sync badge (168 tests) + version.
-6. Commit the working tree (it's currently uncommitted — this is the whole
-   v0.5.1 diff).
-7. Push branch + tag (**you run pushes with `!`** — the guard hook blocks me).
-8. `gh release create v0.5.1` + upload `VelaIshtar-0.5.1.zip`.
-9. Cask bump in `NSXBet/homebrew-tap` (`gh api -X PUT
-   .../Casks/vela-ishtar.rb`, base64 + current blob sha).
-10. 3-way verify: tag commit == release asset digest == cask sha256 == live
-    download hash.
-11. kimi k3 review on the shipped diff (already done pre-release; re-run if the
-    truncation fix touches real logic).
+**Part 1 — the truncation fix** (from the step above): whatever the logging
+reveals, fix it, add a VelaCore regression test if the logic is testable, and
+confirm on your screen.
 
----
-
-## v0.5.2 — update bell (last of the five features)
-
-The bell near the changelog dot that shows "a new version is available", pulls
-from GitHub, and gives an easy install.
+**Part 2 — the update bell:** the bell near the changelog dot that shows "a new
+version is available", pulls from GitHub, and gives an easy install.
 
 - `Sources/VelaCore/VersionCheck.swift` — `isNewer(_:than:)` semver compare +
   a `GitHubRelease` DTO. TDD (~8 tests).
@@ -94,8 +73,13 @@ from GitHub, and gives an easy install.
   (`brew update && brew upgrade --cask vela-ishtar && xattr -cr
   "/Applications/Vela Ishtar.app"`), a GitHub releases link, and "Skip this
   version" (stored in UserDefaults).
-- Same pipeline: tests → build → CHANGELOG → plist → README → commit → you push
-  → release → cask → 3-way verify → kimi k3 review.
+
+**v0.5.2 release pipeline (same as always):** tests → `./build.sh` → CHANGELOG
+`## [0.5.2]` entry → bump BOTH Info.plist keys to 0.5.2 → `make readme-version`
+→ commit → you push branch + tag (`!`) → `gh release create v0.5.2` + upload
+zip (canonical filename) → cask bump (`gh api -X PUT`, base64 + current blob
+sha) → 3-way verify (tag commit == asset digest == cask sha256 == live
+download) → kimi k3 review.
 
 ---
 
@@ -123,7 +107,8 @@ from GitHub, and gives an easy install.
 
 - Repo: `/Users/nsx001215/Desktop/Projects/aihub-menu-bar` (NSXBet/vela-ishtar)
 - Review brief used for v0.5.1: `/tmp/vela-v051-review-brief.md`
-- Staged v0.5.1 diff snapshot: `/tmp/vela-v051.diff` (stale — the working tree
-  has since moved with the review fixes + changelog fix)
+- v0.5.1 shipped as commit `21ccb6e`, tag `v0.5.1`, zip sha256
+  `53b25cf8b1c804b0da9c8f4fd0d1e8b7f9a037cffd353acfcbbf0058cc313832`, cask
+  commit `64d1370`.
 - Install/update for users: `brew update && brew upgrade --cask vela-ishtar &&
   xattr -cr "/Applications/Vela Ishtar.app"`
