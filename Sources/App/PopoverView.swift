@@ -374,6 +374,7 @@ public final class PopoverView: NSView {
     /// and leave drawProgress at 1 (the gate is in main.swift).
     public func animateCurveDrawOn() {
         curveView.animateReveal()
+        curveView.rearmScrubRing()
     }
 
     /// Loading state for the very first open (state == .neverFetched).

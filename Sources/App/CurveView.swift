@@ -35,6 +35,26 @@ public final class CurveView: NSView {
     // stroke hides when stale; the scale stays put.
     private var drawGhostStroke = true
 
+    // MARK: - Scrub state (v0.5.1)
+
+    /// The scrubbed hour while the pointer is over the lane; nil = no hover.
+    /// Set on mouseMoved/Entered (via CurveScrub), cleared on mouseExited.
+    /// Drawing it is just two extra strokes in draw(_:) — no view rebuild.
+    private var scrub: CurveScrub.ScrubPoint? = nil {
+        didSet { needsDisplay = true }
+    }
+    private var scrubTrackingArea: NSTrackingArea?
+    /// The floating readout card ("2 pm · $31.40"). Created on hover, torn
+    /// down on exit/popover close. Owns its own level above the popover's
+    /// .statusBar — the same hard-won lesson as the VersionBulletView tip.
+    private var readoutPanel: NSPanel?
+    /// One-shot guard: the sonar ring fires on the FIRST hover of a popover
+    /// session, never again. Re-armed ONLY by rearmScrubRing() at popover open
+    /// (PopoverView.animateCurveDrawOn) — never in configure(), which the 60s
+    /// rebuild calls and would re-pulse the ring every minute while the
+    /// popover sits open.
+    private var ringFired = false
+
     public override init(frame: NSRect) {
         super.init(frame: frame)
         // v0.4.0: back the view with a layer so the draw-on reveal can ride
@@ -60,6 +80,18 @@ public final class CurveView: NSView {
         self.nowHourUTC = nowHourUTC
         self.ghost = ghost
         self.drawGhostStroke = drawGhostStroke
+        // Rebuild-safe scrub (v0.5.1): update() calls configure() every 60s on
+        // the SAME view, so a hover in progress survives — re-derive the dot
+        // from the FRESH hourly at the pointer's last x (kept in `scrub`),
+        // never drop it just because the data ticked.
+        if let current = scrub {
+            scrub = CurveScrub.scrubPoint(atX: current.x, hourly: hourly, laneWidth: Double(bounds.width))
+        }
+        // If the re-derive went nil — the UTC-midnight rollover is the case
+        // that matters, when the fresh day starts all-nil — the floating card
+        // must die with the dot, or it hovers for a full poll cycle showing
+        // yesterday's hour over a dot that no longer exists.
+        if scrub == nil { clearScrub() }
         needsDisplay = true
     }
 
@@ -84,6 +116,7 @@ public final class CurveView: NSView {
         drawGhost(in: lane, x: x, y: y)
         drawCurve(in: lane, x: x, y: y)
         drawNowTick(in: lane, x: x(for: nowHourUTC))
+        drawScrub(in: lane, x: x, y: y)
     }
 
     /// The median-day ghost: same polyline shape as today's curve, 20%
@@ -276,6 +309,236 @@ public final class CurveView: NSView {
         anim.duration = 0.5
         anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
         mask.add(anim, forKey: "reveal")
+    }
+
+    /// Re-arms the one-shot sonar ring. Called from PopoverView's
+    /// animateCurveDrawOn() — i.e. at popover OPEN, not on the 60s poll — so
+    /// the ring fires once per popover session, never every minute.
+    public func rearmScrubRing() {
+        ringFired = false
+    }
+
+    // MARK: - Curve scrubber (v0.5.1)
+
+    /// The hover crosshair + value dot. Two strokes: a 0.75pt vertical
+    /// hairline at the snapped hour's x, and a filled dot on the curve at
+    /// that hour's value. The math (which hour, where it sits) is CurveScrub's
+    /// — this only renders its answer.
+    private func drawScrub(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
+        guard let scrub else { return }
+        let cx = x(scrub.hour)
+
+        let line = NSBezierPath()
+        line.move(to: CGPoint(x: cx, y: lane.minY))
+        line.line(to: CGPoint(x: cx, y: lane.maxY))
+        line.lineWidth = 0.75
+        NSColor.labelColor.withAlphaComponent(0.45).setStroke()
+        line.stroke()
+
+        // Filled dot with a hairline ring cut out of it, so it reads on both
+        // the curve stroke and the fill beneath.
+        let dotRadius: CGFloat = 3.5
+        let dotRect = CGRect(x: cx - dotRadius, y: y(scrub.value) - dotRadius, width: dotRadius * 2, height: dotRadius * 2)
+        NSColor.labelColor.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+        NSColor.windowBackgroundColor.withAlphaComponent(0.9).setFill()
+        NSBezierPath(ovalIn: dotRect.insetBy(dx: 1.5, dy: 1.5)).fill()
+        NSColor.labelColor.setFill()
+        NSBezierPath(ovalIn: dotRect.insetBy(dx: 2.2, dy: 2.2)).fill()
+    }
+
+    // MARK: Tracking
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let scrubTrackingArea { removeTrackingArea(scrubTrackingArea) }
+        // .activeAlways: the popover panel never becomes key, so the default
+        // active-when-key would never deliver moved/entered/exited. Same fix
+        // as VersionBulletView.
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        scrubTrackingArea = area
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(local) else { clearScrub(); return }
+        scrub = CurveScrub.scrubPoint(atX: Double(local.x), hourly: hourly, laneWidth: Double(bounds.width))
+        updateReadout()
+    }
+
+    public override func mouseEntered(with event: NSEvent) {
+        // One-shot sonar ring on the FIRST hover of the session — the
+        // discoverability pulse. Suppressed under Reduce Motion (it's pure
+        // animation); re-armed by configure() on the next poll.
+        if !ringFired, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            ringFired = true
+            fireSonarRing()
+        }
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        clearScrub()
+    }
+
+    /// PopoverView rebuilds its hierarchy on every update; an open readout
+    /// must not outlive the curve that spawned it. Tearing down here (panel
+    /// removed from screen) mirrors VersionBulletView's tip teardown.
+    public override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { clearScrub() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func clearScrub() {
+        scrub = nil
+        readoutPanel?.orderOut(nil)
+        readoutPanel = nil
+    }
+
+    // MARK: Readout card
+
+    /// The floating "2 pm · $31.40" card, anchored to the dot. Created once
+    /// per hover, updated per move. Level is `.statusBar + 2`: one above the
+    /// changelog tip (+1), which is itself above the popover's .statusBar —
+    /// the scrubber is the topmost thing the popover can show.
+    private func updateReadout() {
+        guard let scrub, let parentWindow = window else { clearScrub(); return }
+
+        let text = CurveScrub.readoutText(utcHour: scrub.hour, value: scrub.value)
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let attributed = NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: NSColor.labelColor,
+        ])
+        let textSize = attributed.size()
+        let padding: CGFloat = 7
+        let cardWidth = textSize.width + padding * 2
+        let cardHeight = textSize.height + padding * 2
+
+        let panel: NSPanel
+        if let existing = readoutPanel {
+            panel = existing
+        } else {
+            panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.isFloatingPanel = true
+            panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 2)
+            panel.hasShadow = true
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+
+            let content = NSView(frame: NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight))
+            let blur = NSVisualEffectView(frame: content.bounds)
+            blur.material = .popover
+            blur.state = .active
+            blur.blendingMode = .behindWindow
+            blur.wantsLayer = true
+            blur.layer?.cornerRadius = 6
+            blur.layer?.masksToBounds = true
+            content.addSubview(blur)
+            panel.contentView = content
+            readoutPanel = panel
+        }
+        panel.setFrame(NSRect(origin: panel.frame.origin, size: NSSize(width: cardWidth, height: cardHeight)), display: false)
+
+        // Reuse a single label across moves.
+        let label: NSTextField
+        if let existing = panel.contentView?.subviews.compactMap({ $0 as? NSTextField }).first {
+            label = existing
+        } else {
+            label = NSTextField(labelWithString: "")
+            label.isBezeled = false
+            label.isEditable = false
+            label.backgroundColor = .clear
+            panel.contentView?.addSubview(label)
+        }
+        label.attributedStringValue = attributed
+        // attributed.size() is the tight glyph bounding box — a hair under the
+        // field's own fitting width (75.1 vs 80.0 for "3 pm · $35.00"). Give
+        // the label 2pt of slack so the last glyph never clips on a fractional
+        // pixel; the panel is sized from the same width, so the extra sits
+        // inside the card's padding.
+        label.frame = NSRect(x: padding, y: padding, width: textSize.width + 2, height: textSize.height)
+
+        // Anchor beside the dot: prefer right, flip left near the lane's right
+        // edge; vertically centered on the dot. Clamp inside the screen.
+        let dotInView = CGPoint(x: CurveScrub.xPosition(forHour: scrub.hour, laneWidth: Double(bounds.width)), y: yOffset(for: scrub.value))
+        let dotOnScreen = parentWindow.convertToScreen(NSRect(origin: convert(dotInView, to: nil), size: .zero)).origin
+        let curveOnScreen = parentWindow.convertToScreen(convert(bounds, to: nil))
+        let gap: CGFloat = 8
+        var originX = dotOnScreen.x + gap
+        if originX + cardWidth > curveOnScreen.maxX + 40 {
+            originX = dotOnScreen.x - gap - cardWidth
+        }
+        var originY = dotOnScreen.y - cardHeight / 2
+        if let visible = (parentWindow.screen ?? NSScreen.main)?.visibleFrame {
+            originX = min(max(originX, visible.minX + 4), visible.maxX - cardWidth - 4)
+            originY = min(max(originY, visible.minY + 4), visible.maxY - cardHeight - 4)
+        }
+        panel.setFrameOrigin(NSPoint(x: originX, y: originY))
+        panel.orderFront(nil)
+    }
+
+    /// The dot's y in VIEW coordinates, mirroring draw(_:)'s y-scale. The
+    /// readout anchors to the dot, so it must resolve the same scale the
+    /// curve used. draw(_:)'s lane is `bounds`, so lane.minY is 0 here.
+    private func yOffset(for value: Double) -> CGFloat {
+        let peak = max(hourly.compactMap { $0 }.max() ?? 0, ghost?.compactMap { $0 }.max() ?? 0)
+        let yMax = max(limit, peak, 1) * 1.08
+        return bounds.minY + bounds.height * CGFloat(value / yMax)
+    }
+
+    // MARK: Sonar ring
+
+    /// A single expanding ring from the lane's center, fired once per session
+    /// to say "this curve is scrubable". A CAShapeLayer stroke animation so
+    /// it rides the compositor like the draw-on reveal — no draw(_:) loop.
+    private func fireSonarRing() {
+        guard let layer else { return }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let startRadius: CGFloat = 4
+        let endRadius: CGFloat = bounds.width / 2
+
+        let ring = CAShapeLayer()
+        ring.frame = layer.bounds
+        ring.fillColor = nil
+        ring.strokeColor = NSColor.labelColor.withAlphaComponent(0.5).cgColor
+        ring.lineWidth = 1.0
+        let startPath = CGPath(ellipseIn: CGRect(x: center.x - startRadius, y: center.y - startRadius, width: startRadius * 2, height: startRadius * 2), transform: nil)
+        let endPath = CGPath(ellipseIn: CGRect(x: center.x - endRadius, y: center.y - endRadius, width: endRadius * 2, height: endRadius * 2), transform: nil)
+        ring.path = endPath // model rests at the end; animation is removed on completion
+        layer.addSublayer(ring)
+
+        let expand = CABasicAnimation(keyPath: "path")
+        expand.fromValue = startPath
+        expand.toValue = endPath
+        expand.duration = 0.6
+        expand.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.5
+        fade.toValue = 0
+        fade.duration = 0.6
+        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        expand.isRemovedOnCompletion = true
+        fade.isRemovedOnCompletion = true
+        ring.add(expand, forKey: "expand")
+        ring.add(fade, forKey: "fade")
+
+        // Remove the sublayer after the animation finishes.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak ring] in
+            ring?.removeFromSuperlayer()
+        }
     }
 }
 

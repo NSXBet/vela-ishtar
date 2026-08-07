@@ -4,6 +4,28 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.5.1] — 2026-08-08
+
+The spend curve is now scrubable: hover it and a crosshair + dot snap to the
+nearest observed hour, with a floating readout ("3 pm · $35.00") anchored
+beside the dot and a one-shot sonar ring on first hover to say it's there.
+
+### Added
+
+- Hover today's curve for a crosshair and a filled dot that snaps to the
+  nearest OBSERVED hour — a gap hour never answers, so the pointer past the
+  last reading snaps back to it rather than inventing a value.
+- A floating readout card next to the dot speaks the hour in your local time
+  plus the cumulative spend, always two decimals.
+- A one-shot sonar ring pulses on the first hover of each popover open to
+  announce the scrubber. Gated off under Reduce Motion.
+
+### Changed
+
+- The changelog card now leads with the running version's own note ("here's
+  what you just got") instead of dropping it as redundant — the line you most
+  want to see is the one that was missing.
+
 ## [0.5.0] — 2026-08-08
 
 The models table, re-set: aligned numbers, a share figure instead of a bar,
