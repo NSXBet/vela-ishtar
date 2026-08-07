@@ -4,6 +4,22 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.4.1] — 2026-08-07
+
+Motion polish: the Today / Month switch is now one coordinated transition.
+
+### Fixed
+
+- **Tapping Today / Month no longer shakes the card.** The tab switch used to
+  run three uncoordinated motions in the same beat — the indicator slide, a
+  deferred rebuild that destroyed and recreated the switcher (a visible
+  blink), and the card's settle animation firing against rows that had just
+  been torn down. Now the switch is a single transition: the indicator glides,
+  the old period's card freezes as a top-anchored snapshot while the new
+  period builds underneath, and the panel height settles as the snapshot
+  crossfades away. Rapid taps are guarded so only the latest one's rebuild
+  lands. Reduce Motion still snaps instantly.
+
 ## [0.4.0] — 2026-08-07
 
 Motion release: the curve, the tabs, and the card itself now move at 60fps.
@@ -230,6 +246,7 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[0.4.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.1
 [0.4.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.0
 [0.3.4]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.4
 [0.3.3]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.3
