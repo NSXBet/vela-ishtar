@@ -49,9 +49,9 @@ public final class PopoverView: NSView {
         WhatsNew.bundled(fallback: whatsNewFallback)
     }
     private static let whatsNewFallback: [(version: String, note: String)] = [
+        ("0.4.3", "fixed-height card — the tab switch never resizes"),
         ("0.4.2", "motion polish — tab switch is a true crossfade morph"),
         ("0.4.1", "motion polish — tab switch is one smooth transition"),
-        ("0.4.0", "motion release — 60fps curve, sliding tabs, settling card"),
     ]
 
     public init() {
@@ -65,21 +65,23 @@ public final class PopoverView: NSView {
     }
 
     private var isRelayout = false
-    /// True while an animated card-resize is in flight (v0.4.0). A second
-    /// resize requested mid-animation falls back to the synchronous path so
-    /// two snapshot animations never stack.
-    private var resizeAnimating = false
-    /// True while a period-switch settle is in flight (v0.4.1). That flow
-    /// owns its own snapshot + panel-frame animation and resizes the panel
-    /// itself, so update()'s resize block must not ALSO try to settle the
-    /// same height change underneath it — that was the visible shake.
-    private var periodTransitioning = false
-    /// Monotonic guard for the deferred period rebuild: only the LATEST tap's
-    /// rebuild may land. Without it, rapid Today→Month→Today taps queue
-    /// multiple asyncAfter rebuilds that fire 0.21s apart and re-run the
-    /// whole transition — a stutter that looks exactly like the shake this
-    /// code exists to remove.
-    private var periodRebuildGeneration = 0
+    /// Month runway (v0.2.0) or pace/median line (v0.2.0) — one 18pt slot
+    /// that both periods ALWAYS consume (v0.4.3). Rendering the slot even when
+    /// its text is suppressed (early month, no spend, stale) is what makes the
+    /// two periods equal-height: the panel never resizes on a tab switch, so
+    /// the curve, the rows, and the top edge stay glued in place. The label is
+    /// invisible when there's nothing to say — reserved air, not dead UI.
+    private static let paceSlotHeight: CGFloat = 18
+
+    /// Today shows 1–5 model rows, Month up to 5. v0.4.3 pads the models
+    /// block to a constant 5 rows in BOTH periods (empty slots render as
+    /// blank air), so the section is the same height whichever tab is up —
+    /// the second half of the never-resize-on-switch guarantee above.
+    private static let maxModelRows = 5
+    /// One model row's height (must match makeModelRow's rowHeight). The
+    /// padding loop adds this per empty slot; keep them in sync or the two
+    /// periods drift by a few points and the card breathes on a switch.
+    private static let modelRowSlotHeight: CGFloat = 24
 
     @MainActor
     public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date, todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)) {
@@ -189,11 +191,22 @@ public final class PopoverView: NSView {
             // extrapolation of the month's spend so far. Same freshness gate
             // as the median line above; suppressed early in the month and
             // when there's no spend yet (see PaceEngine.monthRunway).
+            //
+            // v0.4.3: the slot is RESERVED either way. When the runway is
+            // suppressed we still consume the 18pt (an invisible row), so the
+            // card's height doesn't breathe when the line appears on day 7 —
+            // and, more importantly, so Today and Month stay equal height.
             if isFresh, let runway = PaceEngine.monthRunway(monthSpent: usage.currentMonth.totalCostUSD, now: now) {
                 yOffset += makePaceRow(runway, at: &yOffset)
+            } else {
+                yOffset += Self.paceSlotHeight
             }
         } else {
             yOffset += makePaceRow("No data yet.", at: &yOffset)
+            // Same reservation as the data path: the loading/first-run card is
+            // the same height as the settled one, so the first real render
+            // doesn't settle at all — it just brightens in place.
+            yOffset += Self.paceSlotHeight
         }
 
         yOffset += sectionSpacing
@@ -210,9 +223,14 @@ public final class PopoverView: NSView {
         yOffset += makeHairline(at: &yOffset)
         yOffset += sectionSpacing
 
-        // 6. Models header + rows (aggregated over the chosen period)
+        // 6. Models header + rows (aggregated over the chosen period).
+        // v0.4.3: the block is ALWAYS maxModelRows tall in both periods —
+        // short lists pad with invisible slot rows. This is half of the
+        // never-resize-on-switch guarantee: the panel height can't depend on
+        // how many models happen to be shown.
         let modelsForPeriod = aggregatedModels(response: usageResponse, history: history, now: now)
         yOffset += makeModelsHeader(at: &yOffset)
+        var modelRowsRendered = 0
         if selectedPeriod == .today, let usage = usageResponse {
             // Today segment, three states. The split is the snapshot-derived
             // per-model breakdown (v0.3.0) — only trustable when the data is
@@ -242,24 +260,35 @@ public final class PopoverView: NSView {
                 for row in displayRows {
                     let displayName = row.name.split(separator: "/").last.map(String.init) ?? row.name
                     yOffset += makeModelRow(name: displayName, cost: row.cost, tokens: row.tokens, maxCost: maxNamedCost, showsBar: !row.isOther, at: &yOffset)
+                    modelRowsRendered += 1
                 }
             } else if isFresh, case .unavailable(let reason) = todayModelSplit {
                 // Fresh but not derivable (first day, month seam, gap): the
                 // honest total plus WHY there's no split. noSpendYet's nil
                 // note keeps the plain "monthly only" line.
                 yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: reason.note, at: &yOffset)
+                modelRowsRendered = Self.maxModelRows   // total row + note fills the block
             } else {
                 // Stale: total only, no split note — the banner already says
                 // the data is old, and a split note would claim a freshness
                 // the rows below don't have.
                 yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: nil, at: &yOffset)
+                modelRowsRendered = Self.maxModelRows
             }
         } else if !modelsForPeriod.isEmpty {
-            for model in modelsForPeriod.prefix(5) {
+            for model in modelsForPeriod.prefix(Self.maxModelRows) {
                 // Display strips the provider prefix ("moonshotai/kimi-k3" -> "kimi-k3").
                 let displayName = model.model.split(separator: "/").last.map(String.init) ?? model.model
                 yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), maxCost: modelsForPeriod.first?.totalCostUSD ?? 1, at: &yOffset)
+                modelRowsRendered += 1
             }
+        }
+        // Pad the block out to its constant height. A slot row is 24pt of
+        // blank air — invisible, but it keeps the models section (and so the
+        // whole card) the same height whether Today shows 1 model or 5.
+        while modelRowsRendered < Self.maxModelRows {
+            yOffset += Self.modelRowSlotHeight
+            modelRowsRendered += 1
         }
 
         yOffset += sectionSpacing
@@ -306,120 +335,23 @@ public final class PopoverView: NSView {
         panelFrame.size.height = contentHeight
         panelFrame.origin.y -= delta   // keep the top edge anchored
 
-        // v0.4.0: animate the height settle. The trap is that all rows are
-        // BOTTOM-anchored (y = bounds.height - …), so resizing mid-layout
-        // makes every row visibly slide. The fix: freeze the CURRENT content
-        // as a top-anchored snapshot overlaying the panel, animate the panel
-        // frame, and rebuild the real content underneath instantly. The eye
-        // tracks the static top edge; the growing/shrinking region is the
-        // empty bottom — so nothing appears to move except the card's edge.
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if !reduceMotion, !resizeAnimating, !periodTransitioning, let panel, let effectView = panel.contentView {
-            resizeAnimating = true
-
-            // 1. Snapshot the current (pre-resize) content. Force a
-            //    deterministic render first so the bitmap is a complete frame,
-            //    not whatever the window server last composited mid-layout.
-            //    cacheDisplay is synchronous but the popover is ~25 lightweight
-            //    views — cheap. It renders into a bitmap rep, wrapped in an
-            //    NSImage.
-            layoutSubtreeIfNeeded()
-            displayIfNeeded()
-            guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
-                // No bitmap context — fall back to the synchronous resize.
-                setFrameSize(NSSize(width: 320, height: contentHeight))
-                panel.setFrame(panelFrame, display: true, animate: false)
-                isRelayout = true
-                update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
-                isRelayout = false
-                resizeAnimating = false
-                return
-            }
-            cacheDisplay(in: bounds, to: rep)
-            let snapshotImage = NSImage(size: bounds.size)
-            snapshotImage.addRepresentation(rep)
-            let snapshot = NSImageView(image: snapshotImage)
-            // Pin the snapshot's TOP edge to the panel's top. macOS window
-            // coords are bottom-up and the window's TOP edge is what stays
-            // fixed during the resize (origin.y is pre-adjusted). So the
-            // snapshot must keep a fixed distance from the effect view's TOP
-            // — i.e. a flexible BOTTOM margin (.minYMargin). At snapshot time
-            // effectView.bounds.height == bounds.height (edge-to-edge pin), so
-            // y lands at 0; .minYMargin is what stops the snapshot sliding or
-            // being clipped as the panel grows/shrinks underneath it.
-            snapshot.frame = NSRect(
-                x: 0,
-                y: effectView.bounds.height - bounds.height,
-                width: bounds.width,
-                height: bounds.height
-            )
-            snapshot.autoresizingMask = [.minYMargin]
-            // Cross-motion guard: the snapshot is rendered via draw(_:) and
-            // bypasses the curve's GPU reveal mask. If a resize fires during
-            // the curve's draw-on reveal, the snapshot would show the FULLY
-            // drawn curve while the live curve underneath is still mid-sweep —
-            // a visible jump backward on the fade. Clear the mask so snapshot
-            // and live curve agree (the curve just appears fully drawn).
-            curveView.layer?.mask = nil
-            effectView.addSubview(snapshot, positioned: .above, relativeTo: self)
-
-            // 2. Animate the panel to its new height. origin.y was pre-
-            //    adjusted above so the TOP edge stays put — the card grows /
-            //    shrinks from its bottom edge, which is exactly how a native
-            //    panel "settles". display:false: the snapshot covers content.
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0.25
-                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                panel.animator().setFrame(panelFrame, display: false)
-            }, completionHandler: { [weak self, weak snapshot] in
-                // NSAnimationContext completion handlers fire on the main
-                // thread, but the closure type isn't main-actor-annotated, so
-                // Swift 6 can't see that. assumeIsolated is the honest bridge:
-                // it asserts (in debug) what AppKit already guarantees.
-                MainActor.assumeIsolated {
-                    self?.finishResizeAnimation(snapshot: snapshot)
-                }
-            })
-
-            // 4. Rebuild the real content at the final height IMMEDIATELY,
-            //    underneath the snapshot. The user sees the frozen snapshot
-            //    until the fade reveals the settled, live content.
-            setFrameSize(NSSize(width: 320, height: contentHeight))
-            isRelayout = true
-            update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
-            isRelayout = false
-        } else {
-            // Synchronous path (Reduce Motion, mid-animation re-entry, a
-            // period-switch transition — which owns the panel frame itself —
-            // or no panel yet): resize the VIEW in place and re-lay out. The
-            // panel frame is only snapped here when no one else is animating
-            // it; during a period transition the orchestrator animates it.
-            setFrameSize(NSSize(width: 320, height: contentHeight))
-            if !periodTransitioning {
-                panel?.setFrame(panelFrame, display: true, animate: false)
-            }
-            // Rows were laid out against the OLD height — re-lay against the
-            // new one so the hero isn't cut off on first open.
-            isRelayout = true
-            update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
-            isRelayout = false
-        }
-    }
-
-    /// Teardown for the animated card-resize (v0.4.0), called from the panel
-    /// animation's completion handler. Fades the snapshot out over 80ms (the
-    /// panel's close-fade cadence), removes it, and clears the re-entry guard.
-    /// A @MainActor method (not inline closure code) so mutating
-    /// `resizeAnimating` doesn't trip Swift 6's Sendable-closure rules.
-    @MainActor
-    private func finishResizeAnimation(snapshot: NSImageView?) {
-        NSAnimationContext.runAnimationGroup({ fade in
-            fade.duration = 0.08
-            snapshot?.animator().alphaValue = 0
-        }, completionHandler: {
-            snapshot?.removeFromSuperview()
-        })
-        resizeAnimating = false
+        // v0.4.3: the resize is SYNCHRONOUS again. The animated settle this
+        // replaced existed to hide rows sliding during a height change — but
+        // the only height change a user can trigger was the period switch, and
+        // the two periods are now EQUAL height by construction (constant model
+        // rows + a reserved pace slot), so a tab tap never reaches this block.
+        // What remains is the rare content-driven change (a stale banner
+        // appearing, the first live render settling over the loading view) —
+        // infrequent enough that a one-beat snap beats the snapshot machinery,
+        // and it can no longer clash with a period morph because there isn't
+        // one. Simpler, and the card simply never resizes under the user.
+        setFrameSize(NSSize(width: 320, height: contentHeight))
+        panel?.setFrame(panelFrame, display: true, animate: false)
+        // Rows were laid out against the OLD height — re-lay against the new
+        // one so the hero isn't cut off on first open.
+        isRelayout = true
+        update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
+        isRelayout = false
     }
 
     /// Draw-on animation for the curve, run once per popover open.
@@ -688,6 +620,11 @@ public final class PopoverView: NSView {
     /// isn't shown (stale data, or the split is unavailable today). `note`
     /// overrides the quiet sub-line; nil falls back to the plain "monthly
     /// only" explanation.
+    /// v0.4.3: returns the FULL models-block height (maxModelRows × slot), not
+    /// just the row+note's visible height — the caller pads to a constant 5
+    /// rows, and the total row + note already visually occupy the top of the
+    /// block, so its consumed height must claim the whole thing to keep the
+    /// card equal-height across periods.
     private func makeTodayTotalRow(spent: Double, note: String? = nil, at yOffset: inout CGFloat) -> CGFloat {
         let rowHeight: CGFloat = 24
         let totalLabel = NSTextField(labelWithString: String(format: "$%.2f across all models", spent))
@@ -703,7 +640,7 @@ public final class PopoverView: NSView {
         noteLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 16, width: 320 - 2 * sidePadding, height: 14)
         addSubview(noteLabel)
         managedSubviews.append(noteLabel)
-        return rowHeight + 24
+        return Self.modelRowSlotHeight * CGFloat(Self.maxModelRows)
     }
 
     private func makeModelRow(name: String, cost: Double, tokens: Double, maxCost: Double, showsBar: Bool = true, at yOffset: inout CGFloat) -> CGFloat {
@@ -939,148 +876,27 @@ public final class PopoverView: NSView {
     /// then re-asserts the same selection (positioned, not re-slid) on the
     /// fresh switcher.
     ///
-    /// v0.4.2: v0.4.1 crossfaded a snapshot of the OLD period away while the
-    /// panel frame ANIMATED to its new height — but the rebuild had already
-    /// happened, so the live (bottom-anchored) rows re-laid-out against the
-    /// interpolating bounds.height on every frame. The snapshot hid the top
-    /// of the swap; the bottom region visibly re-flowed. That's the clash the
-    /// user reported. The fix is a MORPH, not a rebuild-under-a-resizing-frame:
-    /// render BOTH periods to bitmaps, snap the panel to its final frame
-    /// instantly (invisible — it's fully covered), then crossfade old→new over
-    /// content that never moves. The only visible motion is the fade itself.
+    /// v0.4.3: the morph is gone. v0.4.1/0.4.2 tried to choreograph a period
+    /// switch whose content height DIFFERED — and every attempt (coordinated
+    /// settle, then a bitmap morph) fought the bottom-anchored rows re-laying
+    /// out against a moving bounds. The real fix is that there is no height
+    /// change to choreograph: both periods render the same sections at the
+    /// same height (constant model rows, reserved pace slot), so a tap is just
+    /// the indicator slide plus an in-place content rebuild. Nothing resizes,
+    /// nothing re-flows, the top edge and the curve never move — and the whole
+    /// class of shake/clip bugs is designed out rather than animated around.
     private func periodSelected(_ index: Int) {
         selectedPeriod = (index == 0) ? .today : .month
         guard let history = latestHistory else { return }
-        periodRebuildGeneration += 1
-        let generation = periodRebuildGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.21) { [weak self] in
-            guard let self, self.periodRebuildGeneration == generation else { return }
+            guard let self else { return }
             // Re-render from the REAL last state — never re-wrap latestResponse
             // as .fresh. If the gateway is unreachable the reading is .stale,
             // and the banner / amber dot / dimming must survive a period toggle.
-            self.animatePeriodTransition(state: self.latestState, history: history)
-        }
-    }
-
-    /// Morphs the popover from the old period's content to the new one's.
-    /// Both periods are rendered to bitmaps; the panel is snapped to its final
-    /// frame while fully covered (so the snap is invisible); the new bitmap is
-    /// placed at full opacity and the old one crossfades away on top. Because
-    /// the panel never animates its frame here, the live bottom-anchored rows
-    /// never re-lay-out mid-motion — the v0.4.1 clash is designed out, not
-    /// patched over. Falls back to a plain update() whenever animation is
-    /// impossible or unwanted — the data is never hostage to the choreography.
-    @MainActor
-    private func animatePeriodTransition(state: PollState, history: HistoryStore) {
-        let runUpdate = {
-            self.update(state: state, history: history,
+            self.update(state: self.latestState, history: history,
                         exhaustedAt: self.latestExhaustedAt, lastSuccessAt: self.latestSuccessAt,
                         now: Date(), todayModelSplit: self.latestModelSplit)
         }
-
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        guard !reduceMotion, !resizeAnimating, !periodTransitioning,
-              let panel = window as? NSPanel, let effectView = panel.contentView else {
-            runUpdate()
-            return
-        }
-
-        periodTransitioning = true
-
-        // 1. Bitmap A: the OLD period's card, rendered deterministically.
-        layoutSubtreeIfNeeded()
-        displayIfNeeded()
-        guard let repA = bitmapImageRepForCachingDisplay(in: bounds) else {
-            periodTransitioning = false
-            runUpdate()
-            return
-        }
-        cacheDisplay(in: bounds, to: repA)
-        let imageA = NSImage(size: bounds.size)
-        imageA.addRepresentation(repA)
-        // The bitmap paths below bypass the curve's reveal mask — clear it so
-        // old snapshot, new snapshot, and live curve all agree.
-        curveView.layer?.mask = nil
-
-        // 2. Rebuild at the new period. The resize block takes its synchronous
-        //    path (periodTransitioning = true): it sets the view's final size
-        //    but leaves the panel frame to us.
-        runUpdate()
-        layoutSubtreeIfNeeded()
-        displayIfNeeded()
-
-        // 3. Bitmap B: the NEW period's card, rendered NOW (before it has ever
-        //    been composited on screen) so the crossfade's destination already
-        //    exists as pixels.
-        guard let repB = bitmapImageRepForCachingDisplay(in: bounds) else {
-            periodTransitioning = false
-            // The rebuild already landed; just snap the panel to match.
-            snapPanel(panel, toViewHeight: frame.height)
-            return
-        }
-        cacheDisplay(in: bounds, to: repB)
-        let imageB = NSImage(size: bounds.size)
-        imageB.addRepresentation(repB)
-
-        // 4. Snap the panel to its final frame INSTANTLY. From here the panel
-        //    is fully covered by bitmaps, so the user never sees the snap —
-        //    and, crucially, no animation means the live rows never re-lay-out
-        //    against an interpolating height.
-        snapPanel(panel, toViewHeight: frame.height)
-
-        // 5. Place B (the new period) at full opacity, top-anchored, covering
-        //    the live content. Then A (the old period) on top of B, and fade
-        //    A away: the eye reads old crossfading into new, nothing else moves.
-        let viewB = NSImageView(image: imageB)
-        viewB.frame = NSRect(x: 0, y: effectView.bounds.height - bounds.height,
-                             width: bounds.width, height: bounds.height)
-        viewB.autoresizingMask = [.minYMargin]
-        effectView.addSubview(viewB, positioned: .above, relativeTo: self)
-
-        let viewA = NSImageView(image: imageA)
-        viewA.frame = NSRect(x: 0, y: effectView.bounds.height - imageA.size.height,
-                             width: imageA.size.width, height: imageA.size.height)
-        viewA.autoresizingMask = [.minYMargin]
-        effectView.addSubview(viewA, positioned: .above, relativeTo: viewB)
-
-        var cleanedUp = false
-        let cleanup = {
-            guard !cleanedUp else { return }
-            cleanedUp = true
-            viewA.removeFromSuperview()
-            viewB.removeFromSuperview()
-            self.periodTransitioning = false
-        }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.2
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            viewA.animator().alphaValue = 0
-        }, completionHandler: {
-            // Main thread, but the closure type isn't main-actor-annotated —
-            // same assumeIsolated bridge as finishResizeAnimation.
-            MainActor.assumeIsolated { cleanup() }
-        })
-        // Failsafe: if the completion ever DOESN'T fire (e.g. orderOut aborts
-        // the window animation), don't leave two overlay bitmaps sitting on the
-        // retained panel — re-opening would show a frozen old card. 1s is far
-        // past the 0.2s fade; cleanup is idempotent so the normal path is
-        // unaffected.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self, self.periodTransitioning else { return }
-            cleanup()
-        }
-    }
-
-    /// Snaps the panel to the given content height, top edge anchored
-    /// (origin.y pre-adjusted), without animation. Used by the period morph:
-    /// the panel reaches its final size while fully covered by bitmaps.
-    @MainActor
-    private func snapPanel(_ panel: NSPanel, toViewHeight height: CGFloat) {
-        var panelFrame = panel.frame
-        let delta = height - panelFrame.height
-        panelFrame.size.height = height
-        panelFrame.origin.y -= delta
-        panel.setFrame(panelFrame, display: false, animate: false)
     }
 
     /// Aggregates model usage over the selected window. Month: the API's

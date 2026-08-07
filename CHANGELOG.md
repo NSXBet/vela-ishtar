@@ -4,6 +4,33 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.4.3] — 2026-08-08
+
+The card is now a fixed height. Tapping Today / Month no longer resizes
+anything — because there's no longer a height difference to animate.
+
+### Changed
+
+- **The popover is the same height in both periods.** Three releases
+  (0.4.0's settle, 0.4.1's coordinated transition, 0.4.2's bitmap morph)
+  tried to choreograph a tab switch whose content height differed — and
+  every one fought the bottom-anchored rows re-laying out against a moving
+  panel, which is what shook the card and, at worst, clipped the Month view
+  for a frame. The real fix was to remove the height change, not to animate
+  it better. The models block is now a constant five rows in both periods
+  (Today pads short lists with invisible slots), and the pace/runway line's
+  slot is always reserved even when the text is suppressed. Equal height
+  means a tab tap is just the indicator gliding plus the rows swapping in
+  place — the top edge, the curve, and the card's corners never move.
+- **Deleted the choreography, not just bypassed it.** The 0.4.2 bitmap
+  morph, the 0.4.0 animated card-settle, and the transition/guard flags
+  that kept them from clashing all had exactly one job: hiding a height
+  change. With no height change they were ~150 lines of machinery guarding
+  against a bug that can no longer occur — so they're gone. The rare
+  content-driven resize that remains (a stale banner appearing, the first
+  live render settling over the loading view) is a plain synchronous snap,
+  which is all it ever needed to be.
+
 ## [0.4.2] — 2026-08-07
 
 Motion polish, take two: the tab switch is now a true crossfade morph.
@@ -262,6 +289,7 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[0.4.3]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.2
 [0.4.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.1
 [0.4.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.0
