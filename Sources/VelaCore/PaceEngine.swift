@@ -119,6 +119,10 @@ public enum PaceEngine {
     /// NOT today's gateway spend_date (the in-progress day's mid-hour
     /// reading would bias the median), and (3) `hourly[hour] != nil`.
     ///
+    /// `hour` outside 0..<24 returns nil rather than crashing on an
+    /// out-of-range index — this is a public function and callers compute
+    /// the hour from a live clock.
+    ///
     /// Caveat: record() overwrites an occupied hour slot, so a past day's
     /// hourly[H] is the LAST reading observed within that hour (≈ end-of-hour
     /// cumulative), while today's spend is mid-hour. This slightly flatters
@@ -130,6 +134,7 @@ public enum PaceEngine {
         excluding todayKey: String,
         minDays: Int = 5
     ) -> Double? {
+        guard (0..<24).contains(hour) else { return nil }
         let samples = days
             .filter { $0.key != todayKey }
             .compactMap { $0.value.hourly[hour] }
@@ -141,6 +146,30 @@ public enum PaceEngine {
         } else {
             return (samples[mid - 1] + samples[mid]) / 2
         }
+    }
+
+    /// Linear month extrapolation: "On track for ~$X this month."
+    /// Suppressed during the first `minElapsedDays` (default 6) full days of
+    /// the month — projecting from 2 days of data produces a confidently
+    /// wrong number, which is worse than no number. Also suppressed when
+    /// there's no spend yet ($0.00). Returns nil when the line should not
+    /// appear.
+    ///
+    /// Uses fractional elapsed days (not integer dayOfMonth) so the divisor
+    /// accounts for today being only partially elapsed — dividing by the
+    /// integer day on day 7 at 01:00 UTC would underestimate by ~13%.
+    ///
+    /// Lives in VelaCore (not the view layer) so the calendar math is
+    /// unit-testable; the month boundary is UTC to match the gateway's
+    /// billing day keying elsewhere.
+    public static func monthRunway(monthSpent: Double, now: Date, minElapsedDays: Double = 6) -> String? {
+        guard monthSpent > 0 else { return nil }
+        let startOfMonth = utcCalendar.date(from: utcCalendar.dateComponents([.year, .month], from: now))!
+        let elapsedDays = now.timeIntervalSince(startOfMonth) / 86400
+        guard elapsedDays >= minElapsedDays else { return nil }
+        let daysInMonth = utcCalendar.range(of: .day, in: .month, for: now)?.count ?? 30
+        let projected = monthSpent / elapsedDays * Double(daysInMonth)
+        return String(format: "On track for ~$%.0f this month.", projected)
     }
 
     /// Formats a date as local time, e.g. "9:40 pm" — no leading zero on

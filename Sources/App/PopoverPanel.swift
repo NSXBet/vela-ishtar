@@ -33,6 +33,11 @@ public final class PopoverPanel: NSPanel {
     private var globalClickMonitor: Any?
     private var localClickMonitor: Any?
 
+    /// Generation counter for the dismiss→show race: a re-show during the
+    /// 80ms close fade must invalidate the stale completion handler that
+    /// would otherwise orderOut the just-reopened panel.
+    private var dismissGeneration = 0
+
     public init(contentView: NSView) {
         panelSize = contentView.frame.size
 
@@ -148,6 +153,7 @@ public final class PopoverPanel: NSPanel {
     /// (PopoverView.animateCurveDrawOn) starts 60ms into this, driven by
     /// AppDelegate. Close: 80ms fade-out (see dismiss()).
     public func show(relativeTo button: NSStatusBarButton?) {
+        dismissGeneration += 1   // invalidate any in-flight fade-out
         anchorButton = button
         let targetFrame = anchoredFrame(relativeTo: button)
 
@@ -203,6 +209,7 @@ public final class PopoverPanel: NSPanel {
     /// moment can compute off a garbage origin and pin the panel to a
     /// corner (reported: token prompt appeared bottom-left).
     public func showCenteredForKeyboardInput() {
+        dismissGeneration += 1   // invalidate any in-flight fade-out
         let screen = NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first
         let visible = screen?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: panelSize.width, height: panelSize.height)
@@ -283,15 +290,19 @@ public final class PopoverPanel: NSPanel {
         removeClickMonitors()
 
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            // 80ms fade, then orderOut. NSAnimationContext completion fires
-            // even if the window is already off-screen (no-op).
+            // 80ms fade, then orderOut. The generation guard prevents a
+            // stale completion from ordering out a panel that was re-shown
+            // during the fade (rapid pill double-click).
+            dismissGeneration += 1
+            let gen = dismissGeneration
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.08
                 self.animator().alphaValue = 0
             }, completionHandler: { [weak self] in
-                self?.orderOut(nil)
+                guard let self, self.dismissGeneration == gen else { return }
+                self.orderOut(nil)
                 // Restore alpha for the next show() — orderOut preserves it.
-                self?.alphaValue = 1
+                self.alphaValue = 1
             })
         } else {
             orderOut(nil)

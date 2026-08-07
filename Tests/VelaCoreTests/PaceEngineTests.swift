@@ -251,4 +251,63 @@ struct PaceEngineTests {
     func cruisingIgnoresTypical() {
         #expect(PaceEngine.sentence(for: .cruisingNoLimit, typical: (median: 31.4, spent: 54.2)) == "No daily limit on your account.")
     }
+
+    @Test("pace with eta exactly at midnight takes the typical comparison branch (boundary condition)")
+    func paceExactlyAtMidnightUsesTypical() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let midnight = ISODate.parse("2026-08-02T00:00:00Z")! // exactly the boundary
+        let sentence = PaceEngine.sentence(for: .pace(eta: midnight), now: now, typical: (median: 31.4, spent: 54.2))
+        #expect(sentence == "Typical day by now: $31 — you're at $54.")
+    }
+
+    @Test("medianSpend returns nil for an out-of-range hour instead of crashing")
+    func medianSpendOutOfRangeHour() {
+        let days: [String: DayRecord] = [
+            "2026-08-01": makeDay(hour: 12, value: 10),
+        ]
+        #expect(PaceEngine.medianSpend(atHourUTC: -1, in: days, excluding: "x") == nil)
+        #expect(PaceEngine.medianSpend(atHourUTC: 24, in: days, excluding: "x") == nil)
+    }
+
+    // MARK: - monthRunway (v0.2.1 — moved to PaceEngine for testability)
+
+    @Test("monthRunway returns nil during the first 6 full days of the month")
+    func monthRunwaySuppressedEarlyInMonth() {
+        // 2026-08-03 12:00 UTC → ~2.5 days elapsed (< 6) → suppressed.
+        let now = ISODate.parse("2026-08-03T12:00:00Z")!
+        #expect(PaceEngine.monthRunway(monthSpent: 300, now: now) == nil)
+    }
+
+    @Test("monthRunway returns nil when there is no spend yet")
+    func monthRunwayNilOnZeroSpend() {
+        let now = ISODate.parse("2026-08-10T12:00:00Z")!
+        #expect(PaceEngine.monthRunway(monthSpent: 0, now: now) == nil)
+    }
+
+    @Test("monthRunway uses fractional elapsed days — day 7 at 01:00 UTC divides by ~6.04, not 7")
+    func monthRunwayUsesFractionalDays() {
+        // 2026-08-07 01:00 UTC → 6 days + 1h = 6.0417 days elapsed. August
+        // has 31 days. Integer-day math (÷7) gives 620 * 31/7 ≈ $2,746 —
+        // a ~13% underestimate. Fractional math: 620 * 31/6.0417 ≈ $3,181.
+        let now = ISODate.parse("2026-08-07T01:00:00Z")!
+        #expect(PaceEngine.monthRunway(monthSpent: 620, now: now) == "On track for ~$3181 this month.")
+    }
+
+    @Test("monthRunway is correct for a 28-day February (non-leap year)")
+    func monthRunwayFebruaryNonLeap() {
+        // 2026-02-10 12:00 UTC → 9.5 days elapsed, 28 days in Feb 2026.
+        // 95 * 28/9.5 = 280 exactly.
+        let now = ISODate.parse("2026-02-10T12:00:00Z")!
+        #expect(PaceEngine.monthRunway(monthSpent: 95, now: now) == "On track for ~$280 this month.")
+    }
+
+    @Test("monthRunway respects a custom minElapsedDays gate")
+    func monthRunwayCustomGate() {
+        // Same instant as the fractional-days test (6.04 days elapsed).
+        let now = ISODate.parse("2026-08-07T01:00:00Z")!
+        // Gate at 7 → 6.04 < 7 → suppressed.
+        #expect(PaceEngine.monthRunway(monthSpent: 620, now: now, minElapsedDays: 7) == nil)
+        // Gate at 5 → 6.04 ≥ 5 → shown.
+        #expect(PaceEngine.monthRunway(monthSpent: 620, now: now, minElapsedDays: 5) != nil)
+    }
 }

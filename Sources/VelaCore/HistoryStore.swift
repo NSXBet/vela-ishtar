@@ -83,18 +83,27 @@ public struct HistoryStore: Sendable {
         var day = days[spendDate] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
         day.limit = limit
         // Monotonic guard: a cumulative "spent today" reading never goes
-        // DOWN within a gateway day, so never overwrite an occupied slot
-        // with a smaller value. Two ways that could otherwise happen:
-        // (1) the gateway restates an hour downward by a few cents on the
-        // next poll, and (2) if the gateway's day boundary ever LEADS the
-        // local clock, a 00:30 poll would write a small value into hour 0
-        // of a day that already holds a large hour-23 reading — a visible
-        // right-to-left zigzag. Tolerance mirrors isContaminated's so an
-        // honest tiny restatement doesn't wedge the slot forever.
-        if let existing = day.hourly[hour] {
-            let tolerance = max(existing * 0.01, 0.50)
-            if spentToday < existing - tolerance {
-                historyLog.notice("ignored downward restatement for \(spendDate, privacy: .public) hour \(hour, privacy: .public): \(existing, privacy: .public) -> \(spentToday, privacy: .public)")
+        // DOWN within a gateway day, so never accept a value that drops
+        // below the day's running max by more than the restatement
+        // tolerance. Comparing against the running max (not just this slot's
+        // previous value) closes the cross-hour case: a decrease into an
+        // EMPTY later slot — hour 14 → 15, or hour 23 → 0 across the gateway
+        // seam — would otherwise write through unguarded and leave a visible
+        // right-to-left zigzag in the day's curve (and, via allDays, poison
+        // the median until the next launch's contamination filter).
+        //
+        // Two ways a downward reading can legitimately appear: (1) the
+        // gateway restates an hour downward by a few cents on the next poll,
+        // and (2) the gateway's day boundary LEADS the local clock, so a
+        // 00:30 poll writes a small value into hour 0 of a day that already
+        // holds a large hour-23 reading. Tolerance mirrors isContaminated's
+        // (max 1% of the running max, or $0.50) so an honest tiny
+        // restatement doesn't wedge the slot at a stale high.
+        let runningMax = day.hourly.compactMap { $0 }.max()
+        if let peak = runningMax {
+            let tolerance = max(peak * 0.01, 0.50)
+            if spentToday < peak - tolerance {
+                historyLog.notice("ignored downward restatement for \(spendDate, privacy: .public) hour \(hour, privacy: .public): peak \(peak, privacy: .public) -> \(spentToday, privacy: .public)")
             } else {
                 day.hourly[hour] = spentToday
             }

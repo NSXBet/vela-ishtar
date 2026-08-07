@@ -135,6 +135,51 @@ struct HistoryStoreTests {
         #expect(store.day(spendDate: "2026-08-01")?.exhaustedAt == t2)
     }
 
+    // MARK: - Running-max monotonic guard (v0.2.1)
+
+    @Test("a downward reading into a LATER empty slot is rejected — the guard uses the day's running max, not just the same slot")
+    func recordRejectsDecreaseIntoEmptyLaterSlot() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        store.record(spentToday: 100.0, limit: 400, at: ISODate.parse("2026-08-01T14:10:00Z")!, spendDate: "2026-08-01")
+        // Hour 15 slot is EMPTY; the per-slot guard would have written 60
+        // straight in. The running-max guard rejects it: a cumulative total
+        // can't drop from 100 to 60 inside one gateway day.
+        store.record(spentToday: 60.0, limit: 400, at: ISODate.parse("2026-08-01T15:05:00Z")!, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[15] == nil)
+        // The honest hour-14 reading is untouched.
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[14] == 100.0)
+    }
+
+    @Test("a decrease across the gateway seam (hour 23 high, hour 0 low) leaves hour 0 empty, not a zigzag")
+    func recordRejectsCrossSeamDecreaseIntoEmptySlot() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        store.record(spentToday: 160.42, limit: 400, at: ISODate.parse("2026-08-01T23:50:00Z")!, spendDate: "2026-08-01")
+        // The gateway's day boundary leads the local clock: a 00:30 poll on
+        // the same gateway day writes into hour 0 — an empty slot. The old
+        // per-slot guard accepted this and drew a right-to-left zigzag.
+        store.record(spentToday: 2.74, limit: 400, at: ISODate.parse("2026-08-02T00:30:00Z")!, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[0] == nil)
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[23] == 160.42)
+    }
+
+    @Test("honest growth into a later empty slot is accepted — the guard never blocks a real increase")
+    func recordAllowsGrowthIntoEmptyLaterSlot() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        store.record(spentToday: 100.0, limit: 400, at: ISODate.parse("2026-08-01T14:10:00Z")!, spendDate: "2026-08-01")
+        store.record(spentToday: 120.0, limit: 400, at: ISODate.parse("2026-08-01T15:05:00Z")!, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[15] == 120.0)
+    }
+
+    @Test("a downward reading below the running max but within tolerance is written through, so the slot doesn't wedge at a stale high")
+    func recordWritesThroughWithinToleranceDip() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        store.record(spentToday: 100.0, limit: 400, at: ISODate.parse("2026-08-01T14:10:00Z")!, spendDate: "2026-08-01")
+        // 99.0 is below the running max (100) but within the 1% tolerance —
+        // writing it through keeps the displayed value from sticking high.
+        store.record(spentToday: 99.0, limit: 400, at: ISODate.parse("2026-08-01T15:05:00Z")!, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.hourly[15] == 99.0)
+    }
+
     // MARK: - Contaminated-day filter (v0.1.2)
 
     @Test("load drops a day whose spend decreases sharply mid-day (pre-fix contaminated data)")
@@ -357,5 +402,36 @@ struct HistoryStoreTests {
 
         // 4 days < 5-day gate → median is nil.
         #expect(PaceEngine.medianSpend(atHourUTC: 14, in: reader.allDays, excluding: "2026-08-06") == nil)
+    }
+
+    @Test("load persists the cleaned history so a contaminated day is gone from disk, not just from memory")
+    func loadPersistsCleanedHistory() throws {
+        let directory = Self.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // 1 clean day + 1 contaminated day.
+        var cleanHourly = Array(repeating: "null", count: 24)
+        cleanHourly[14] = "42.0"
+        var contaminatedHourly = Array(repeating: "null", count: 24)
+        contaminatedHourly[0] = "160.42"; contaminatedHourly[1] = "160.42"
+        contaminatedHourly[7] = "15.33"
+        let json = """
+        {"2026-08-01":{"hourly":[\(cleanHourly.joined(separator: ","))],"limit":400,"exhaustedAt":null},"2026-08-02":{"hourly":[\(contaminatedHourly.joined(separator: ","))],"limit":400,"exhaustedAt":null}}
+        """
+        let fileURL = directory.appendingPathComponent("history.json")
+        try json.data(using: .utf8)!.write(to: fileURL)
+
+        var store = HistoryStore(directory: directory)
+        try store.load()
+
+        // In-memory: contaminated day is gone.
+        #expect(store.allDays.count == 1)
+        #expect(store.allDays["2026-08-02"] == nil)
+
+        // On-disk: the file was re-saved without the contaminated day.
+        let persisted = try Data(contentsOf: fileURL)
+        let persistedDict = try JSONDecoder().decode([String: DayRecord].self, from: persisted)
+        #expect(persistedDict.count == 1)
+        #expect(persistedDict["2026-08-02"] == nil)
     }
 }

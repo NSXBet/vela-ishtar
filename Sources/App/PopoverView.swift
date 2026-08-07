@@ -124,24 +124,33 @@ public final class PopoverView: NSView {
             // Median-day benchmark: compare today's spend against the median
             // of past days at this same UTC hour. Only used when the pace
             // sentence would otherwise be the inert "stay under budget" line.
-            var utcCalendar = Calendar(identifier: .gregorian)
-            utcCalendar.timeZone = TimeZone(identifier: "UTC")!
-            let hourUTC = utcCalendar.component(.hour, from: now)
-            let median = PaceEngine.medianSpend(
-                atHourUTC: hourUTC,
-                in: history.allDays,
-                excluding: usage.dailyBudget.spendDate
-            )
-            let typical = median.map { (median: $0, spent: usage.dailyBudget.spentUSD) }
+            //
+            // Gated on isFresh: a stale response's spend figure is hours (or
+            // a month boundary) old, so comparing it against NOW's UTC hour,
+            // or projecting it over the CURRENT month, would present a
+            // confident line derived from mismatched timestamps. Fall back
+            // to the un-benchmarked sentence and no runway when stale.
+            let typical: (median: Double, spent: Double)?
+            if isFresh {
+                var utcCalendar = Calendar(identifier: .gregorian)
+                utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+                let hourUTC = utcCalendar.component(.hour, from: now)
+                typical = PaceEngine.medianSpend(
+                    atHourUTC: hourUTC,
+                    in: history.allDays,
+                    excluding: usage.dailyBudget.spendDate
+                ).map { (median: $0, spent: usage.dailyBudget.spentUSD) }
+            } else {
+                typical = nil
+            }
             let paceSentence = PaceEngine.sentence(for: paceVerdict, now: now, typical: typical)
             yOffset += makePaceRow(paceSentence, at: &yOffset)
 
             // 2b. Month runway: "On track for ~$X this month." — linear
-            // extrapolation of the month's spend so far. Suppressed during
-            // the first 7 days of the month (too noisy to be honest) and
-            // when there's no spend yet. A quiet second line under the
-            // pace sentence, same 13pt secondary style.
-            if let runway = monthRunway(monthSpent: usage.currentMonth.totalCostUSD, now: now) {
+            // extrapolation of the month's spend so far. Same freshness gate
+            // as the median line above; suppressed early in the month and
+            // when there's no spend yet (see PaceEngine.monthRunway).
+            if isFresh, let runway = PaceEngine.monthRunway(monthSpent: usage.currentMonth.totalCostUSD, now: now) {
                 yOffset += makePaceRow(runway, at: &yOffset)
             }
         } else {
@@ -304,22 +313,6 @@ public final class PopoverView: NSView {
         return 18
     }
 
-    /// Linear month extrapolation: "On track for ~$X this month."
-    /// Suppressed during the first 7 days of the month — projecting from 2
-    /// days of data produces a confidently wrong number, which is worse than
-    /// no number. Also suppressed when there's no spend yet ($0.00).
-    /// Returns nil when the line should not appear.
-    private func monthRunway(monthSpent: Double, now: Date) -> String? {
-        guard monthSpent > 0 else { return nil }
-        var utcCalendar = Calendar(identifier: .gregorian)
-        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
-        let dayOfMonth = utcCalendar.component(.day, from: now)
-        guard dayOfMonth >= 7 else { return nil }
-        let daysInMonth = utcCalendar.range(of: .day, in: .month, for: now)?.count ?? 30
-        let projected = monthSpent / Double(dayOfMonth) * Double(daysInMonth)
-        return String(format: "On track for ~$%.0f this month.", projected)
-    }
-
     private func makeHairline(at yOffset: inout CGFloat) -> CGFloat {
         let hairline = NSView(frame: NSRect(x: sidePadding, y: bounds.height - yOffset - hairlineHeight, width: 320 - 2 * sidePadding, height: hairlineHeight))
         hairline.wantsLayer = true
@@ -445,10 +438,16 @@ public final class PopoverView: NSView {
         // the same tokens at wildly different prices, so $/1M tok is the
         // number that actually compares them. Tokens == 0 (no usage) shows
         // an em-dash rather than a divide-by-zero or a meaningless $0.00.
+        // Past $999/M the label switches to compact form ("$1.2k/M") so a
+        // new model with a handful of expensive calls doesn't clip the column.
         let efficiencyText: String
         if tokens > 0 {
             let perMillion = cost / (tokens / 1_000_000)
-            efficiencyText = String(format: "$%.2f/M", perMillion)
+            if perMillion >= 1000 {
+                efficiencyText = String(format: "$%.1fk/M", perMillion / 1000)
+            } else {
+                efficiencyText = String(format: "$%.2f/M", perMillion)
+            }
         } else {
             efficiencyText = "—"
         }
