@@ -37,4 +37,15 @@ public enum WhatsNew {
         let parsed = parse(text)
         return parsed.isEmpty ? fallback : parsed
     }
+
+    /// The notes to actually show for a running version (v0.5.0). The tip now
+    /// carries a "You're running vX.Y.Z" subtitle, so the running version's own
+    /// note line would repeat it — it's dropped. Unless that filter would empty
+    /// the list (a fresh install whose whatsnew.txt leads with only the current
+    /// version): an empty changelog card is worse than a redundant line, so the
+    /// full list is kept.
+    public static func visibleNotes(running: String, notes: [(version: String, note: String)]) -> [(version: String, note: String)] {
+        let filtered = notes.filter { $0.version != running }
+        return filtered.isEmpty ? notes : filtered
+    }
 }

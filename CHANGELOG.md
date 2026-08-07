@@ -4,6 +4,30 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.5.0] — 2026-08-08
+
+The models table, re-set: aligned numbers, a share figure instead of a bar,
+and a changelog card that names itself.
+
+### Changed
+
+- **Number columns align one above the other.** Cost and $/M efficiency now
+  use monospaced-digit type, right-aligned on a shared edge, with the
+  efficiency row dropped 2pt so its baseline sits with the cost above it.
+  Column widths come from a measured glyph-width audit ($9,999.99 at 13pt,
+  $999.99k/M at 11pt), so a long figure can never clip or push its neighbor.
+- **The per-model bar is gone; its answer is inline.** Each row's 2pt
+  proportional bar restated what the cost column already says. In its place
+  the model name now carries its share of the period's spend — `gpt-5 · 62%`
+  — so "which model dominates" reads as a number, not a decoration. Shares
+  are period-aware: Today divides by your real daily total, Month by the
+  month's. The "Other" residue row stays share-free, since it's a bucket,
+  not a model.
+- **The version tip is titled "Changelog".** The card used to headline
+  itself "Vela Ishtar vX.Y.Z"; the version now lives in a "You're running
+  vX.Y.Z" subtitle, and the running version's own note line is filtered out
+  of the list (kept only if filtering would leave the card empty).
+
 ## [0.4.3] — 2026-08-08
 
 The card is now a fixed height. Tapping Today / Month no longer resizes

@@ -9,7 +9,7 @@ usage at a glance. An instrument, not a scoreboard.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-147%20passing-30d158?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-156%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 [![Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-blue?style=flat-square)](CHANGELOG.md)
 
@@ -48,25 +48,34 @@ Click the pill. One panel, no tabs — hairlines and whitespace only.
 
 ## Install
 
-**Direct download (recommended):**
-
-```bash
-curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.4.3/VelaIshtar-0.4.3.zip
-unzip VelaIshtar-0.4.3.zip -d /Applications/
-open -a "Vela Ishtar"
-```
-
-**Homebrew** (once the tap is public):
+**Homebrew (recommended):**
 
 ```bash
 brew tap NSXBet/tap
 brew install --cask vela-ishtar
+xattr -cr "/Applications/Vela Ishtar.app"
 open -a "Vela Ishtar"
 ```
 
-The app is ad-hoc signed, so on first launch macOS may ask you to
-right-click → Open (or run `xattr -cr "/Applications/Vela Ishtar.app"`).
-That's expected — we don't have an Apple Developer account yet.
+The tap is private to the NSXBet org — you need GitHub access to it. The
+`xattr -cr` clears the quarantine flag (the app is ad-hoc signed; we don't
+have an Apple Developer account yet).
+
+**Update to a new version:**
+
+```bash
+brew update && brew upgrade --cask vela-ishtar
+xattr -cr "/Applications/Vela Ishtar.app"
+```
+
+**Direct download:**
+
+```bash
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.5.0/VelaIshtar-0.5.0.zip
+unzip VelaIshtar-0.5.0.zip -d /Applications/
+xattr -cr "/Applications/Vela Ishtar.app"
+open -a "Vela Ishtar"
+```
 
 **After launching:** there is no window — Vela Ishtar is a menu bar app.
 Look top-right, next to the clock: a small pill showing today's spend.
@@ -135,7 +144,7 @@ Pure AppKit + Swift, zero dependencies, ~1,400 LOC. Builds with bare
 `VelaCore` unit tests.
 
 ```bash
-make test     # 147 unit tests (pace math, burn buffer, border dash, history)
+make test     # 156 unit tests (pace math, burn buffer, border dash, history)
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 ```
 

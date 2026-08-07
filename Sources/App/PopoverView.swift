@@ -240,14 +240,15 @@ public final class PopoverView: NSView {
             // fresh, so a stale reading falls back to the honest total-only
             // row and never shows a derived split against hours-old data.
             if isFresh, case .split(let s) = todayModelSplit {
-                // Bars normalize against the largest NAMED cost — Other is a
-                // residual bucket, not a model, so it must not set the scale.
-                let maxNamedCost = s.rows.filter { !$0.isOther }.map(\.costUSD).max() ?? 1
+                // Shares are of TODAY's total spend (the authoritative daily
+                // figure), so the percents tie to the hero number. The pinned
+                // "Other" residual passes showsShare=false — it isn't a model.
                 // Display compaction (v0.3.1): at most 5 rows render, and the
                 // reconciling Other row must NEVER be the one dropped — else
                 // the visible breakdown stops tying to the day total. With
                 // >4 named rows, fold the tail into Other so row 5 is always
                 // the pinned residual.
+                let dayTotal = usage.dailyBudget.spentUSD
                 let named = s.rows.filter { !$0.isOther }
                 let engineOther = s.rows.first { $0.isOther }?.costUSD ?? 0
                 let displayRows: [(name: String, cost: Double, tokens: Double, isOther: Bool)]
@@ -262,7 +263,8 @@ public final class PopoverView: NSView {
                 }
                 for row in displayRows {
                     let displayName = row.name.split(separator: "/").last.map(String.init) ?? row.name
-                    yOffset += makeModelRow(name: displayName, cost: row.cost, tokens: row.tokens, maxCost: maxNamedCost, showsBar: !row.isOther, at: &yOffset)
+                    let share = ModelShare.percent(cost: row.cost, total: dayTotal)
+                    yOffset += makeModelRow(name: displayName, cost: row.cost, tokens: row.tokens, sharePercent: share, showsShare: !row.isOther, at: &yOffset)
                     modelRowsRendered += 1
                 }
             } else if isFresh, case .unavailable(let reason) = todayModelSplit {
@@ -279,10 +281,17 @@ public final class PopoverView: NSView {
                 modelRowsRendered = Self.maxModelRows
             }
         } else if !modelsForPeriod.isEmpty {
+            // Shares are of the month's total spend across all models, so the
+            // percents tie to the month hero figure.
+            let monthTotal = modelsForPeriod.reduce(0) { $0 + $1.totalCostUSD }
             for model in modelsForPeriod.prefix(Self.maxModelRows) {
                 // Display strips the provider prefix ("moonshotai/kimi-k3" -> "kimi-k3").
                 let displayName = model.model.split(separator: "/").last.map(String.init) ?? model.model
-                yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), maxCost: modelsForPeriod.first?.totalCostUSD ?? 1, at: &yOffset)
+                let share = ModelShare.percent(cost: model.totalCostUSD, total: monthTotal)
+                // Month has no "Other" residual, so every row is a real model
+                // and shows its share. Explicit (not the default) so a future
+                // Month-side Other-fold is forced to reconsider this line.
+                yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), sharePercent: share, showsShare: true, at: &yOffset)
                 modelRowsRendered += 1
             }
         }
@@ -647,49 +656,67 @@ public final class PopoverView: NSView {
         return Self.modelRowSlotHeight * CGFloat(Self.maxModelRows)
     }
 
-    private func makeModelRow(name: String, cost: Double, tokens: Double, maxCost: Double, showsBar: Bool = true, at yOffset: inout CGFloat) -> CGFloat {
+    /// One model row (v0.5.0). The 2pt proportional bar is gone — it restated
+    /// the cost column as decoration and its variable right edge was half the
+    /// column-raggedness problem. Its "which model dominates" answer now lives
+    /// inline in the name as a dim ` · 62%` share-of-period-spend, computed by
+    /// the caller (period-aware: Today shares the day total, Month the month).
+    /// `showsShare` is false only for the "Other" residual bucket — it isn't a
+    /// model, so a share would imply a magnitude the number doesn't carry.
+    ///
+    /// Columns, left to right: name+share (flexible, truncating) · cost
+    /// (tabular, right) · $/M efficiency (tabular, right). Both number columns
+    /// use monospacedDigitSystemFont so their right edges and decimal points
+    /// stack into true columns — the hero already proved this is what makes
+    /// figures read as aligned (the old proportional face left a wavy edge).
+    private func makeModelRow(name: String, cost: Double, tokens: Double, sharePercent: Int, showsShare: Bool = true, at yOffset: inout CGFloat) -> CGFloat {
         let rowHeight: CGFloat = 24
 
-        // Name (13pt, 118 wide)
-        let nameLabel = NSTextField(labelWithString: name)
-        nameLabel.font = NSFont.systemFont(ofSize: 13)
-        nameLabel.textColor = .labelColor
-        nameLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight, width: 118, height: rowHeight)
+        // Name + share, one attributed label so a long model name truncates
+        // with the share still attached. Share is dimmer + smaller so it reads
+        // as a qualifier, not a second name.
+        let nameFont = NSFont.systemFont(ofSize: 13)
+        let nameAttr = NSMutableAttributedString(string: name, attributes: [
+            .font: nameFont,
+            .foregroundColor: NSColor.labelColor,
+        ])
+        if showsShare {
+            nameAttr.append(NSAttributedString(string: " · \(sharePercent)%", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.labelColor.withAlphaComponent(0.40),
+            ]))
+        }
+        let nameLabel = NSTextField(labelWithAttributedString: nameAttr)
+        nameLabel.lineBreakMode = .byTruncatingTail
+        // 152pt: the clear-space arithmetic is 320 - 18 (left pad) - 66 (cost)
+        // - 66 (efficiency) - 18 (right pad) = 152. A longer budget would
+        // overlap the cost column's frame. A long name truncates its tail
+        // rather than push the number columns — the provider prefix is
+        // already stripped, so the meaningful part leads.
+        nameLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight, width: 152, height: rowHeight)
         addSubview(nameLabel)
         managedSubviews.append(nameLabel)
 
-        // Bar (2pt tall, width proportional to cost). The "Other" residual
-        // bucket passes showsBar=false — it isn't a model, so a bar would
-        // imply a magnitude the number doesn't carry.
-        if showsBar {
-            // Capped so the bar never reaches the cost label (starts x=194;
-            // bar starts x=138; 8pt gap -> 48pt max). Pre-cap it ran 100pt
-            // and cut straight through the dollar figure on the top model.
-            let barWidth = maxCost > 0 ? min(CGFloat(cost / maxCost) * 100, 48) : 0
-            let bar = NSView(frame: NSRect(x: sidePadding + 120, y: bounds.height - yOffset - 8, width: barWidth, height: 2))
-            bar.wantsLayer = true
-            bar.layer?.backgroundColor = NSColor.labelColor.cgColor
-            addSubview(bar)
-            managedSubviews.append(bar)
-        }
-
-        // Cost (13pt, tabular right, 52 wide; sits left of the 64pt
-        // efficiency column, so its x accounts for the wider right column).
+        // Cost (13pt tabular digits, right-aligned, 66 wide). Right-aligned +
+        // tabular figures is what stacks the decimal points down the column.
+        // 66pt clears the worst case ($9,999.99 = 64.4pt measured) with margin.
         let costLabel = NSTextField(labelWithString: String(format: "$%.2f", cost))
-        costLabel.font = NSFont.systemFont(ofSize: 13)
+        costLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         costLabel.textColor = .labelColor
         costLabel.alignment = .right
-        costLabel.frame = NSRect(x: 320 - sidePadding - 52 - 64, y: bounds.height - yOffset - rowHeight, width: 52, height: rowHeight)
+        costLabel.frame = NSRect(x: 320 - sidePadding - 66 - 66, y: bounds.height - yOffset - rowHeight, width: 66, height: rowHeight)
         addSubview(costLabel)
         managedSubviews.append(costLabel)
 
-        // Efficiency (11pt, 40% alpha, right, 64 wide): cost per million
-        // tokens. Raw token counts are a vanity metric — two models can burn
-        // the same tokens at wildly different prices, so $/1M tok is the
-        // number that actually compares them. Tokens == 0 (no usage) shows
-        // an em-dash rather than a divide-by-zero or a meaningless $0.00.
-        // Past $999/M the label switches to compact form ("$1.2k/M") so a
-        // new model with a handful of expensive calls doesn't clip the column.
+        // Efficiency (11pt tabular digits, 40% alpha, right, 64 wide): cost
+        // per million tokens. Raw token counts are a vanity metric — two
+        // models can burn the same tokens at wildly different prices, so $/1M
+        // tok is the number that actually compares them. Tokens == 0 (no
+        // usage) shows an em-dash rather than a divide-by-zero or a
+        // meaningless $0.00. Past $999/M the label switches to compact form
+        // ("$1.2k/M") so a new model with a handful of expensive calls
+        // doesn't clip the column. Dropped 2pt so its baseline sits on the
+        // 13pt cost baseline (the two fonts' first baselines differ by ~2pt).
         let efficiencyText: String
         if tokens > 0 {
             let perMillion = cost / (tokens / 1_000_000)
@@ -703,10 +730,11 @@ public final class PopoverView: NSView {
         }
 
         let tokenLabel = NSTextField(labelWithString: efficiencyText)
-        tokenLabel.font = NSFont.systemFont(ofSize: 11)
+        tokenLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         tokenLabel.textColor = .labelColor.withAlphaComponent(0.40)
         tokenLabel.alignment = .right
-        tokenLabel.frame = NSRect(x: 320 - sidePadding - 64, y: bounds.height - yOffset - rowHeight, width: 64, height: rowHeight)
+        // 66pt clears the worst case ($999.99k/M = 64.4pt measured).
+        tokenLabel.frame = NSRect(x: 320 - sidePadding - 66, y: bounds.height - yOffset - rowHeight - 2, width: 66, height: rowHeight)
         addSubview(tokenLabel)
         managedSubviews.append(tokenLabel)
 

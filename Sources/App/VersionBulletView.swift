@@ -33,11 +33,14 @@ public final class VersionBulletView: NSView {
         dot.layer?.cornerRadius = dotSize / 2
         addSubview(dot)
 
-        var lines = ["Vela Ishtar v\(version)", ""]
-        lines += notes.map { "\($0.version) — \($0.note)" }
+        // Build the spoken help from the SAME filtered list showTip() renders,
+        // so VoiceOver and the visual tip never diverge (the running version's
+        // own line is dropped from both).
+        var lines = ["Changelog", "You're running v\(version)", ""]
+        lines += WhatsNew.visibleNotes(running: version, notes: notes).map { "\($0.version) — \($0.note)" }
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("Vela Ishtar version")
+        setAccessibilityLabel("Vela Ishtar changelog")
         setAccessibilityHelp(lines.joined(separator: "\n"))
     }
 
@@ -85,26 +88,36 @@ public final class VersionBulletView: NSView {
     private func showTip() {
         guard tipWindow == nil, let parentWindow = window else { return }
 
-        // Vibrancy card: title in semibold, notes in regular secondary —
-        // one typographic register below the popover's own copy.
+        // Vibrancy card: "Changelog" title in semibold, a "You're running vX"
+        // subtitle grounding the version, then the notes in regular secondary —
+        // one typographic register below the popover's own copy. The running
+        // version's own note line is filtered (the subtitle already says it).
         let width: CGFloat = 232
         let padding: CGFloat = 10
         let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        let subtitleFont = NSFont.systemFont(ofSize: 11)
         let noteFont = NSFont.systemFont(ofSize: 11)
 
-        let title = NSTextField(wrappingLabelWithString: "Vela Ishtar v\(version)")
+        let title = NSTextField(wrappingLabelWithString: "Changelog")
         title.font = titleFont
         title.textColor = .labelColor
 
-        let noteText = notes.map { "\($0.version) — \($0.note)" }.joined(separator: "\n")
+        let subtitle = NSTextField(wrappingLabelWithString: "You're running v\(version)")
+        subtitle.font = subtitleFont
+        subtitle.textColor = .secondaryLabelColor
+
+        let visibleNotes = WhatsNew.visibleNotes(running: version, notes: notes)
+        let noteText = visibleNotes.map { "\($0.version) — \($0.note)" }.joined(separator: "\n")
         let notesLabel = NSTextField(wrappingLabelWithString: noteText)
         notesLabel.font = noteFont
         notesLabel.textColor = .secondaryLabelColor
 
         let titleSize = Self.measure(title.stringValue, font: titleFont, width: width - 2 * padding)
+        let subtitleSize = Self.measure(subtitle.stringValue, font: subtitleFont, width: width - 2 * padding)
         let notesSize = Self.measure(noteText, font: noteFont, width: width - 2 * padding)
         let gap: CGFloat = 6
-        let contentHeight = padding + titleSize.height + gap + notesSize.height + padding
+        let subtitleGap: CGFloat = 2
+        let contentHeight = padding + titleSize.height + subtitleGap + subtitleSize.height + gap + notesSize.height + padding
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: contentHeight))
         let blur = NSVisualEffectView(frame: content.bounds)
@@ -117,8 +130,10 @@ public final class VersionBulletView: NSView {
         content.addSubview(blur)
 
         title.frame = NSRect(x: padding, y: contentHeight - padding - titleSize.height, width: width - 2 * padding, height: titleSize.height)
+        subtitle.frame = NSRect(x: padding, y: title.frame.minY - subtitleGap - subtitleSize.height, width: width - 2 * padding, height: subtitleSize.height)
         notesLabel.frame = NSRect(x: padding, y: padding, width: width - 2 * padding, height: notesSize.height)
         content.addSubview(title)
+        content.addSubview(subtitle)
         content.addSubview(notesLabel)
 
         let panel = NSPanel(contentRect: content.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
