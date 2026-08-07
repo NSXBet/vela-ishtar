@@ -9,7 +9,7 @@ usage at a glance. An instrument, not a scoreboard.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-49%20passing-30d158?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-137%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 
 <img src="docs/assets/popover-dark.png" width="340" alt="Vela Ishtar popover">
@@ -134,7 +134,7 @@ Pure AppKit + Swift, zero dependencies, ~1,400 LOC. Builds with bare
 `VelaCore` unit tests.
 
 ```bash
-make test     # 49 unit tests (pace math, burn buffer, border dash, history)
+make test     # 137 unit tests (pace math, burn buffer, border dash, history)
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 ```
 

@@ -187,9 +187,26 @@ public final class PopoverView: NSView {
                 // Bars normalize against the largest NAMED cost — Other is a
                 // residual bucket, not a model, so it must not set the scale.
                 let maxNamedCost = s.rows.filter { !$0.isOther }.map(\.costUSD).max() ?? 1
-                for row in s.rows.prefix(5) {
+                // Display compaction (v0.3.1): at most 5 rows render, and the
+                // reconciling Other row must NEVER be the one dropped — else
+                // the visible breakdown stops tying to the day total. With
+                // >4 named rows, fold the tail into Other so row 5 is always
+                // the pinned residual.
+                let named = s.rows.filter { !$0.isOther }
+                let engineOther = s.rows.first { $0.isOther }?.costUSD ?? 0
+                let displayRows: [(name: String, cost: Double, tokens: Double, isOther: Bool)]
+                if named.count <= 4 {
+                    displayRows = named.map { ($0.name, $0.costUSD, Double($0.tokens), false) }
+                        + (engineOther > 0 ? [("Other", engineOther, 0, true)] : [])
+                } else {
+                    let kept = named.prefix(4)
+                    let folded = named.dropFirst(4).reduce(0) { $0 + $1.costUSD } + engineOther
+                    displayRows = kept.map { ($0.name, $0.costUSD, Double($0.tokens), false) }
+                        + [( "Other", folded, 0, true )]
+                }
+                for row in displayRows {
                     let displayName = row.name.split(separator: "/").last.map(String.init) ?? row.name
-                    yOffset += makeModelRow(name: displayName, cost: row.costUSD, tokens: Double(row.tokens), maxCost: maxNamedCost, showsBar: !row.isOther, at: &yOffset)
+                    yOffset += makeModelRow(name: displayName, cost: row.cost, tokens: row.tokens, maxCost: maxNamedCost, showsBar: !row.isOther, at: &yOffset)
                 }
             } else if isFresh, case .unavailable(let reason) = todayModelSplit {
                 // Fresh but not derivable (first day, month seam, gap): the

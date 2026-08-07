@@ -86,17 +86,25 @@ public final class CurveView: NSView {
     /// Not clipped by drawProgress: the ghost is context, not the reveal.
     private func drawGhost(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
         guard let ghost, drawGhostStroke else { return }
-        let points: [CGPoint] = ghost.enumerated().compactMap { hour, value in
-            guard let value else { return nil }
-            return CGPoint(x: x(hour), y: y(value))
-        }
-        guard points.count > 1 else { return }
-
+        // Break the path at every nil slot (v0.3.1): the engine leaves
+        // under-sampled hours nil ON PURPOSE ("gaps stay gaps"), so joining
+        // across a nil would draw a confident interpolated line where the
+        // honest answer was silence. Each contiguous non-nil run is its own
+        // sub-path.
         let stroke = NSBezierPath()
-        stroke.move(to: points[0])
-        points.dropFirst().forEach { stroke.line(to: $0) }
         stroke.lineWidth = Self.hairlineWidth
         stroke.lineJoinStyle = .round
+        var penDown = false
+        var segmentCount = 0
+        for (hour, value) in ghost.enumerated() {
+            if let value {
+                let point = CGPoint(x: x(hour), y: y(value))
+                if penDown { stroke.line(to: point) } else { stroke.move(to: point); penDown = true; segmentCount += 1 }
+            } else {
+                penDown = false
+            }
+        }
+        guard segmentCount > 0, ghost.contains(where: { $0 != nil }) else { return }
         NSColor.labelColor.withAlphaComponent(0.20).setStroke()
         stroke.stroke()
     }
