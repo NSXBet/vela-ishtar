@@ -157,8 +157,9 @@ public final class PopoverPanel: NSPanel {
     /// Open choreography (v0.2.0): the panel fades in while translating 4pt
     /// downward from the pill — a subtle "settling" motion that reads as
     /// premium without being distracting. The curve draw-on animation
-    /// (PopoverView.animateCurveDrawOn) starts 60ms into this, driven by
-    /// AppDelegate. Close: 80ms fade-out (see dismiss()).
+    /// (PopoverView.animateCurveDrawOn → CurveView.animateReveal) is started
+    /// by AppDelegate right after show() returns, so the sweep runs as the
+    /// panel settles. Close: 80ms fade-out (see dismiss()).
     public func show(relativeTo button: NSStatusBarButton?) {
         dismissGeneration += 1   // invalidate any in-flight fade-out
         anchorButton = button

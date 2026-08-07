@@ -4,6 +4,32 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.4.0] — 2026-08-07
+
+Motion release: the curve, the tabs, and the card itself now move at 60fps.
+
+### Changed
+
+- **The spend curve sweeps on at a true 60fps.** It used to step its
+  draw-on progress through 14 `DispatchQueue` timers, which weren't locked
+  to the display's refresh and visibly dropped frames when the main thread
+  was busy. Now the curve renders once and a GPU-composited mask reveals it
+  left-to-right over half a second — vsync-locked, so the sweep is smooth
+  even while a poll lands mid-animation.
+- **The Today / Month switcher slides.** Replaced the stock segmented
+  control with a custom tab pair: a hairline indicator glides to the tab
+  you tap. The indicator is positioned (not re-slid) on the 60s poll
+  refresh, so it only ever moves when you actually touch it.
+- **The popover's height settles instead of snapping.** When content grows
+  or shrinks (a stale banner appearing, the models list filling in), the
+  card used to jump to its new height and let every row slide into place.
+  Now the current content freezes as a top-anchored snapshot while the card
+  eases to its new height underneath, then the live content fades back in —
+  the top edge you were reading never moves.
+- **All three respect Reduce Motion.** With macOS's Reduce Motion enabled,
+  the curve draws fully-formed, the indicator snaps, and the card resizes
+  without animation — nothing moves that shouldn't.
+
 ## [0.3.4] — 2026-08-07
 
 Cold-open fix: the last reading shows instantly instead of a blank spinner.
@@ -204,6 +230,7 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[0.4.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.0
 [0.3.4]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.4
 [0.3.3]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.3
 [0.3.2]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.2

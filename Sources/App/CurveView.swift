@@ -37,6 +37,12 @@ public final class CurveView: NSView {
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
+        // v0.4.0: back the view with a layer so the draw-on reveal can ride
+        // the GPU. The curve content is static during the 0.5s window, so
+        // instead of re-running draw(_:) 14 times on a timer (the old
+        // DispatchWorkItem steps, which dropped frames), we render ONCE and
+        // animate a mask's width 0->full. That's vsync-locked 60fps.
+        wantsLayer = true
     }
 
     public required init?(coder: NSCoder) {
@@ -83,7 +89,9 @@ public final class CurveView: NSView {
     /// The median-day ghost: same polyline shape as today's curve, 20%
     /// opacity hairline, drawn BENEATH the main curve. No fill, no label —
     /// the shape is the sentence ("here's what a normal day looks like").
-    /// Not clipped by drawProgress: the ghost is context, not the reveal.
+    /// v0.4.0: the draw-on reveal is a whole-layer mask, so the ghost (and
+    /// ceiling, and now-tick) wipe in together with the curve — the reveal is
+    /// a full-lane sweep, not a curve-only draw-on.
     private func drawGhost(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
         guard let ghost, drawGhostStroke else { return }
         // Break the path at every nil slot (v0.3.1): the engine leaves
@@ -132,7 +140,12 @@ public final class CurveView: NSView {
             .foregroundColor: NSColor.labelColor.withAlphaComponent(0.35),
         ])
         let size = attributed.size()
-        attributed.draw(at: CGPoint(x: lane.maxX - size.width, y: ceilingY + 2))
+        // v0.4.0: layer-backed now, so the label must stay inside the lane or
+        // it's clipped. When the ceiling is pinned to the lane top, drawing at
+        // ceilingY + 2 would spill above bounds — tuck the label just under
+        // the line instead.
+        let labelY = min(ceilingY + 2, lane.maxY - size.height - 1)
+        attributed.draw(at: CGPoint(x: lane.maxX - size.width, y: labelY))
     }
 
     /// Cumulative-spend polyline with a filled area under it. Gaps (nil
@@ -202,13 +215,67 @@ public final class CurveView: NSView {
             .foregroundColor: NSColor.labelColor.withAlphaComponent(0.35),
         ])
         let size = attributed.size()
-        attributed.draw(at: CGPoint(x: tickX - size.width / 2, y: lane.minY - size.height))
+        // v0.4.0: the view is layer-backed now, so anything drawn outside
+        // `bounds` is clipped. The "now" label used to hang BELOW the lane
+        // (minY - height); draw it just INSIDE the bottom edge instead.
+        attributed.draw(at: CGPoint(x: tickX - size.width / 2, y: lane.minY + 2))
     }
 
     /// One device pixel, in points -- same idiom as StatusItemController's
     /// hairlineWidth, kept local since this file has no shared helpers module.
     private static var hairlineWidth: CGFloat {
         1.0 / (NSScreen.main?.backingScaleFactor ?? 2.0)
+    }
+
+    // MARK: - Draw-on reveal (v0.4.0, 60fps)
+
+    /// Reveals the already-drawn curve left-to-right over 0.5s using a
+    /// GPU-composited mask animation, instead of re-running draw(_:) on a
+    /// timer. Call AFTER configure(...) so the content is current.
+    ///
+    /// How it works: drawProgress is forced to 1 and the view rendered once,
+    /// then a CAShapeLayer mask is attached whose width animates 0 -> full.
+    /// Core Animation interpolates the mask on the compositor thread, locked
+    /// to vsync -- this is what makes it a true 60fps sweep rather than the
+    /// old ~14-step DispatchWorkItem stair-step. A poll mid-animation is now
+    /// harmless: configure() just re-renders content under the moving mask.
+    ///
+    /// Reduce Motion callers skip this entirely (drawProgress stays 1, no
+    /// mask) -- the gate lives in main.swift, this method assumes motion is
+    /// allowed.
+    public func animateReveal() {
+        // Force a full, current render so frame 1 of the reveal isn't a
+        // half-masked blank. drawProgress=1 means drawCurve shows everything.
+        drawProgress = 1
+        layoutSubtreeIfNeeded()
+        displayIfNeeded()
+
+        guard let layer else { return }
+
+        // A rectangular mask we grow from zero-width to full-width. Using a
+        // shape layer keeps the mask crisp; animating its path's width is the
+        // cheapest possible reveal (one property, GPU-interpolated).
+        let mask = CAShapeLayer()
+        mask.frame = layer.bounds
+        let fullRect = CGRect(x: 0, y: 0, width: layer.bounds.width, height: layer.bounds.height)
+        let zeroRect = CGRect(x: 0, y: 0, width: 0, height: layer.bounds.height)
+        // Model value is the FINAL (full-width) path, not the zero-width start.
+        // With a CABasicAnimation we then animate FROM zero TO the model value
+        // and remove it on completion — so when the animation ends, the layer
+        // rests at full width with no lingering presentation-vs-model split.
+        // (The old fillMode=.forwards + isRemovedOnCompletion=false pattern
+        // left the MODEL path at zero-width: any later mask removal would have
+        // snapped the curve to blank. Resting on the model value removes that
+        // landmine.)
+        mask.path = CGPath(rect: fullRect, transform: nil)
+        layer.mask = mask
+
+        let anim = CABasicAnimation(keyPath: "path")
+        anim.fromValue = CGPath(rect: zeroRect, transform: nil)
+        anim.toValue = CGPath(rect: fullRect, transform: nil)
+        anim.duration = 0.5
+        anim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        mask.add(anim, forKey: "reveal")
     }
 }
 

@@ -23,7 +23,6 @@ public final class PopoverView: NSView {
     /// current_month + top_models directly.
     private enum ModelPeriod: Int { case today = 0, month = 1 }
     private var selectedPeriod: ModelPeriod = .today
-    private weak var periodControl: NSSegmentedControl?
     private var latestResponse: UsageResponse?
     private var latestHistory: HistoryStore?
     // The last real PollState and its freshness inputs, captured in update().
@@ -50,9 +49,9 @@ public final class PopoverView: NSView {
         WhatsNew.bundled(fallback: whatsNewFallback)
     }
     private static let whatsNewFallback: [(version: String, note: String)] = [
+        ("0.4.0", "motion release — 60fps curve, sliding tabs, settling card"),
         ("0.3.4", "cold-open fix — last reading shows instantly"),
         ("0.3.3", "version bullet tooltip works on the nonactivating panel"),
-        ("0.3.2", "day strip reads as a week; version bullet"),
     ]
 
     public init() {
@@ -66,7 +65,12 @@ public final class PopoverView: NSView {
     }
 
     private var isRelayout = false
+    /// True while an animated card-resize is in flight (v0.4.0). A second
+    /// resize requested mid-animation falls back to the synchronous path so
+    /// two snapshot animations never stack.
+    private var resizeAnimating = false
 
+    @MainActor
     public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date, todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)) {
         // Clear all subviews and rebuild from scratch on each update.
         subviews.forEach { $0.removeFromSuperview() }
@@ -117,14 +121,13 @@ public final class PopoverView: NSView {
         latestExhaustedAt = exhaustedAt
         latestSuccessAt = lastSuccessAt
         latestModelSplit = todayModelSplit
-        // If no draw-on animation is in flight, the curve must be fully
-        // visible — poll-triggered updates shouldn't leave it half-drawn.
-        // `drawProgress < 1` (not `== 0`) so the cold-open landing — where the
-        // shared curveView was never animated on — also flips to fully drawn,
-        // instead of sitting invisible until the next poll (v0.3.4 review).
-        if !curveAnimationRunning && curveView.drawProgress < 1 {
-            curveView.drawProgress = 1
-        }
+        // A poll-driven rebuild re-configures the curve but must not fight the
+        // draw-on reveal. v0.4.0: the reveal is a mask animation on CurveView's
+        // layer (a persistent subview, so it survives this rebuild), and the
+        // mask always ends at full width on its own. We only pin drawProgress
+        // to 1 so the content UNDER the moving mask is complete — we do NOT
+        // touch the mask here, or a poll landing mid-reveal would cut it short.
+        curveView.drawProgress = 1
 
         var yOffset: CGFloat = 12
 
@@ -284,16 +287,101 @@ public final class PopoverView: NSView {
         // Size the view to its content so the panel never leaves dead space
         // below the footer (the stale banner used to overflow the fixed 480).
         let contentHeight = yOffset + 12
-        if abs(frame.height - contentHeight) > 1 && !isRelayout {
-            setFrameSize(NSSize(width: 320, height: contentHeight))
-            // The panel tracks its content's height.
-            if let panel = window as? NSPanel {
-                var panelFrame = panel.frame
-                let delta = contentHeight - panelFrame.height
-                panelFrame.size.height = contentHeight
-                panelFrame.origin.y -= delta   // keep the top edge anchored
+        guard abs(frame.height - contentHeight) > 1, !isRelayout else { return }
+
+        let panel = window as? NSPanel
+        var panelFrame = panel?.frame ?? .zero
+        let delta = contentHeight - (panel?.frame.height ?? contentHeight)
+        panelFrame.size.height = contentHeight
+        panelFrame.origin.y -= delta   // keep the top edge anchored
+
+        // v0.4.0: animate the height settle. The trap is that all rows are
+        // BOTTOM-anchored (y = bounds.height - …), so resizing mid-layout
+        // makes every row visibly slide. The fix: freeze the CURRENT content
+        // as a top-anchored snapshot overlaying the panel, animate the panel
+        // frame, and rebuild the real content underneath instantly. The eye
+        // tracks the static top edge; the growing/shrinking region is the
+        // empty bottom — so nothing appears to move except the card's edge.
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if !reduceMotion, !resizeAnimating, let panel, let effectView = panel.contentView {
+            resizeAnimating = true
+
+            // 1. Snapshot the current (pre-resize) content. Force a
+            //    deterministic render first so the bitmap is a complete frame,
+            //    not whatever the window server last composited mid-layout.
+            //    cacheDisplay is synchronous but the popover is ~25 lightweight
+            //    views — cheap. It renders into a bitmap rep, wrapped in an
+            //    NSImage.
+            layoutSubtreeIfNeeded()
+            displayIfNeeded()
+            guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else {
+                // No bitmap context — fall back to the synchronous resize.
+                setFrameSize(NSSize(width: 320, height: contentHeight))
                 panel.setFrame(panelFrame, display: true, animate: false)
+                isRelayout = true
+                update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
+                isRelayout = false
+                resizeAnimating = false
+                return
             }
+            cacheDisplay(in: bounds, to: rep)
+            let snapshotImage = NSImage(size: bounds.size)
+            snapshotImage.addRepresentation(rep)
+            let snapshot = NSImageView(image: snapshotImage)
+            // Pin the snapshot's TOP edge to the panel's top. macOS window
+            // coords are bottom-up and the window's TOP edge is what stays
+            // fixed during the resize (origin.y is pre-adjusted). So the
+            // snapshot must keep a fixed distance from the effect view's TOP
+            // — i.e. a flexible BOTTOM margin (.minYMargin). At snapshot time
+            // effectView.bounds.height == bounds.height (edge-to-edge pin), so
+            // y lands at 0; .minYMargin is what stops the snapshot sliding or
+            // being clipped as the panel grows/shrinks underneath it.
+            snapshot.frame = NSRect(
+                x: 0,
+                y: effectView.bounds.height - bounds.height,
+                width: bounds.width,
+                height: bounds.height
+            )
+            snapshot.autoresizingMask = [.minYMargin]
+            // Cross-motion guard: the snapshot is rendered via draw(_:) and
+            // bypasses the curve's GPU reveal mask. If a resize fires during
+            // the curve's draw-on reveal, the snapshot would show the FULLY
+            // drawn curve while the live curve underneath is still mid-sweep —
+            // a visible jump backward on the fade. Clear the mask so snapshot
+            // and live curve agree (the curve just appears fully drawn).
+            curveView.layer?.mask = nil
+            effectView.addSubview(snapshot, positioned: .above, relativeTo: self)
+
+            // 2. Animate the panel to its new height. origin.y was pre-
+            //    adjusted above so the TOP edge stays put — the card grows /
+            //    shrinks from its bottom edge, which is exactly how a native
+            //    panel "settles". display:false: the snapshot covers content.
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = 0.25
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                panel.animator().setFrame(panelFrame, display: false)
+            }, completionHandler: { [weak self, weak snapshot] in
+                // NSAnimationContext completion handlers fire on the main
+                // thread, but the closure type isn't main-actor-annotated, so
+                // Swift 6 can't see that. assumeIsolated is the honest bridge:
+                // it asserts (in debug) what AppKit already guarantees.
+                MainActor.assumeIsolated {
+                    self?.finishResizeAnimation(snapshot: snapshot)
+                }
+            })
+
+            // 4. Rebuild the real content at the final height IMMEDIATELY,
+            //    underneath the snapshot. The user sees the frozen snapshot
+            //    until the fade reveals the settled, live content.
+            setFrameSize(NSSize(width: 320, height: contentHeight))
+            isRelayout = true
+            update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
+            isRelayout = false
+        } else {
+            // Synchronous path (Reduce Motion, mid-animation re-entry, or no
+            // panel yet): resize in place and re-lay out, exactly as before.
+            setFrameSize(NSSize(width: 320, height: contentHeight))
+            panel?.setFrame(panelFrame, display: true, animate: false)
             // Rows were laid out against the OLD height — re-lay against the
             // new one so the hero isn't cut off on first open.
             isRelayout = true
@@ -302,32 +390,29 @@ public final class PopoverView: NSView {
         }
     }
 
-    /// Draw-on animation for the curve, run once per popover open (Task 13).
-    /// Steps drawProgress 0 -> 1 over ~0.5s with an ease-out feel (fewer,
-    /// larger steps toward the end). Reduce Motion callers skip this and
-    /// leave drawProgress at 1.
-    private var curveAnimationItems: [DispatchWorkItem] = []
-    private var curveAnimationRunning = false
+    /// Teardown for the animated card-resize (v0.4.0), called from the panel
+    /// animation's completion handler. Fades the snapshot out over 80ms (the
+    /// panel's close-fade cadence), removes it, and clears the re-entry guard.
+    /// A @MainActor method (not inline closure code) so mutating
+    /// `resizeAnimating` doesn't trip Swift 6's Sendable-closure rules.
+    @MainActor
+    private func finishResizeAnimation(snapshot: NSImageView?) {
+        NSAnimationContext.runAnimationGroup({ fade in
+            fade.duration = 0.08
+            snapshot?.animator().alphaValue = 0
+        }, completionHandler: {
+            snapshot?.removeFromSuperview()
+        })
+        resizeAnimating = false
+    }
 
+    /// Draw-on animation for the curve, run once per popover open.
+    /// v0.4.0: delegated to CurveView.animateReveal(), which renders once and
+    /// animates a GPU mask (vsync-locked 60fps) instead of stepping
+    /// drawProgress on 14 DispatchWorkItems. Reduce Motion callers skip this
+    /// and leave drawProgress at 1 (the gate is in main.swift).
     public func animateCurveDrawOn() {
-        curveAnimationRunning = true
-        // Cancel any in-flight steps (a reopen or a poll mid-animation
-        // would otherwise race and leave the curve half-drawn).
-        curveAnimationItems.forEach { $0.cancel() }
-        curveAnimationItems.removeAll()
-        curveView.drawProgress = 0
-        let steps = 14
-        for i in 1...steps {
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                // Ease-out: t^0.5 curve so the leading edge decelerates.
-                let t = sqrt(CGFloat(i) / CGFloat(steps))
-                self.curveView.drawProgress = t
-                if i == steps { self.curveAnimationRunning = false }
-            }
-            curveAnimationItems.append(work)
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * (0.5 / Double(steps)), execute: work)
-        }
+        curveView.animateReveal()
     }
 
     /// Loading state for the very first open (state == .neverFetched).
@@ -561,19 +646,25 @@ public final class PopoverView: NSView {
         // Spacer between label and switcher (12pt gap)
         yOffset += 12
 
-        // Period switcher: segmented Today / Week / Month on the right.
-        let control = NSSegmentedControl(
-            labels: ["Today", "Month"],
-            trackingMode: .selectOne,
-            target: self,
-            action: #selector(periodChanged)
-        )
-        control.selectedSegment = selectedPeriod == .today ? 0 : 1
-        control.frame = NSRect(x: 320 - sidePadding - 118, y: bounds.height - yOffset - 20, width: 118, height: 20)
-        control.controlSize = .small
-        addSubview(control)
-        managedSubviews.append(control)
-        self.periodControl = control
+        // Period switcher (v0.4.0): custom Today/Month tabs with a sliding
+        // indicator. CRITICAL: position the indicator WITHOUT animating here —
+        // update() rebuilds all subviews every 60s, so an animated setSelected
+        // would re-slide the indicator once a minute for no reason. Only a
+        // real click animates (see the onSelect handler below).
+        let switcher = PeriodSwitcher(labels: ["Today", "Month"])
+        switcher.frame = NSRect(x: 320 - sidePadding - 118, y: bounds.height - yOffset - 20, width: 118, height: 20)
+        switcher.onSelect = { [weak self] index in
+            self?.periodSelected(index)
+        }
+        addSubview(switcher)
+        managedSubviews.append(switcher)
+        // Layout BEFORE snapping the indicator: setSelected positions the
+        // indicator under the selected label, but labels are only framed in
+        // layout(). Without this, a "Month"-selected rebuild computes the
+        // indicator from unlaid-out labels (all at x=0) and shows it under
+        // "Today" for a frame before layout() corrects it.
+        switcher.layoutSubtreeIfNeeded()
+        switcher.setSelected(selectedPeriod == .today ? 0 : 1, animated: false)
         return 26   // 20pt control + 6pt air before the rows below
     }
 
@@ -820,14 +911,28 @@ public final class PopoverView: NSView {
         onReplaceToken?()
     }
 
-    @objc private func periodChanged() {
-        selectedPeriod = (periodControl?.selectedSegment == 0) ? .today : .month
+    /// Called by PeriodSwitcher after a real click (the indicator has already
+    /// started sliding to the tapped tab). v0.4.0: replaces the @objc
+    /// periodChanged that NSSegmentedControl targeted — selection now arrives
+    /// as an index.
+    ///
+    /// The rebuild is deferred past the indicator's 0.2s slide: update() begins
+    /// by removing ALL subviews (PopoverView.update line ~77), so rebuilding
+    /// synchronously would destroy the switcher mid-slide and the indicator
+    /// would jump instead of gliding. Letting the slide commit first keeps the
+    /// motion visible; the rebuild then re-asserts the same selection
+    /// (positioned, not re-slid) on the fresh switcher.
+    private func periodSelected(_ index: Int) {
+        selectedPeriod = (index == 0) ? .today : .month
         guard let history = latestHistory else { return }
         // Re-render from the REAL last state — never re-wrap latestResponse as
         // .fresh. If the gateway is unreachable the reading is .stale, and the
         // banner / amber dot / dimming must survive a period toggle.
-        update(state: latestState, history: history,
-               exhaustedAt: latestExhaustedAt, lastSuccessAt: latestSuccessAt, now: Date(), todayModelSplit: latestModelSplit)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.21) { [weak self] in
+            guard let self else { return }
+            self.update(state: self.latestState, history: history,
+                        exhaustedAt: self.latestExhaustedAt, lastSuccessAt: self.latestSuccessAt, now: Date(), todayModelSplit: self.latestModelSplit)
+        }
     }
 
     /// Aggregates model usage over the selected window. Month: the API's
