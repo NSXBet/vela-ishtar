@@ -4,6 +4,27 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [0.3.2] — 2026-08-07
+
+Legibility patch: the strip reads as a week, and the app can tell you what
+it is.
+
+### Added
+
+- **Version bullet** — a 6pt dot in the popover's top-right corner. Hover
+  shows the running version plus a minimal what's-new list, without a trip
+  to GitHub.
+
+### Fixed
+
+- **The 7-day strip reads as a week now.** A hairline baseline ties the
+  seven columns together, and a real-but-small day ($13 next to $160) gets
+  a 2pt floor instead of a sub-pixel smudge. Previously a sparse history
+  rendered as floating ticks with no grid to read against.
+- **The strip hides until 4 of 7 days have data.** A 3-day history showed
+  disconnected marks that read as UI debris; silence beats noise, same law
+  as the ghost curve.
+
 ## [0.3.1] — 2026-08-07
 
 Trust patch: the full v0.3.0 dual review folded back into the app.
@@ -130,6 +151,7 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[0.3.2]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.2
 [0.3.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.1
 [0.3.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.3.0
 [0.2.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.2.1

@@ -97,4 +97,25 @@ struct DayStripTests {
         #expect(week.last?.isToday == true)
         #expect(week.last?.total == 10)
     }
+
+    @Test("sparse history yields the nil-slot count the v0.3.2 display gate keys on")
+    func sparseWeekExposesNilSlots() {
+        // The v0.3.2 gate hides the strip when fewer than 4 of 7 days have
+        // data — a 3-day history renders as floating ticks. The App layer
+        // reads `day.total != nil` per slot, so pin that a sparse history
+        // produces exactly the nil distribution the gate counts: a week
+        // window always has 7 slots, and days absent from history come
+        // back with nil totals.
+        var days: [String: DayRecord] = [:]
+        days["2026-08-08"] = makeDay(hours: [23: 50])
+        days["2026-08-09"] = makeDay(hours: [23: 60])
+        days["2026-08-10"] = makeDay(hours: [23: 70])
+        let week = DayStrip.week(in: days, today: "2026-08-10")
+        #expect(week.count == 7)
+        #expect(week.filter { $0.total != nil }.count == 3)   // below the >=4 gate
+        // And crossing the gate: add a fourth day and the count flips.
+        days["2026-08-05"] = makeDay(hours: [23: 40])
+        let week4 = DayStrip.week(in: days, today: "2026-08-10")
+        #expect(week4.filter { $0.total != nil }.count == 4)  // at the >=4 gate
+    }
 }

@@ -41,6 +41,16 @@ public final class PopoverView: NSView {
     private let sectionSpacing: CGFloat = 12
     private let hairlineHeight: CGFloat = 0.5
 
+    /// Version + what's-new shown in the top-right bullet's tooltip. The
+    /// version string comes from the bundle at runtime; the notes are a
+    /// hand-maintained one-liner per recent release — updated at release
+    /// time, so the tooltip can never drift ahead of the shipped binary.
+    private static let whatsNew: [(version: String, note: String)] = [
+        ("0.3.2", "day strip reads as a week; version bullet"),
+        ("0.3.1", "trust patch — calendar-label days, ghost gaps, Other row"),
+        ("0.3.0", "memory — ghost curve, 7-day strip, per-model Today"),
+    ]
+
     public init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 320, height: 480))
         wantsLayer = true
@@ -252,6 +262,14 @@ public final class PopoverView: NSView {
             }
         }
 
+        // 10. Version bullet, top-right corner (v0.3.2). A 6pt dot whose
+        // tooltip answers "what am I running and what changed" without a
+        // trip to GitHub. Positioned in the corner, outside the yOffset
+        // flow — it doesn't consume layout height. Added AFTER the stale-
+        // alpha pass above so the dot isn't dimmed with the content (like
+        // the footer, it's chrome, not data).
+        addVersionBullet()
+
         // Size the view to its content so the panel never leaves dead space
         // below the footer (the stale banner used to overflow the fixed 480).
         let contentHeight = yOffset + 12
@@ -401,14 +419,20 @@ public final class PopoverView: NSView {
 
         // 7-day strip (v0.3.0): hairline bars under the curve, one per
         // gateway day ending at today. Same freshness gate as the ghost.
+        // Second gate (v0.3.2): at least 4 of the 7 days must have data —
+        // a 3-day history renders as floating ticks with no grid to read
+        // against, which is worse than no strip. Silence over noise.
         var stripHeight: CGFloat = 0
         if let usage = usageResponse, isFresh {
             let week = DayStrip.week(in: history.allDays, today: usage.dailyBudget.spendDate)
-            let stripY = curveY - 6 - DayStripView.height
-            let strip = DayStripView(week: week, frame: NSRect(x: (320 - 284) / 2, y: stripY, width: 284, height: DayStripView.height))
-            addSubview(strip)
-            managedSubviews.append(strip)
-            stripHeight = DayStripView.height + 6
+            let daysWithData = week.filter { $0.total != nil }.count
+            if daysWithData >= 4 {
+                let stripY = curveY - 6 - DayStripView.height
+                let strip = DayStripView(week: week, frame: NSRect(x: (320 - 284) / 2, y: stripY, width: 284, height: DayStripView.height))
+                addSubview(strip)
+                managedSubviews.append(strip)
+                stripHeight = DayStripView.height + 6
+            }
         }
 
         return labelHeight + sectionSpacing + 92 + stripHeight
@@ -623,6 +647,27 @@ public final class PopoverView: NSView {
         ]
         button.attributedTitle = NSAttributedString(string: title, attributes: attributes)
         return button
+    }
+
+    /// The top-right version bullet: a 6pt dot, tooltip = "vX.Y.Z" plus the
+    /// embedded what's-new list. NSView.toolTip gives native hover behavior
+    /// for free — no tracking areas to manage across the full-rebuild
+    /// update cycle. The dot's alpha matches the footer's quiet register.
+    private func addVersionBullet() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let size: CGFloat = 6
+        let margin: CGFloat = 10
+        let bullet = NSView(frame: NSRect(x: 320 - margin - size, y: bounds.height - margin - size, width: size, height: size))
+        bullet.wantsLayer = true
+        bullet.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.35).cgColor
+        bullet.layer?.cornerRadius = size / 2
+
+        var lines = ["Vela Ishtar v\(version)", ""]
+        lines += Self.whatsNew.map { "\($0.version) — \($0.note)" }
+        bullet.toolTip = lines.joined(separator: "\n")
+
+        addSubview(bullet)
+        managedSubviews.append(bullet)
     }
 
 

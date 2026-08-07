@@ -31,11 +31,21 @@ public final class DayStripView: NSView {
         // column, bottom-aligned, height ∝ total / maxTotal. Gaps (nil
         // total) draw nothing — an empty slot reads as "no data," not "$0".
         let columnWidth = bounds.width / CGFloat(week.count)
+
+        // Baseline hairline across the whole strip: without it, a sparse
+        // week renders as floating ticks with no column affordance (the
+        // v0.3.1 "what are these marks" report). Drawn under the bars.
+        let baseline = NSBezierPath(rect: NSRect(x: 0, y: bounds.minY, width: bounds.width, height: 0.5))
+        NSColor.labelColor.withAlphaComponent(0.18).setFill()
+        baseline.fill()
+
         for (index, day) in week.enumerated() {
             guard let total = day.total, maxTotal > 0 else { continue }
             let fraction = CGFloat(total / maxTotal)
-            // Floor at 1pt so a nonzero day never vanishes next to a giant one.
-            let barHeight = max(1, fraction * (bounds.height - 3))
+            // Floor at 2pt: a real but small day ($13 next to $160) must
+            // still read as a BAR, not a sub-pixel smudge. Gaps stay empty —
+            // the floor applies only to days with data.
+            let barHeight = max(2, fraction * (bounds.height - 3))
             let x = columnWidth * CGFloat(index) + (columnWidth - 2) / 2
             let bar = NSBezierPath(rect: NSRect(x: x, y: bounds.minY, width: 2, height: barHeight))
 
