@@ -118,4 +118,19 @@ struct CurveScrubTests {
         #expect(CurveScrub.readoutText(utcHour: 0, value: 0, calendar: calendar) == "12 am · $0.00")
         #expect(CurveScrub.readoutText(utcHour: 12, value: 5.5, calendar: calendar) == "12 pm · $5.50")
     }
+
+    @Test("the conversion uses the offset in force at the ANCHOR date, not a hardcoded past day's DST")
+    func conversionUsesAnchorDateOffset() {
+        // Fixed anchor + fixed zone: no dependence on "today", and no
+        // dependence on Brazil's politics. America/Sao_Paulo is UTC-3 on
+        // 2026-08-08 but was UTC-2 (DST) on 2000-01-01 — so this assertion
+        // fails under any implementation that anchors on 2000-01-01, and
+        // passes iff the conversion honors the anchor's date. The zone's
+        // PAST DST is the probe; its present/future DST policy is irrelevant.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/Sao_Paulo")!
+        // 2026-08-08 12:00 UTC (a Saturday — verified, not assumed).
+        let anchor = Date(timeIntervalSince1970: 1786190400)
+        #expect(CurveScrub.readoutText(utcHour: 12, value: 0, calendar: calendar, anchor: anchor) == "9 am · $0.00")
+    }
 }
