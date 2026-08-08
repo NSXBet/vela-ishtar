@@ -16,11 +16,18 @@ public enum ModelShare {
     /// A nonzero cost floors at 1 so a small-but-real share doesn't vanish;
     /// a zero cost is exactly 0; a zero or negative total (degenerate input)
     /// yields 0 rather than a divide-by-zero or a meaningless huge number.
+    /// A non-finite share (a cost that overflowed to +inf, or a NaN ratio)
+    /// also yields 0 — `Int(inf.rounded())` traps, and one garbage cell must
+    /// never take the whole popover down with it. A FINITE share can trap
+    /// too: anything past ~9.2e16 percent exceeds Int64.max, so the clamp to
+    /// 0...100 happens on the Double BEFORE the Int conversion, not after.
     public static func percent(cost: Double, total: Double) -> Int {
         guard total > 0 else { return 0 }
         guard cost > 0 else { return 0 }
         let raw = (cost / total) * 100
-        let rounded = Int(raw.rounded())
-        return max(1, min(100, rounded))
+        guard raw.isFinite else { return 0 }
+        let clamped = min(100.0, max(0.0, raw))
+        let rounded = Int(clamped.rounded())
+        return max(1, rounded)
     }
 }
