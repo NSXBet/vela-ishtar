@@ -21,7 +21,7 @@ glance. An instrument, not a scoreboard.
 
 One pill. Three instruments.
 
-<img src="docs/assets/pill-dark.png" alt="The pill: burn sparkline + amount + budget border">
+<img src="docs/assets/pill-dark.png" width="240" alt="The pill: burn sparkline, today's spend, and the budget border">
 
 - **The pulse** — a live sparkline of your last hour of burn, age-faded so the
   newest samples read brightest
@@ -30,31 +30,33 @@ One pill. Three instruments.
   budget as it fills, and it's the one element allowed to raise its voice. It
   escalates in one direction only, as the day goes:
 
-| Border | | Meaning |
+| Border | The pill | Meaning |
 |---|---|---|
-| quiet ink | <img src="docs/assets/pill-dark.png" alt="ink trace"> | under half your budget |
-| **yellow past 50%** | <img src="docs/assets/pill-notice-dark.png" alt="yellow past 50%"> | a heads-up; nothing to act on yet |
-| **amber past 75%** | <img src="docs/assets/pill-amber-dark.png" alt="amber past 75%"> | the warning, while you can still change course |
-| **closed red loop past 90%** | <img src="docs/assets/pill-exhausted-dark.png" alt="red loop past 90%"> | the alarm, while there's still budget to protect |
+| quiet ink | <img src="docs/assets/pill-dark.png" width="150" alt="ink trace at 35% of budget"> | under half your budget |
+| **yellow past 50%** | <img src="docs/assets/pill-notice-dark.png" width="150" alt="yellow trace at 60% of budget"> | a heads-up; nothing to act on yet |
+| **amber past 75%** | <img src="docs/assets/pill-amber-dark.png" width="150" alt="amber trace at 82% of budget"> | the warning, while you can still change course |
+| **closed red loop past 90%** | <img src="docs/assets/pill-exhausted-dark.png" width="150" alt="closed red loop at 95% of budget"> | the alarm, while there's still budget to protect |
 
 The *number* only dims once you've actually spent 100%. The border warns early;
 the app never claims your budget is gone while a tenth of it remains.
 
-<img src="docs/assets/pill-stale-dark.png" alt="Dimmed when the gateway is unreachable">
+<img src="docs/assets/pill-stale-dark.png" width="240" alt="The whole pill dimmed when the gateway is unreachable">
 
 Everything dims when the gateway is unreachable — your data is never silently
 stale.
 
-**Pill size ladder.** Full (88pt) → compact (52pt) → hairline (26pt). Pick one
-from the right-click menu, or let it choose automatically when a notch clips the
-status item. Right-click also offers *Copy today's spend*, *Open history
-folder*, and *Quit*.
+**Pill size ladder.** Full (88pt, above) → Compact (52pt, drops the sparkline
+and rounds the amount) → Minimal (26pt, the border gauge alone). Pick one from
+the right-click menu under *Pill size*, or leave it on Automatic and it falls to
+Minimal when a notch clips the status item. Right-click also offers *Copy
+today's spend*, *Open history folder*, and *Quit*.
 
 ## The popover
 
 Click the pill. One panel, hairlines and whitespace only. It answers four
-questions, in order, and each answer holds a fixed slot — the card never
-resizes under your pointer.
+questions in the order you'd ask them — how much today, at what pace, on which
+models, and how does this week compare — and each answer holds a fixed slot, so
+the card never resizes under your pointer.
 
 <img src="docs/assets/popover-light.png" width="340" alt="Popover, light appearance">
 
@@ -72,21 +74,42 @@ dot that snaps to the nearest hour you actually have a reading for, plus a
 floating readout in your local time. A gap hour never answers: the pointer past
 your last reading snaps back to it rather than inventing a value.
 
-**This week.** Seven cells, Monday through Sunday, each shaded by that day's
-share of the week's biggest — the contribution-graph grammar, so the week's
-shape reads at a glance. Today wears a ring and advances through a fixed row as
-the week goes; the days still ahead sit empty. **Hover any cell** for that day's
-cost. A day with no reading stays silent rather than claiming `$0.00`.
-
 **Which models?** Ranked by cost, with a Today / Month switcher. Each row shows
 the model, its share of the period's spend (`gpt-5 · 62%`), the cost, and the
 unit price in `$/M tokens` — because two models can burn identical tokens at
 wildly different prices, so raw token counts are a vanity metric.
 
-**The chrome, top-right.** A 6pt version dot (hover for the changelog and the
-version you're running) and an update bell beside it — grey and still when
-you're up to date, yellow and gently rocking when a newer release exists. Click
-the bell for the install command with a Copy button.
+**How does this week compare?** Seven cells above the footer, a true
+Monday-to-Sunday calendar week — the letters are always `M T W T F S S`, so the
+row is a frame you learn rather than one that re-labels itself each morning. Each
+cell is shaded by that day's share of the week's biggest, the contribution-graph
+grammar, so the week's shape reads at a glance. Today wears a ring and advances
+through the fixed row as the week goes; the days still ahead sit empty, and a day
+that hasn't happened never joins the week's max. **Hover any cell** for that
+day's exact cost. A day with no reading stays silent rather than claiming
+`$0.00` — that would be a different claim. The strip appears once at least 4
+days of the current week carry data.
+
+### The chrome, top-right
+
+Two 20pt slots in the corner, outside the layout flow. Both are chrome, not
+data: neither dims when a reading goes stale.
+
+**The update bell.** A permanent status light, so "no news" is something you can
+actually read off the popover rather than infer from an absence. Grey and
+perfectly still when you're up to date — clicking it shows a quiet one-line card
+naming the version you're running, and offers nothing else, because there's
+nothing to do. Yellow and gently rocking when a newer GitHub release exists;
+clicking then gives you the one-line Homebrew update command with a **Copy**
+button, a link to the release notes, and **Skip this version**, which is
+remembered per version (skipping 1.0.1 won't hide 1.0.2). It checks at most once
+every six hours, stays quiet when offline, and never downloads or installs
+anything by itself.
+
+**The version dot.** A 6pt dot in the far corner. Hover it for the changelog
+card: the running version's own note first, then the recent history beneath it.
+The list is generated from `CHANGELOG.md` at build time, so it can't drift from
+the binary you're running.
 
 **The footer.** `Dashboard ↗` · `API key` · `Start at login` · a health dot
 that goes amber and dims everything when the gateway is unreachable.
@@ -173,22 +196,27 @@ decrease within a day.
 from the API. Today is *derived*: the gateway exposes only month-cumulative
 per-model figures, so today's split is computed by differencing against a stored
 snapshot of yesterday, then reconciled against your authoritative daily total
-(any residue lands in an explicit `Other` row). It unlocks after the app has
-observed one midnight UTC. If the numbers don't tie — the app wasn't running at
-yesterday's close, or a month rolled over — you get your real daily total plus a
-line saying why there's no split, never a confident wrong breakdown. A Week
-segment was removed: `/v1/me/usage` has no weekly per-model endpoint.
+(any residue lands in an explicit `Other` row). It needs a yesterday snapshot to
+difference against, so it unlocks after the app has been running across one
+midnight UTC. If the numbers don't tie — the app wasn't running at yesterday's
+close, or a month rolled over — you get your real daily total plus a line saying
+why there's no split, never a confident wrong breakdown. A Week segment was
+removed: `/v1/me/usage` has no weekly per-model endpoint.
 
-**Comparison surfaces wait for enough data.** The ghost curve, the median-day
-sentence, and the week strip switch on after roughly five days of clean local
-history (the strip also needs at least 4 days of the current week to carry data).
-Below that they stay hidden. Silence beats a confident number computed from thin
-data — the same rule everywhere in the app.
+**Comparison surfaces wait for enough data.** The ghost curve and the median-day
+sentence need five past days holding a reading at the hour being compared; the
+week strip needs at least 4 days of the current week to carry data. Below that
+they stay hidden, and all three also stay hidden while a reading is stale —
+pinning "a typical day" against hours-old data would be a confident lie. Silence
+beats a number computed from thin data; that's the same rule everywhere in the
+app.
 
 **Update checks.** The app asks GitHub for the latest release tag at most once
-every six hours, and only to compare version numbers. Nothing is downloaded or
-installed automatically: the bell hands you a Homebrew command and gets out of
-the way. "Skip this version" is remembered, per version.
+every six hours, and only to compare version numbers. It fails closed: offline,
+a rate limit, a draft, a prerelease, or a payload it can't parse all mean "no
+bell" rather than a false alarm. Nothing is downloaded or installed
+automatically — the bell hands you a Homebrew command and gets out of the way.
+"Skip this version" is remembered, per version.
 
 **Rebuilding from source:** each `./build.sh` changes the ad-hoc signature,
 so macOS may ask once for Keychain access on the first run of a new build.
@@ -209,12 +237,13 @@ Two rules earn most of the behaviour above:
   bannered, and every comparison surface waits for enough history.
 - **The fewer pixels that move, the more each one means.** The card is a fixed
   height in both periods, so a tab tap moves nothing but the indicator. Motion
-  is reserved for the curve's draw-on and the bell — and all of it respects
-  Reduce Motion.
+  is reserved for four things — the curve's draw-on, the sonar ring that
+  announces the scrubber, the period indicator's slide, and the update bell's
+  rock — and every one of them is off under Reduce Motion.
 
 ## Tech
 
-Pure AppKit + Swift 6, zero dependencies, ~6,200 LOC (comments included — this
+Pure AppKit + Swift 6, zero dependencies, ~6,500 LOC (comments included — this
 codebase explains itself). Builds with bare `swiftc` into an ad-hoc-signed
 `.app` — no Xcode. SwiftPM runs the unit tests.
 
