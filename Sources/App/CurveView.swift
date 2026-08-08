@@ -396,7 +396,8 @@ public final class CurveView: NSView {
     public override func mouseEntered(with event: NSEvent) {
         // One-shot sonar ring on the FIRST hover of the session — the
         // discoverability pulse. Suppressed under Reduce Motion (it's pure
-        // animation); re-armed by configure() on the next poll.
+        // animation); re-armed ONLY by rearmScrubRing() at popover open,
+        // never in configure() (see the note on `ringFired` above).
         if !ringFired, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             ringFired = true
             fireSonarRing()
