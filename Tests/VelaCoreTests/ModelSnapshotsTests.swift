@@ -135,18 +135,21 @@ struct ModelSnapshotsTests {
 
     // MARK: - Pruning
 
-    @Test("record prunes to the 3 most recent day keys")
-    func recordPrunesToThreeMostRecent() {
+    @Test("record prunes to the 7 most recent day keys")
+    func recordPrunesToSevenMostRecent() {
+        // The retention window is 7 (headroom, not a fix — see #15 and the
+        // comment on maxKeys), so a full calendar week of keys always
+        // survives and day 8 is the first eviction.
         var store = ModelSnapshots(directory: makeDirectory())
-        for day in 5...12 {
+        for day in 5...13 {
             let key = String(format: "2026-08-%02d", day)
             store.record(usage(spendDate: key, monthTotal: Double(day * 10), models: [("a", 1, 1)]), at: Date())
         }
         #expect(store.snapshot(for: "2026-08-05") == nil)
-        #expect(store.snapshot(for: "2026-08-09") == nil)
-        #expect(store.snapshot(for: "2026-08-10") != nil)
-        #expect(store.snapshot(for: "2026-08-11") != nil)
+        #expect(store.snapshot(for: "2026-08-06") == nil)
+        #expect(store.snapshot(for: "2026-08-07") != nil)
         #expect(store.snapshot(for: "2026-08-12") != nil)
+        #expect(store.snapshot(for: "2026-08-13") != nil)
     }
 
     @Test("re-recording the same day replaces the snapshot rather than duplicating it")
@@ -155,6 +158,23 @@ struct ModelSnapshotsTests {
         store.record(usage(spendDate: "2026-08-10", monthTotal: 130, models: [("a", 70, 100)]), at: Date())
         store.record(usage(spendDate: "2026-08-10", monthTotal: 135, models: [("a", 75, 150)]), at: Date())
         #expect(store.snapshot(for: "2026-08-10")?.monthTotalUSD == 135)
+    }
+
+    @Test("five consecutive days are all retained at cap 7")
+    func fiveConsecutiveDaysAreAllRetained() {
+        // A pure retention test: five consecutive recorded days all survive at
+        // cap 7. This is headroom, not a fix — the split only ever needs
+        // yesterday, which the split-before-record ordering preserves at any
+        // cap, so a weekend never broke the baseline. Friday here is simply
+        // the oldest retained day, not Tuesday's baseline (Monday is).
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-07", monthTotal: 400, models: [("a", 40, 100)]), at: Date())  // Fri
+        store.record(usage(spendDate: "2026-08-08", monthTotal: 410, models: [("a", 45, 110)]), at: Date())  // Sat
+        store.record(usage(spendDate: "2026-08-09", monthTotal: 420, models: [("a", 50, 120)]), at: Date())  // Sun
+        store.record(usage(spendDate: "2026-08-10", monthTotal: 430, models: [("a", 55, 130)]), at: Date())  // Mon
+        store.record(usage(spendDate: "2026-08-11", monthTotal: 440, models: [("a", 60, 140)]), at: Date())  // Tue
+        #expect(store.snapshot(for: "2026-08-07") != nil)  // oldest of five
+        #expect(store.snapshot(for: "2026-08-11") != nil)  // newest
     }
 
     // MARK: - spend_date key normalization (v0.3.0)
@@ -179,16 +199,16 @@ struct ModelSnapshotsTests {
     @Test("prune recency treats bare and ISO keys for the same day as one")
     func pruneRecencyNormalizesKeys() {
         var store = ModelSnapshots(directory: makeDirectory())
-        // Four logical days, but 08-10 appears in both shapes.
-        store.record(usage(spendDate: "2026-08-09", monthTotal: 90, models: [("a", 1, 1)]), at: Date())
-        store.record(usage(spendDate: "2026-08-10", monthTotal: 100, models: [("a", 1, 1)]), at: Date())
+        // Eight calendar days; 08-10 appears in both shapes (one logical day).
+        for day in 5...12 {
+            let key = String(format: "2026-08-%02d", day)
+            store.record(usage(spendDate: key, monthTotal: Double(day * 10), models: [("a", 1, 1)]), at: Date())
+        }
         store.record(usage(spendDate: "2026-08-10T00:00:00Z", monthTotal: 100, models: [("a", 1, 1)]), at: Date())
-        store.record(usage(spendDate: "2026-08-11", monthTotal: 110, models: [("a", 1, 1)]), at: Date())
-        store.record(usage(spendDate: "2026-08-12", monthTotal: 120, models: [("a", 1, 1)]), at: Date())
-        // Three most recent logical days survive: 10, 11, 12. 08-09 pruned.
-        #expect(store.snapshot(for: "2026-08-09") == nil)
+        // Seven most recent logical days survive: 08-06 … 08-12. 08-05 pruned.
+        #expect(store.snapshot(for: "2026-08-05") == nil)
+        #expect(store.snapshot(for: "2026-08-06") != nil)
         #expect(store.snapshot(for: "2026-08-10") != nil)
-        #expect(store.snapshot(for: "2026-08-11") != nil)
         #expect(store.snapshot(for: "2026-08-12") != nil)
     }
 
@@ -197,23 +217,27 @@ struct ModelSnapshotsTests {
         // Pre-GatewayDay, monthKey was derived by parsing spend_date as an
         // INSTANT, so a non-UTC-midnight label was stored with the WRONG month:
         // "2026-08-01T00:00:00+03:00" persisted under that raw ISO key with
-        // monthKey "2026-07". Four legacy rows (three raw-offset, one bare —
+        // monthKey "2026-07". Eight legacy rows (seven raw-offset, one bare —
         // all with the wrong month) push the store past maxKeys so the FULL
         // load sequence is exercised: re-key → recompute → prune → persist.
         // (Ordering note: GatewayDay normalizes any key shape to the same
         // label, so this test cannot distinguish re-key-before-recompute from
         // the reverse — what it pins is the observable contract: canonical
-        // bare keys, correct months, pruned to 3, persisted.)
+        // bare keys, correct months, pruned to 7, persisted.)
         let directory = makeDirectory()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         func legacy(_ monthKey: String) -> ModelSnapshot {
             ModelSnapshot(monthKey: monthKey, monthTotalUSD: 500, models: ["a": ModelPoint(costUSD: 40, tokens: 100)], capturedAt: Date())
         }
         let payload = try JSONEncoder().encode([
+            "2026-07-27T00:00:00+03:00": legacy("2026-06"),
+            "2026-07-28T00:00:00+03:00": legacy("2026-06"),
+            "2026-07-29T00:00:00+03:00": legacy("2026-06"),
             "2026-07-30T00:00:00+03:00": legacy("2026-06"),
             "2026-07-31T00:00:00+03:00": legacy("2026-06"),
             "2026-08-01T00:00:00+03:00": legacy("2026-07"),
-            "2026-08-02": legacy("2026-07"),
+            "2026-08-02T00:00:00+03:00": legacy("2026-07"),
+            "2026-08-03": legacy("2026-07"),
         ])
         try payload.write(to: directory.appendingPathComponent("snapshots.json"))
 
@@ -224,15 +248,15 @@ struct ModelSnapshotsTests {
 
         // The migration must PERSIST, not just patch memory: load() saves the
         // repaired store via `try? save()`, so read the file back and confirm
-        // the on-disk payload is the canonical end state — pruned to the 3
+        // the on-disk payload is the canonical end state — pruned to the 7
         // newest days, every key bare, every month recomputed, no raw keys.
         let persisted = try Data(contentsOf: directory.appendingPathComponent("snapshots.json"))
         let decoded = try JSONDecoder().decode([String: ModelSnapshot].self, from: persisted)
-        #expect(decoded.count == 3)
-        #expect(decoded["2026-07-31"]?.monthKey == "2026-07")
+        #expect(decoded.count == 7)
+        #expect(decoded["2026-07-28"]?.monthKey == "2026-07")
         #expect(decoded["2026-08-01"]?.monthKey == "2026-08")
-        #expect(decoded["2026-08-02"]?.monthKey == "2026-08")
-        #expect(decoded["2026-07-30"] == nil)  // pruned: oldest of four
+        #expect(decoded["2026-08-03"]?.monthKey == "2026-08")
+        #expect(decoded["2026-07-27"] == nil)  // pruned: oldest of eight
         #expect(decoded.keys.allSatisfy { !$0.contains("T") })  // no raw ISO key survives
     }
 }

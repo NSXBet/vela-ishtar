@@ -46,9 +46,10 @@ public enum TodayModelSplitResult: Equatable, Sendable {
 
     public enum Reason: Equatable, Sendable {
         /// No yesterday snapshot yet (first run, or app was off over the seam).
+        /// Non-adjacent snapshots are filtered out by ModelSnapshots.baseline
+        /// itself, so the engine only ever sees nil — there is no separate
+        /// "not adjacent" reason.
         case noBaseline
-        /// The nearest stored snapshot isn't exactly one day behind today.
-        case baselineNotAdjacent
         /// Baseline and current are in different UTC months (rollover seam).
         case monthChanged
         /// current_month.total_cost_usd fell below the baseline's beyond
@@ -64,7 +65,7 @@ public enum TodayModelSplitResult: Equatable, Sendable {
         /// The sentence the Today section shows in place of the rows.
         public var note: String? {
             switch self {
-            case .noBaseline, .baselineNotAdjacent:
+            case .noBaseline:
                 // Not "midnight UTC": the gateway's day rolls at ITS midnight,
                 // which for an offset label ("+03:00") can be 21:00 UTC. Claim
                 // the gateway day, never a UTC clock time.

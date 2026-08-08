@@ -46,7 +46,16 @@ public struct ModelSnapshot: Codable, Equatable, Sendable {
 public struct ModelSnapshots: Sendable {
     /// Only the most recent few days matter for a "yesterday's baseline"
     /// lookup; older snapshots are dead weight, so the store self-prunes.
-    static let maxKeys = 3
+    /// Because the split is computed BEFORE `record` overwrites today's key,
+    /// yesterday's snapshot is present at lookup time even at a small cap.
+    /// The true minimum is 2 (probe-verified): a REPEAT poll on day D
+    /// recomputes the split, and at cap 1 day D's own first record has
+    /// already evicted D−1, so the repeat would read no baseline. Cap 2 keeps
+    /// {D−1, D}, so repeated same-day polls keep splitting. Seven is not a
+    /// defect fix (#15); it's cheap defense-in-depth — a one-week bounded
+    /// history for diagnostics and forward-compatibility, at negligible file
+    /// size.
+    static let maxKeys = 7
 
     private let directory: URL
     private var snapshots: [String: ModelSnapshot] = [:]
