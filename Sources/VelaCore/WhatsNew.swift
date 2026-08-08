@@ -45,6 +45,12 @@ public enum WhatsNew {
     /// CHANGELOG head), show the whole list anyway — anything is better than
     /// a changelog card that looks like nothing ever shipped.
     public static func visibleNotes(running: String, notes: [(version: String, note: String)]) -> [(version: String, note: String)] {
-        notes.sorted { lhs, _ in lhs.version == running }
+        // A STABLE PARTITION, not a comparator: `sorted { lhs, _ in ... }` is
+        // not a strict weak ordering (the running version compares "before"
+        // everything, including itself), so the relative order of the other
+        // entries was whatever the stdlib's sort happened to produce — right
+        // today, unspecified forever. Two filters give the contract directly:
+        // the running version first, everyone else in their original order.
+        notes.filter { $0.version == running } + notes.filter { $0.version != running }
     }
 }
