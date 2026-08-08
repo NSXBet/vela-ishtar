@@ -411,7 +411,12 @@ public final class UpdateBellView: NSView {
     private func hideCard() {
         guard let card = cardWindow else { return }
         cardWindow = nil
+        // Unparent as well as order out: the card is a child window of the
+        // popover (see presentCard), so it must leave the childWindows list
+        // when it closes — otherwise PopoverPanel.dismiss() would re-tear-down
+        // a panel we no longer own.
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            card.parent?.removeChildWindow(card)
             card.orderOut(nil)
         } else {
             NSAnimationContext.runAnimationGroup({ context in
@@ -419,6 +424,7 @@ public final class UpdateBellView: NSView {
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 card.animator().alphaValue = 0
             }, completionHandler: {
+                card.parent?.removeChildWindow(card)
                 card.orderOut(nil)
             })
         }
