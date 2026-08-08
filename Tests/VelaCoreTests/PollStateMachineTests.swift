@@ -156,22 +156,55 @@ struct PollStateMachineTests {
         )
     }
 
-    @Test("ingest computes the split against yesterday's snapshot BEFORE writing today's")
-    func ingestComputesTheSplitAgainstYesterdaysSnapshotBeforeWritingTodays() {
+    @Test("ingest computes the split before recording when retention would evict its baseline")
+    func ingestComputesTheSplitBeforeRecordingWhenRetentionWouldEvictItsBaseline() {
         var machine = PollStateMachine(historyDirectory: Self.freshDirectory())
-        // Day 1 seeds the baseline.
+        // Fill the shipped seven-key window with Aug 9 and six later gateway
+        // days, deliberately leaving Aug 10 absent. When Aug 10 arrives
+        // out-of-order, recording before splitting would add an eighth key and
+        // prune Aug 9 — the exact baseline Aug 10 needs.
         machine.ingest(.success(Self.usageOn(spendDate: "2026-08-09", spentToday: 30, monthTotal: 100, models: [("a", 40, 1000)])), at: ISODate.parse("2026-08-09T12:00:00Z")!)
-        // Day 2: the split must see day 1's snapshot as the baseline, even
-        // though day 2's own snapshot is being written in the SAME ingest.
+        for day in 11...16 {
+            let spendDate = String(format: "2026-08-%02d", day)
+            machine.ingest(.success(Self.usageOn(spendDate: spendDate, spentToday: 10, monthTotal: Double(day * 10), models: [("a", Double(day * 5), 1000)])), at: ISODate.parse("\(spendDate)T12:00:00Z")!)
+        }
+
         machine.ingest(.success(Self.usageOn(spendDate: "2026-08-10", spentToday: 20, monthTotal: 120, models: [("a", 60, 2000)])), at: ISODate.parse("2026-08-10T12:00:00Z")!)
 
         guard case .split(let s) = machine.todayModelSplit else {
-            Issue.record("expected a split, got \(machine.todayModelSplit)")
+            Issue.record("expected a split before Aug 9 is pruned, got \(machine.todayModelSplit)")
             return
         }
-        // Model "a" went 40 → 60 month-cumulative, so today = $20.
         #expect(s.rows.first { $0.name == "a" }?.costUSD == 20)
         #expect(s.totalUSD == 20)
+        #expect(machine.snapshots.snapshot(for: "2026-08-09") == nil)
+    }
+
+    @Test("a repeat same-day poll keeps yesterday's baseline")
+    func aRepeatSameDayPollKeepsYesterdaysBaseline() {
+        // The public app initializer always uses seven retained snapshots. This
+        // internal seam exercises the true minimum at the shipped cap (2), but
+        // follows a smaller source cap during mutation testing so cap 1 turns
+        // the second poll red without changing production behavior.
+        var machine = PollStateMachine(
+            historyDirectory: Self.freshDirectory(),
+            snapshotMaxKeys: min(ModelSnapshots.maxKeys, 2)
+        )
+        let yesterday = Self.usageOn(spendDate: "2026-08-09", spentToday: 30, monthTotal: 100, models: [("a", 40, 1000)])
+        let firstToday = Self.usageOn(spendDate: "2026-08-10", spentToday: 20, monthTotal: 120, models: [("a", 60, 2000)])
+        let repeatedToday = Self.usageOn(spendDate: "2026-08-10", spentToday: 25, monthTotal: 125, models: [("a", 65, 2500)])
+
+        machine.ingest(.success(yesterday), at: ISODate.parse("2026-08-09T12:00:00Z")!)
+        machine.ingest(.success(firstToday), at: ISODate.parse("2026-08-10T12:00:00Z")!)
+        machine.ingest(.success(repeatedToday), at: ISODate.parse("2026-08-10T13:00:00Z")!)
+
+        guard case .split(let s) = machine.todayModelSplit else {
+            Issue.record("repeat poll must keep splitting against Aug 9, got \(machine.todayModelSplit)")
+            return
+        }
+        #expect(s.rows.first { $0.name == "a" }?.costUSD == 25)
+        #expect(s.totalUSD == 25)
+        #expect(machine.snapshots.baseline(before: "2026-08-10")?.monthTotalUSD == 100)
     }
 
     @Test("the first-ever ingest leaves the split unavailable with noBaseline")

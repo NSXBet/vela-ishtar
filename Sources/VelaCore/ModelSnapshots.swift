@@ -58,15 +58,23 @@ public struct ModelSnapshots: Sendable {
     static let maxKeys = 7
 
     private let directory: URL
+    private let retentionLimit: Int
     private var snapshots: [String: ModelSnapshot] = [:]
 
     private var fileURL: URL {
         directory.appendingPathComponent("snapshots.json")
     }
 
-    /// `directory` is injectable so tests point at a throwaway temp dir.
+    /// `directory` is injectable so app and tests can control persistence.
     public init(directory: URL) {
+        self.init(directory: directory, maxKeys: Self.maxKeys)
+    }
+
+    /// Test-only retention override. Production uses the public initializer,
+    /// which always preserves the shipped seven-key default.
+    init(directory: URL, maxKeys: Int) {
         self.directory = directory
+        self.retentionLimit = maxKeys
     }
 
     /// The snapshot recorded under a given gateway spend_date. The query
@@ -116,13 +124,13 @@ public struct ModelSnapshots: Sendable {
         return snapshots[yesterday.key]
     }
 
-    /// Keeps only the most recent `maxKeys` day keys. Keys are canonical
+    /// Keeps only the most recent `retentionLimit` day keys. Keys are canonical
     /// "yyyy-MM-dd" (record normalizes, load migrates), so a lexicographic
     /// descending sort IS chronological order — prefix keeps the newest.
     private mutating func prune() {
         let keys = snapshots.keys.sorted(by: >)
-        guard keys.count > Self.maxKeys else { return }
-        for key in keys.dropFirst(Self.maxKeys) {
+        guard keys.count > retentionLimit else { return }
+        for key in keys.dropFirst(retentionLimit) {
             snapshots.removeValue(forKey: key)
         }
     }
