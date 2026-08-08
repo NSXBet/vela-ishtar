@@ -65,7 +65,10 @@ public enum TodayModelSplitResult: Equatable, Sendable {
         public var note: String? {
             switch self {
             case .noBaseline, .baselineNotAdjacent:
-                return "Per-model split starts after the next midnight UTC"
+                // Not "midnight UTC": the gateway's day rolls at ITS midnight,
+                // which for an offset label ("+03:00") can be 21:00 UTC. Claim
+                // the gateway day, never a UTC clock time.
+                return "Per-model split starts after the next gateway day"
             case .monthChanged, .monthRegressed:
                 return "Per-model split resumes tomorrow (new month)"
             case .overAttributed:
@@ -94,15 +97,14 @@ public enum TodayModelSplitEngine {
         max(base * 0.01, 0.50)
     }
 
-    /// The UTC month key ("yyyy-MM") of a spend_date. Parses via ISODate so
-    /// both "2026-08-10" and "2026-08-10T00:00:00Z" resolve identically.
+    /// The month key ("yyyy-MM") a spend_date CARRIES, read from its calendar
+    /// label via GatewayDay — never from parsing it as an instant. A
+    /// non-UTC-midnight label ("2026-08-01T00:00:00+03:00") is the gateway's
+    /// Aug 1, so its month is "2026-08"; reading the UTC instant would say
+    /// "2026-07" and keep the split unavailable an extra day across the seam.
+    /// Both "2026-08-10" and "2026-08-10T00:00:00Z" resolve identically.
     public static func monthKey(of spendDate: String) -> String? {
-        guard let date = ISODate.parse(spendDate) else { return nil }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-        let parts = calendar.dateComponents([.year, .month], from: date)
-        guard let year = parts.year, let month = parts.month else { return nil }
-        return String(format: "%04d-%02d", year, month)
+        GatewayDay(spendDate: spendDate)?.monthKey()
     }
 
     public static func split(current: UsageResponse, baseline: ModelSnapshot?) -> TodayModelSplitResult {

@@ -51,13 +51,6 @@ public struct ModelSnapshots: Sendable {
     private let directory: URL
     private var snapshots: [String: ModelSnapshot] = [:]
 
-    // Computed, not `static let`: Calendar is not thread-safe to share.
-    private static var utcCalendar: Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-        return calendar
-    }
-
     private var fileURL: URL {
         directory.appendingPathComponent("snapshots.json")
     }
@@ -103,22 +96,15 @@ public struct ModelSnapshots: Sendable {
     /// and calls the result "today". A baseline from two days ago would fold
     /// yesterday's spend into "today" — a confident lie — so a gap in
     /// recording (app off over the seam) must surface as "no baseline", not
-    /// as a silently wrong split. Adjacency is CALENDAR-day math in UTC, so
-    /// "2026-07-31" is adjacent to "2026-08-01" (the split engine's own
+    /// as a silently wrong split. Adjacency is CALENDAR-day math on the LABEL
+    /// (via GatewayDay), so a non-UTC-midnight spend_date ("2026-08-10T00:00:
+    /// 00+03:00") compares as its labelled day — never the UTC instant's day —
+    /// and "2026-07-31" is adjacent to "2026-08-01" (the split engine's own
     /// monthChanged guard rejects that pair downstream).
     public func baseline(before spendDate: String) -> ModelSnapshot? {
-        guard let today = ISODate.parse(spendDate) else { return nil }
-        let calendar = Self.utcCalendar
-        for (key, snapshot) in snapshots {
-            guard let date = ISODate.parse(key) else { continue }
-            let todayDay = calendar.dateComponents([.era, .year, .month, .day], from: today)
-            let thatDay = calendar.dateComponents([.era, .year, .month, .day], from: date)
-            guard let todayMidnight = calendar.date(from: todayDay),
-                  let thatMidnight = calendar.date(from: thatDay) else { continue }
-            let days = calendar.dateComponents([.day], from: thatMidnight, to: todayMidnight).day
-            if days == 1 { return snapshot }
-        }
-        return nil
+        guard let today = GatewayDay(spendDate: spendDate),
+              let yesterday = today.previous() else { return nil }
+        return snapshots[yesterday.key]
     }
 
     /// Keeps only the most recent `maxKeys` day keys. Keys are canonical
@@ -158,6 +144,26 @@ public struct ModelSnapshots: Sendable {
             }
             migrated = true
             snapshotsLog.notice("migrated snapshot key \(key, privacy: .public) -> \(bare, privacy: .public)")
+        }
+
+        // Recompute each persisted monthKey from its (now normalized) day
+        // label. Pre-GatewayDay, monthKey was derived by parsing spend_date as
+        // an INSTANT, so a non-UTC-midnight label was stored with the wrong
+        // month ("2026-08-01T00:00:00+03:00" → "2026-07"). Left stale, the
+        // split bails monthChanged against a valid baseline the day after a
+        // month seam. Re-deriving from the label keeps the persisted file
+        // honest; the snapshot is immutable, so rebuild the value.
+        for (key, snapshot) in decoded {
+            guard let correct = GatewayDay(spendDate: key)?.monthKey(),
+                  correct != snapshot.monthKey else { continue }
+            decoded[key] = ModelSnapshot(
+                monthKey: correct,
+                monthTotalUSD: snapshot.monthTotalUSD,
+                models: snapshot.models,
+                capturedAt: snapshot.capturedAt
+            )
+            migrated = true
+            snapshotsLog.notice("recomputed snapshot monthKey \(snapshot.monthKey, privacy: .public) -> \(correct, privacy: .public) for \(key, privacy: .public)")
         }
 
         snapshots = decoded

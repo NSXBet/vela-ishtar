@@ -150,6 +150,25 @@ struct DayStripTests {
         #expect(week[3].total == 7)
     }
 
+    // MARK: - GatewayDay (label, not instant)
+
+    @Test("a non-UTC-midnight spend_date label anchors the week, not the UTC instant")
+    func weekAnchorsOnLabelNotInstant() {
+        // "2026-08-07T00:00:00+03:00" is the gateway's label for Fri Aug 7.
+        // Parsed as an INSTANT and reformatted in UTC it is Aug 6 21:00 — a
+        // Thursday — which would shift today onto the wrong weekday and slide
+        // the whole Mon–Sun window back a day. Anchoring on the LABEL keeps
+        // today on Friday Aug 7 (index 4).
+        var days: [String: DayRecord] = [:]
+        for key in mondayFirstWeek { days[key] = makeDay(hours: [23: 7]) }
+        let week = DayStrip.week(in: days, today: "2026-08-07T00:00:00+03:00")
+        #expect(week.count == 7)
+        #expect(week.map(\.key) == mondayFirstWeek)          // week NOT shifted
+        #expect(week[4].key == "2026-08-07")
+        #expect(week[4].isToday == true)                     // Friday, not Thursday
+        #expect(week[4].total == 7)                          // today's cell filled
+    }
+
     @Test("sparse history yields the nil-slot count the display gate keys on")
     func sparseWeekExposesNilSlots() {
         // The display gate hides the strip when fewer than 4 days carry data —

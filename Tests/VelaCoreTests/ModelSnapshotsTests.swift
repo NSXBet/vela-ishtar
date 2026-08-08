@@ -114,6 +114,19 @@ struct ModelSnapshotsTests {
         #expect(store.baseline(before: "2026-08-10T00:00:00Z") != nil)
     }
 
+    @Test("adjacency holds across a non-UTC-midnight label — the split finds its baseline all day")
+    func baselineFindsBaselineAcrossOffsetLabel() {
+        // Yesterday stored under its bare key; today arrives as the gateway's
+        // "+03:00" label for Aug 10. Parsed as an INSTANT, today is Aug 9
+        // 21:00 UTC, so the baseline lookup would compare Aug 9 against Aug 9
+        // and find nothing (or a two-day-old snapshot) — the split stays
+        // "noBaseline" all day. On the LABEL, Aug 10 is exactly one day after
+        // Aug 9, so the baseline is found.
+        var store = ModelSnapshots(directory: makeDirectory())
+        store.record(usage(spendDate: "2026-08-09", monthTotal: 100, models: [("a", 40, 100)]), at: Date())
+        #expect(store.baseline(before: "2026-08-10T00:00:00+03:00")?.monthTotalUSD == 100)
+    }
+
     @Test("no snapshot at all yields a nil baseline")
     func baselineNilWhenStoreEmpty() {
         let store = ModelSnapshots(directory: makeDirectory())
@@ -177,5 +190,49 @@ struct ModelSnapshotsTests {
         #expect(store.snapshot(for: "2026-08-10") != nil)
         #expect(store.snapshot(for: "2026-08-11") != nil)
         #expect(store.snapshot(for: "2026-08-12") != nil)
+    }
+
+    @Test("load migrates legacy full-ISO keys AND recomputes stale monthKeys, persisting the canonical pruned result")
+    func loadRecomputesStalePersistedMonthKey() throws {
+        // Pre-GatewayDay, monthKey was derived by parsing spend_date as an
+        // INSTANT, so a non-UTC-midnight label was stored with the WRONG month:
+        // "2026-08-01T00:00:00+03:00" persisted under that raw ISO key with
+        // monthKey "2026-07". Four legacy rows (three raw-offset, one bare —
+        // all with the wrong month) push the store past maxKeys so the FULL
+        // load sequence is exercised: re-key → recompute → prune → persist.
+        // (Ordering note: GatewayDay normalizes any key shape to the same
+        // label, so this test cannot distinguish re-key-before-recompute from
+        // the reverse — what it pins is the observable contract: canonical
+        // bare keys, correct months, pruned to 3, persisted.)
+        let directory = makeDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        func legacy(_ monthKey: String) -> ModelSnapshot {
+            ModelSnapshot(monthKey: monthKey, monthTotalUSD: 500, models: ["a": ModelPoint(costUSD: 40, tokens: 100)], capturedAt: Date())
+        }
+        let payload = try JSONEncoder().encode([
+            "2026-07-30T00:00:00+03:00": legacy("2026-06"),
+            "2026-07-31T00:00:00+03:00": legacy("2026-06"),
+            "2026-08-01T00:00:00+03:00": legacy("2026-07"),
+            "2026-08-02": legacy("2026-07"),
+        ])
+        try payload.write(to: directory.appendingPathComponent("snapshots.json"))
+
+        var store = ModelSnapshots(directory: directory)
+        try store.load()
+        // The seam case in memory: recomputed month matches the label.
+        #expect(store.snapshot(for: "2026-08-01")?.monthKey == "2026-08")
+
+        // The migration must PERSIST, not just patch memory: load() saves the
+        // repaired store via `try? save()`, so read the file back and confirm
+        // the on-disk payload is the canonical end state — pruned to the 3
+        // newest days, every key bare, every month recomputed, no raw keys.
+        let persisted = try Data(contentsOf: directory.appendingPathComponent("snapshots.json"))
+        let decoded = try JSONDecoder().decode([String: ModelSnapshot].self, from: persisted)
+        #expect(decoded.count == 3)
+        #expect(decoded["2026-07-31"]?.monthKey == "2026-07")
+        #expect(decoded["2026-08-01"]?.monthKey == "2026-08")
+        #expect(decoded["2026-08-02"]?.monthKey == "2026-08")
+        #expect(decoded["2026-07-30"] == nil)  // pruned: oldest of four
+        #expect(decoded.keys.allSatisfy { !$0.contains("T") })  // no raw ISO key survives
     }
 }

@@ -45,31 +45,34 @@ public enum DayStrip {
     /// clock). A day that hasn't happened must never contribute to the week's
     /// max, or every cell would be bucketed against a phantom.
     ///
-    /// The window is calendar math on parsed dates, NOT key-string arithmetic:
+    /// The window is calendar math on the gateway day LABEL (via GatewayDay),
+    /// NOT key-string arithmetic and NOT a parse of spend_date as an instant:
     /// subtracting 6 from "2026-08-01" is not a valid key, but "2026-07-27" is
-    /// the right Monday. Keys are regenerated through the same UTC formatter
-    /// HistoryStore writes with, so lookups always match.
+    /// the right Monday — and parsing "2026-08-07T00:00:00+03:00" as an instant
+    /// would anchor the week on UTC's Aug 6, a day early. Keys are regenerated
+    /// through the same UTC formatter HistoryStore writes with, so lookups
+    /// always match.
     public static func week(in days: [String: DayRecord], today: String) -> [Day] {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")!
         formatter.dateFormat = "yyyy-MM-dd"
 
-        // Parse `today` tolerantly: the gateway's spend_date arrives as a
-        // bare date ("2026-08-10") on some days and a full timestamp
-        // ("2026-08-10T00:00:00Z") on others. The window keys below are
-        // always regenerated bare via `formatter`, so once history keys are
+        // Anchor on the gateway day LABEL, tolerating every spend_date shape:
+        // a bare date, a Z-timestamp, or a numeric-offset timestamp all
+        // normalize to the same calendar day. The window keys below are
+        // regenerated bare via `formatter`, so once history keys are
         // normalized (HistoryStore), the lookups match.
-        guard let todayDate = ISODate.parse(today) else { return [] }
+        guard let todayDay = GatewayDay(spendDate: today),
+              let todayDate = formatter.date(from: todayDay.key) else { return [] }
 
         // Today's offset from this week's Monday. Explicit arithmetic on the
         // Gregorian weekday (1 = Sunday … 7 = Saturday) rather than
         // firstWeekday/dateInterval: Monday-first is a fixed design decision
         // here, not a locale preference, so it must not depend on how the
         // calendar happens to be configured.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
         let weekday = calendar.component(.weekday, from: todayDate)
         let offsetFromMonday = (weekday + 5) % 7   // Mon → 0, Sun → 6
 

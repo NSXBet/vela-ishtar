@@ -175,6 +175,20 @@ struct TodayModelSplitTests {
         #expect(reason(TodayModelSplitEngine.split(current: current, baseline: base)) == .monthChanged)
     }
 
+    // MARK: - monthKey (label, not instant)
+
+    @Test("monthKey reads the label's month on a non-UTC-midnight seam, not the UTC month")
+    func monthKeyReadsLabelNotInstantOnMonthSeam() {
+        // "2026-08-01T00:00:00+03:00" is the gateway's label for Aug 1. Parsed
+        // as an INSTANT it is Jul 31 21:00 UTC → month "2026-07", so the split
+        // would bail "monthChanged" against a correct Aug baseline and stay
+        // unavailable an extra day. On the LABEL the month is "2026-08".
+        #expect(TodayModelSplitEngine.monthKey(of: "2026-08-01T00:00:00+03:00") == "2026-08")
+        // Same label rule mid-month, and the bare-date shape stays stable.
+        #expect(TodayModelSplitEngine.monthKey(of: "2026-08-10T00:00:00+03:00") == "2026-08")
+        #expect(TodayModelSplitEngine.monthKey(of: "2026-08-10") == "2026-08")
+    }
+
     // MARK: - Baseline absence and trivial states
 
     @Test("a nil baseline returns noBaseline (first run / app off across the seam)")
@@ -202,8 +216,8 @@ struct TodayModelSplitTests {
 
     @Test("the unavailable-reason note wording is exact")
     func unavailableReasonNoteWordingIsExact() {
-        #expect(TodayModelSplitResult.Reason.noBaseline.note == "Per-model split starts after the next midnight UTC")
-        #expect(TodayModelSplitResult.Reason.baselineNotAdjacent.note == "Per-model split starts after the next midnight UTC")
+        #expect(TodayModelSplitResult.Reason.noBaseline.note == "Per-model split starts after the next gateway day")
+        #expect(TodayModelSplitResult.Reason.baselineNotAdjacent.note == "Per-model split starts after the next gateway day")
         #expect(TodayModelSplitResult.Reason.monthChanged.note == "Per-model split resumes tomorrow (new month)")
         #expect(TodayModelSplitResult.Reason.monthRegressed.note == "Per-model split resumes tomorrow (new month)")
         #expect(TodayModelSplitResult.Reason.overAttributed.note == "Per-model split needs one full day of the app running")
