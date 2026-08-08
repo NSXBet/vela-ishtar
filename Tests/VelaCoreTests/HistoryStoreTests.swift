@@ -170,6 +170,41 @@ struct HistoryStoreTests {
         #expect(store.day(spendDate: "2026-08-01")?.hourly[15] == 120.0)
     }
 
+    // MARK: - Audit #4 closure (day continuing past local midnight)
+
+    // Audit #4 claimed dayTotal/isContaminated break on a day that continues
+    // past local midnight. The claim's mechanism is a LAGGING-seam write: a
+    // poll just after local midnight whose gateway spend_date is still
+    // yesterday, carrying a small value that would corrupt the day's curve.
+    // The store keys by the gateway's spend_date and the running-max guard
+    // rejects that downward write (proven by
+    // recordRejectsCrossSeamDecreaseIntoEmptySlot). This test drives the
+    // lagging seam through the public record() API and asserts the day is
+    // left CLEAN: no downward slot written, honest readings intact, not
+    // flagged contaminated. Expected to PASS — the pass closes #4.
+    @Test("audit #4: a lagging-seam write after local midnight leaves the gateway day clean and uncontaminated")
+    func audit4LaggingSeamLeavesDayClean() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        // Late evening on the gateway's day.
+        store.record(spentToday: 120.0, limit: 400, at: ISODate.parse("2026-08-01T22:10:00Z")!, spendDate: "2026-08-01")
+        store.record(spentToday: 160.42, limit: 400, at: ISODate.parse("2026-08-01T23:50:00Z")!, spendDate: "2026-08-01")
+        // Local clock ticks past midnight; the gateway's spend_date is STILL
+        // 2026-08-01 but its cumulative reading has momentarily reset low
+        // (its new-day total hasn't caught up). This is the lagging-seam
+        // downward write #4 worried about — it must be rejected.
+        store.record(spentToday: 2.74, limit: 400, at: ISODate.parse("2026-08-02T00:30:00Z")!, spendDate: "2026-08-01")
+
+        let day = store.day(spendDate: "2026-08-01")!
+        // The downward seam write was rejected: hour 0 stays empty, the
+        // honest evening readings are intact, and the day's curve has no
+        // decrease for either dayTotal or isContaminated to trip on.
+        #expect(day.hourly[0] == nil)
+        #expect(day.hourly[22] == 120.0)
+        #expect(day.hourly[23] == 160.42)
+        #expect(day.hourly.compactMap { $0 } == [120.0, 160.42])
+        #expect(HistoryStore.isContaminated(day) == false)
+    }
+
     @Test("a downward reading below the running max but within tolerance is written through, so the slot doesn't wedge at a stale high")
     func recordWritesThroughWithinToleranceDip() {
         var store = HistoryStore(directory: Self.freshDirectory())
@@ -497,5 +532,78 @@ struct HistoryStoreTests {
         #expect(store.allDays["2026-08-08"]?.hourly[12] == 7)
         #expect(store.allDays["2026-08-07T00:00:00Z"] == nil)
         #expect(store.allDays["2026-08-08T00:00:00Z"] == nil)
+    }
+
+    // MARK: - exhaustedAt guard for no-limit accounts (audit #9)
+
+    // The gateway's "no daily limit" state is `limitEnabled == false`, and it
+    // comes in two shapes: a disabled limit whose configured value is still
+    // nonzero, and a zero limit. Both must never stamp exhaustedAt. Gating on
+    // `limitEnabled` (PaceEngine.verdict's own signal) covers both; a `limit >
+    // 0` check would still stamp the disabled-but-nonzero case.
+
+    @Test("a disabled limit with a nonzero configured value never stamps exhaustedAt")
+    func recordWithDisabledLimitNeverStampsExhaustedAt() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        // limitEnabled false, configured value 400 still present. Spend passes
+        // 400 — but the limit is OFF, so this is not exhaustion.
+        store.record(spentToday: 350, limit: 400, limitEnabled: false, at: ISODate.parse("2026-08-01T09:00:00Z")!, spendDate: "2026-08-01")
+        store.record(spentToday: 500, limit: 400, limitEnabled: false, at: ISODate.parse("2026-08-01T15:00:00Z")!, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.exhaustedAt == nil)
+    }
+
+    @Test("a disabled zero limit never stamps exhaustedAt, even at spent 0")
+    func recordWithDisabledZeroLimitNeverStampsExhaustedAt() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        // The original bug shape: limit 0 + disabled. First poll has
+        // spentToday 0, and 0 >= 0 — without the limitEnabled guard this
+        // stamped exhaustion immediately.
+        store.record(spentToday: 0, limit: 0, limitEnabled: false, at: ISODate.parse("2026-08-01T09:00:00Z")!, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.exhaustedAt == nil)
+    }
+
+    @Test("an enabled limit still stamps exhaustedAt on the first crossing (guard does not over-suppress)")
+    func recordWithEnabledLimitStillStampsExhaustedAt() {
+        var store = HistoryStore(directory: Self.freshDirectory())
+        let crossing = ISODate.parse("2026-08-01T14:23:00Z")!
+        store.record(spentToday: 40, limit: 50, limitEnabled: true, at: ISODate.parse("2026-08-01T09:00:00Z")!, spendDate: "2026-08-01")
+        store.record(spentToday: 50, limit: 50, limitEnabled: true, at: crossing, spendDate: "2026-08-01")
+        #expect(store.day(spendDate: "2026-08-01")?.exhaustedAt == crossing)
+    }
+
+    // MARK: - History retention prune (audit #11)
+
+    @Test("recording more than 90 days keeps only the newest 90 after save + reload")
+    func recordPrunesHistoryToNewest90Days() throws {
+        let directory = Self.freshDirectory()
+        var writer = HistoryStore(directory: directory)
+        // 95 consecutive gateway days ending 2026-08-03, built by walking a
+        // UTC calendar back day by day so month/year boundaries format right.
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
+        fmt.dateFormat = "yyyy-MM-dd"
+        let lastDay = ISODate.parse("2026-08-03T14:00:00Z")!
+        let days = (0..<95).map { fmt.string(from: cal.date(byAdding: .day, value: -94 + $0, to: lastDay)!) }
+        #expect(days.count == 95)
+        for (i, dateStr) in days.enumerated() {
+            let t = ISODate.parse("\(dateStr)T14:00:00Z")!
+            writer.record(spentToday: Double(10 + i), limit: 400, at: t, spendDate: dateStr)
+        }
+        try writer.save()
+
+        var reader = HistoryStore(directory: directory)
+        try reader.load()
+
+        // Only the newest 90 days survive. The five oldest are gone.
+        #expect(reader.allDays.count == 90)
+        for dateStr in days.prefix(5) {
+            #expect(reader.allDays[dateStr] == nil)
+        }
+        for dateStr in days.suffix(90) {
+            #expect(reader.allDays[dateStr] != nil)
+        }
     }
 }
