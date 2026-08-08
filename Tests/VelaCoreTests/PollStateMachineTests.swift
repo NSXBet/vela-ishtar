@@ -203,6 +203,41 @@ struct PollStateMachineTests {
         #expect(s.rows.reduce(0) { $0 + $1.costUSD } == 25)
     }
 
+    @Test("five consecutive days keep splitting through the fifth (end-to-end smoke)")
+    func aWeekendOfUnbrokenPollsStillSplitsOnTuesday() {
+        // NOT a regression test: it's an end-to-end smoke test. Each day
+        // ingests ONCE, and the split-before-record ordering reads that day's
+        // baseline (the prior day) before record() runs, so this one-poll-per-
+        // day scenario splits at any cap — no cap change can make it fail.
+        // That does NOT generalize to repeated same-day polls: at cap 1 a
+        // repeat poll on day D would recompute after D's own first record
+        // evicted D−1 and read no baseline (see the cap-2 minimum on
+        // ModelSnapshots.maxKeys). Five consecutive days (Fri 08-07 → Tue
+        // 08-11) each ingest cleanly and the fifth splits against the fourth's
+        // retained snapshot.
+        var machine = PollStateMachine(historyDirectory: Self.freshDirectory())
+        // Fri 08-07 → Tue 08-11, month-cumulative model "a" growing $10/day,
+        // $10 of named spend each day.
+        let days = ["2026-08-07", "2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11"]
+        for (i, day) in days.enumerated() {
+            let monthTotal = Double(400 + i * 10)
+            machine.ingest(.success(Self.usageOn(
+                spendDate: day,
+                spentToday: 10,
+                monthTotal: monthTotal,
+                models: [("a", monthTotal, 1000)]
+            )), at: ISODate.parse("\(day)T12:00:00Z")!)
+        }
+
+        guard case .split(let s) = machine.todayModelSplit else {
+            Issue.record("Tuesday must split against Monday's retained snapshot, got \(machine.todayModelSplit)")
+            return
+        }
+        #expect(s.rows.first { $0.name == "a" }?.costUSD == 10)
+        // Monday's snapshot — Tuesday's baseline — must still be in the store.
+        #expect(machine.snapshots.snapshot(for: "2026-08-10") != nil)
+    }
+
     @Test("a failed fetch leaves the last good split untouched")
     func aFailedFetchLeavesTheLastGoodSplitUntouched() {
         var machine = PollStateMachine(historyDirectory: Self.freshDirectory())

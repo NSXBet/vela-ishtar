@@ -74,24 +74,17 @@ public final class CurveView: NSView {
     /// "now" tick. `ghost` is PaceEngine.ghostCurve's output (or nil).
     /// `drawGhostStroke` suppresses ONLY the stroke (stale data) — the ghost
     /// still contributes to the y-scale so the scale never flaps.
+    // Rebuild-safe scrub (v0.5.1): PopoverView's 60s update tears the whole
+    // hierarchy down and re-adds this view, so `window` is NIL at configure
+    // time — the teardown (viewWillMove(toWindow: nil)) has already cleared
+    // any hover, and a readout refresh here would have no window to anchor
+    // to. The scrub is therefore simply re-derived on the next mouseMoved.
     public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int, ghost: [Double?]? = nil, drawGhostStroke: Bool = true) {
         self.hourly = hourly
         self.limit = limit
         self.nowHourUTC = nowHourUTC
         self.ghost = ghost
         self.drawGhostStroke = drawGhostStroke
-        // Rebuild-safe scrub (v0.5.1): update() calls configure() every 60s on
-        // the SAME view, so a hover in progress survives — re-derive the dot
-        // from the FRESH hourly at the pointer's last x (kept in `scrub`),
-        // never drop it just because the data ticked.
-        if let current = scrub {
-            scrub = CurveScrub.scrubPoint(atX: current.x, hourly: hourly, laneWidth: Double(bounds.width))
-        }
-        // If the re-derive went nil — the UTC-midnight rollover is the case
-        // that matters, when the fresh day starts all-nil — the floating card
-        // must die with the dot, or it hovers for a full poll cycle showing
-        // yesterday's hour over a dot that no longer exists.
-        if scrub == nil { clearScrub() }
         needsDisplay = true
     }
 
