@@ -55,15 +55,25 @@ public enum CurveScrub {
     /// The readout line: "2 pm · $31.40". The curve's x-axis is UTC (the
     /// gateway bills in UTC), but the card speaks the user's LOCAL time —
     /// the hour you'd glance at your watch for. 12-hour clock with am/pm;
-    /// money is always two decimals.
-    public static func readoutText(utcHour: Int, value: Double, calendar: Calendar = .current) -> String {
+    /// money is always two decimals. `anchor` is the date the UTC hour is
+    /// read against — production leaves it at the default (now, because the
+    /// curve shows today's spend); tests inject a fixed date so the
+    /// conversion is deterministic.
+    public static func readoutText(utcHour: Int, value: Double, calendar: Calendar = .current, anchor: Date = Date()) -> String {
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(identifier: "UTC")!
-        // Anchor on a fixed reference day; only the hour matters. timeZone:
-        // belongs INSIDE the components — DateComponents(year:month:day:hour:)
-        // silently assumes the calendar's own zone, which is the bug that
-        // makes "UTC hour" mean whatever zone the machine is in.
-        let components = DateComponents(timeZone: TimeZone(identifier: "UTC")!, year: 2000, month: 1, day: 1, hour: utcHour)
+        // Anchor on the anchor's real date, not a fixed reference day: the
+        // UTC→local conversion uses the DST offset in force on the anchor
+        // date, and a hardcoded past date (2000-01-01) carries a stale offset
+        // in zones whose DST rules changed since — e.g. America/Sao_Paulo
+        // observed DST in Jan 2000 and hasn't since 2019, so the readout ran
+        // an hour ahead all year.
+        // timeZone: belongs INSIDE the components — DateComponents(year:month:
+        // day:hour:) silently assumes the calendar's own zone, which is the
+        // bug that makes "UTC hour" mean whatever zone the machine is in.
+        var components = utc.dateComponents([.year, .month, .day], from: anchor)
+        components.timeZone = TimeZone(identifier: "UTC")!
+        components.hour = utcHour
         let date = utc.date(from: components) ?? Date(timeIntervalSince1970: Double(utcHour) * 3600)
         let localHour = calendar.component(.hour, from: date)
         let hour12 = localHour % 12 == 0 ? 12 : localHour % 12
