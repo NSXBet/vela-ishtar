@@ -9,7 +9,7 @@ glance. An instrument, not a scoreboard.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-219%20passing-30d158?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-241%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 [![Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-blue?style=flat-square)](CHANGELOG.md)
 
@@ -146,8 +146,8 @@ That's the same one-liner the update bell hands you.
 **Direct download:**
 
 ```bash
-curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v1.0.0/VelaIshtar-1.0.0.zip
-unzip VelaIshtar-1.0.0.zip -d /Applications/
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v1.0.1/VelaIshtar-1.0.1.zip
+unzip VelaIshtar-1.0.1.zip -d /Applications/
 xattr -cr "/Applications/Vela Ishtar.app"
 open -a "Vela Ishtar"
 ```
@@ -248,7 +248,7 @@ codebase explains itself). Builds with bare `swiftc` into an ad-hoc-signed
 `.app` — no Xcode. SwiftPM runs the unit tests.
 
 ```bash
-make test     # 219 unit tests
+make test     # 241 unit tests
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 make release  # sync README, rebuild, zip for the Homebrew cask
 ```

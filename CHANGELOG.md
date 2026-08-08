@@ -4,6 +4,34 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [1.0.1] — 2026-08-09
+
+A stability pass over 1.0: sixteen fixes from a full audit, led by the one
+you'll actually feel — updating no longer nags you for your login-keychain
+password every time.
+
+### Fixed
+
+- **Updating no longer re-prompts for the login-keychain password.** The app
+  now signs with a stable self-signed certificate instead of an ad-hoc
+  signature, so macOS recognizes each update as the same app. One final
+  "Always Allow" on this update, then silence.
+- **The spend curve's hover card survives the 60-second refresh.** Holding
+  the pointer still across a poll used to drop the card or leave its text
+  stale; it now tracks the dot through every rebuild.
+- **The day strip and model split no longer blank out around midnight.** A
+  calendar day is now read as a label, not an instant, so the week and the
+  per-model breakdown stay correct across the UTC seam.
+- The pace verdict and footer timestamp now only speak from fresh data —
+  stale readings show an honest "data is N minutes old" instead of a
+  fabricated ETA.
+- The curve's hover readout reports the correct local hour in DST-observing
+  timezones (it was anchored on a 2000 date and off by one all year).
+- Spend history is pruned to the newest 90 days, and an account with no
+  budget limit no longer records a phantom exhaustion time.
+- The per-model share clamps before display, so a malformed figure can no
+  longer crash the popover.
+
 ## [1.0.0] — 2026-08-08
 
 Vela Ishtar 1.0: the week is now a real calendar week you can hover, the app
