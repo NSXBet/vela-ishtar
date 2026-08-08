@@ -77,7 +77,7 @@ public struct HistoryStore: Sendable {
     /// that day (`exhaustedAt`), so PaceEngine can report a true, stable
     /// exhaustion time instead of re-stamping "now" on every poll after the
     /// budget is already blown.
-    public mutating func record(spentToday: Double, limit: Double, at date: Date, spendDate: String) {
+    public mutating func record(spentToday: Double, limit: Double, limitEnabled: Bool = true, at date: Date, spendDate: String) {
         let hour = Self.utcCalendar.component(.hour, from: date)
         // Normalize the gateway's spend_date to the canonical bare day key —
         // the API has emitted both "2026-08-06" and "2026-08-07T00:00:00Z"
@@ -115,10 +115,37 @@ public struct HistoryStore: Sendable {
         } else {
             day.hourly[hour] = spentToday
         }
-        if day.exhaustedAt == nil, spentToday >= limit {
+        // Only stamp exhaustion when a daily limit is actually in force.
+        // `limitEnabled` is the gateway's own "limit on/off" flag — gating on
+        // it (not on `limit > 0`) covers both no-limit shapes: a disabled
+        // limit whose configured value is still nonzero, and a zero limit.
+        // Without the guard, `spentToday >= limit` (0 >= 0) stamped exhaustion
+        // on the very first poll for a no-limit account.
+        if day.exhaustedAt == nil, limitEnabled, spentToday >= limit {
             day.exhaustedAt = date
         }
         days[key] = day
+        pruneToRetentionWindow()
+    }
+
+    /// The number of gateway days kept on disk. Set well above the 14-day
+    /// read window PaceEngine uses, so the file stays bounded without ever
+    /// dropping data a future longer-window feature (30-day strip,
+    /// month-over-month) would want. ~90 days is a few tens of KB of JSON.
+    private static let retentionDays = 90
+
+    /// Drops all but the newest `retentionDays` gateway days. Day keys are
+    /// canonical "yyyy-MM-dd", so lexicographic order IS chronological order
+    /// and "newest" is a plain string sort. Called on every record() so each
+    /// save stays bounded.
+    private mutating func pruneToRetentionWindow() {
+        guard days.count > Self.retentionDays else { return }
+        let keep = Set(days.keys.sorted().suffix(Self.retentionDays))
+        let dropped = days.keys.filter { !keep.contains($0) }
+        days = days.filter { keep.contains($0.key) }
+        if !dropped.isEmpty {
+            historyLog.notice("pruned \(dropped.count, privacy: .public) day(s) beyond the \(Self.retentionDays, privacy: .public)-day retention window")
+        }
     }
 
     /// Looks up the record for the UTC day containing `utcDate`.
