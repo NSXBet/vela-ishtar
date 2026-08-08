@@ -77,8 +77,14 @@ public struct PollStateMachine: Sendable {
     /// support directory. ModelSnapshots shares the same directory (a second
     /// file, snapshots.json, alongside history.json).
     public init(historyDirectory: URL = HistoryStore.defaultDirectory) {
+        self.init(historyDirectory: historyDirectory, snapshotMaxKeys: ModelSnapshots.maxKeys)
+    }
+
+    /// Internal test seam for the retention-boundary regression. Production
+    /// constructs the public initializer and always keeps seven snapshots.
+    init(historyDirectory: URL, snapshotMaxKeys: Int) {
         self.history = HistoryStore(directory: historyDirectory)
-        self.snapshots = ModelSnapshots(directory: historyDirectory)
+        self.snapshots = ModelSnapshots(directory: historyDirectory, maxKeys: snapshotMaxKeys)
     }
 
     /// A snapshot of today's last known reading, rehydrated from history for
@@ -149,12 +155,12 @@ public struct PollStateMachine: Sendable {
             // clock's -- the two disagree around the UTC-midnight seam (the
             // whole point of the spendDate keying above).
             exhaustedAt = history.day(spendDate: usage.dailyBudget.spendDate)?.exhaustedAt
-            // Compute the Today-by-model split BEFORE writing today's
-            // snapshot. Order is the whole invariant: the baseline must be
-            // yesterday's snapshot, so the split reads snapshots.baseline
-            // first and only then does record() overwrite today's key.
-            // Writing first would difference today against itself and yield
-            // an all-Other split forever.
+            // Compute the Today-by-model split before recording this response.
+            // `baseline(before:)` always reads the prior gateway day, never
+            // today's key. In ordinary chronological polling either statement
+            // order sees that baseline, but at a full retention window an
+            // out-of-order day can otherwise prune its own prior-day baseline
+            // before the split reads it.
             todayModelSplit = TodayModelSplitEngine.split(
                 current: usage,
                 baseline: snapshots.baseline(before: usage.dailyBudget.spendDate)
