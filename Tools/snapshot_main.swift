@@ -131,7 +131,11 @@ func writeSnapshots() throws {
     let view = PopoverView()
     view.update(state: machine.state, history: machine.history,
                 exhaustedAt: machine.exhaustedAt, lastSuccessAt: machine.lastSuccessAt, now: now)
-    view.frame = NSRect(x: 0, y: 0, width: 320, height: view.fittingSize.height > 0 ? view.fittingSize.height : 480)
+    // Do NOT pre-set the frame. update() self-sizes via setFrameSize() once
+    // it knows its content height — pre-setting a frame here can make the
+    // guard at PopoverView.swift:358 skip the resize, leaving rows laid out
+    // against the wrong height with the hero clipped at the top (the defect
+    // that shipped in the v1.0.0 popover-dark.png).
 
     let appearances: [(String, NSAppearance)] = [
         ("light", NSAppearance(named: .aqua)!),
