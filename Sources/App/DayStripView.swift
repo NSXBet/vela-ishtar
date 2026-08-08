@@ -211,7 +211,14 @@ public final class DayStripView: NSView {
 
     private func clearHover() {
         hoveredIndex = nil
-        readoutPanel?.orderOut(nil)
+        // Unparent BEFORE orderOut: the card is a child window of the popover
+        // (see showReadout), and PopoverPanel.dismiss() closes child windows
+        // in one pass — a card left parented after rebuild would be torn down
+        // against a panel we no longer own.
+        if let panel = readoutPanel {
+            panel.parent?.removeChildWindow(panel)
+            panel.orderOut(nil)
+        }
         readoutPanel = nil
     }
 
@@ -223,8 +230,7 @@ public final class DayStripView: NSView {
     private func showReadout(for index: Int) {
         guard let text = DayStrip.hoverText(total: week[index].total),
               let parentWindow = window else {
-            readoutPanel?.orderOut(nil)
-            readoutPanel = nil
+            clearHover()
             return
         }
 
@@ -271,6 +277,10 @@ public final class DayStripView: NSView {
             blur.layer?.masksToBounds = true
             content.addSubview(blur)
             panel.contentView = content
+            // Parented to the popover: dismiss() closes child windows in one
+            // pass (PopoverPanel.swift), so the card dies WITH the popover
+            // instead of orbiting it as an orphan. clearHover() unparents.
+            parentWindow.addChildWindow(panel, ordered: .above)
             readoutPanel = panel
         }
         // Resize the panel AND its content to the new text (v1.0.0 fix). The

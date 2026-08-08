@@ -186,6 +186,10 @@ public final class VersionBulletView: NSView {
             originY = min(max(originY, visible.minY + 4), visible.maxY - content.frame.height - 4)
         }
         panel.setFrameOrigin(NSPoint(x: originX, y: originY))
+        // Parented to the popover: dismiss() closes child windows in one pass
+        // (PopoverPanel.swift), so the tip dies WITH the popover instead of
+        // floating on as an orphan. hideTip() unparents.
+        parentWindow.addChildWindow(panel, ordered: .above)
 
         // Motion: fade only (a sliding tip reads as a toast, not a tooltip).
         // 120ms in / 80ms out — the asymmetric, snappier exit is the premium
@@ -208,7 +212,12 @@ public final class VersionBulletView: NSView {
     private func hideTip() {
         guard let tip = tipWindow else { return }
         tipWindow = nil
+        // Unparent as well as order out: the tip is a child window of the
+        // popover (see showTip), and a stale child left in the list would be
+        // re-torn-down by PopoverPanel.dismiss() against a panel we no longer
+        // own.
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            tip.parent?.removeChildWindow(tip)
             tip.orderOut(nil)
         } else {
             NSAnimationContext.runAnimationGroup({ context in
@@ -216,6 +225,7 @@ public final class VersionBulletView: NSView {
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 tip.animator().alphaValue = 0
             }, completionHandler: {
+                tip.parent?.removeChildWindow(tip)
                 tip.orderOut(nil)
             })
         }

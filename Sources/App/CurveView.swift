@@ -424,7 +424,15 @@ public final class CurveView: NSView {
 
     private func clearScrub() {
         scrub = nil
-        readoutPanel?.orderOut(nil)
+        // Unparent BEFORE orderOut: the card is a child window of the popover
+        // (see updateReadout), and a child left in the list after its view is
+        // rebuilt would be ordered out by PopoverPanel.dismiss() against a
+        // panel we no longer own — and worse, orderOut alone leaves the
+        // popover holding a stale child.
+        if let panel = readoutPanel {
+            panel.parent?.removeChildWindow(panel)
+            panel.orderOut(nil)
+        }
         readoutPanel = nil
     }
 
@@ -480,6 +488,10 @@ public final class CurveView: NSView {
             blur.layer?.masksToBounds = true
             content.addSubview(blur)
             panel.contentView = content
+            // Parented to the popover: dismiss() closes child windows in one
+            // pass (PopoverPanel.swift), so the card dies WITH the popover
+            // instead of orbiting it as an orphan. clearScrub() unparents.
+            parentWindow.addChildWindow(panel, ordered: .above)
             readoutPanel = panel
         }
         // Resize the panel AND its content to the new text (v1.0.0 fix). The
