@@ -50,10 +50,25 @@ public enum PaceEngine {
     /// always pass it once known; it defaults to nil so `.exhausted(reachedAt:
     /// now)` is only a fallback for the very first poll that crosses the
     /// limit, before anything has been persisted yet.
-    public static func verdict(spent: Double, limit: Double, limitEnabled: Bool, now: Date, exhaustedAt: Date? = nil) -> PaceVerdict {
+    ///
+    /// `isFresh` says whether `spent` came from a poll that just succeeded.
+    /// When it's false the spend figure is hours old, so the rate projection
+    /// is replaced by the honest generic-pace fallback — extrapolating stale
+    /// spend against NOW's clock fabricates an ETA. The FACTUAL branches
+    /// (exhausted, idle, cruisingNoLimit) still report from stale data: a
+    /// crossed limit is a fact that happened, not a projection.
+    public static func verdict(spent: Double, limit: Double, limitEnabled: Bool, now: Date, exhaustedAt: Date? = nil, isFresh: Bool = true) -> PaceVerdict {
         guard limitEnabled else { return .cruisingNoLimit }
         guard spent < limit else { return .exhausted(reachedAt: exhaustedAt ?? now) }
         guard spent > 0 else { return .idle }
+
+        guard isFresh else {
+            // A stale response's spend figure is hours old; projecting it
+            // against NOW's clock fabricates an ETA. Same honest fallback as
+            // the early-day branch below: an eta at next midnight makes
+            // sentence() render "On pace to stay under budget today.".
+            return .pace(eta: nextMidnightUTC(after: now))
+        }
 
         let midnightUTC = utcCalendar.startOfDay(for: now)
         let elapsedSeconds = now.timeIntervalSince(midnightUTC)
@@ -71,6 +86,14 @@ public enum PaceEngine {
         let secondsToLimit = (limit - spent) / rate
         let eta = now.addingTimeInterval(secondsToLimit)
         return .pace(eta: eta)
+    }
+
+    /// Whole minutes since the last successful poll, floored at 0 so clock
+    /// skew (a `lastSuccessAt` stamped ahead of `now`) can never render a
+    /// negative age like "Data is -3 min old". Sub-minute remainders
+    /// truncate toward zero.
+    public static func ageMinutes(now: Date, lastSuccessAt: Date) -> Int {
+        max(0, Int(now.timeIntervalSince(lastSuccessAt) / 60))
     }
 
     /// The sentence shown under the verdict. `now` defaults to the real

@@ -16,35 +16,35 @@ struct PaceEngineTests {
     @Test("limitEnabled false always wins, even if spend already exceeds limit")
     func cruisingNoLimitBeatsExhausted() {
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
-        let verdict = PaceEngine.verdict(spent: 500, limit: 100, limitEnabled: false, now: now)
+        let verdict = PaceEngine.verdict(spent: 500, limit: 100, limitEnabled: false, now: now, isFresh: true)
         #expect(verdict == .cruisingNoLimit)
     }
 
     @Test("spend at or above limit is exhausted, defaulting reachedAt to now when no exhaustedAt is passed")
     func exhaustedAtLimit() {
         let now = ISODate.parse("2026-08-01T18:40:00Z")!
-        #expect(PaceEngine.verdict(spent: 100, limit: 100, limitEnabled: true, now: now) == .exhausted(reachedAt: now))
-        #expect(PaceEngine.verdict(spent: 150, limit: 100, limitEnabled: true, now: now) == .exhausted(reachedAt: now))
+        #expect(PaceEngine.verdict(spent: 100, limit: 100, limitEnabled: true, now: now, isFresh: true) == .exhausted(reachedAt: now))
+        #expect(PaceEngine.verdict(spent: 150, limit: 100, limitEnabled: true, now: now, isFresh: true) == .exhausted(reachedAt: now))
     }
 
     @Test("exhausted uses the passed exhaustedAt instead of now, so the reported time is the true first crossing")
     func exhaustedUsesPassedExhaustedAt() {
         let firstCrossing = ISODate.parse("2026-08-01T09:15:00Z")!
         let now = ISODate.parse("2026-08-01T18:40:00Z")!
-        let verdict = PaceEngine.verdict(spent: 150, limit: 100, limitEnabled: true, now: now, exhaustedAt: firstCrossing)
+        let verdict = PaceEngine.verdict(spent: 150, limit: 100, limitEnabled: true, now: now, exhaustedAt: firstCrossing, isFresh: true)
         #expect(verdict == .exhausted(reachedAt: firstCrossing))
     }
 
     @Test("zero or negative spend is idle")
     func idleWhenNoSpend() {
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
-        #expect(PaceEngine.verdict(spent: 0, limit: 100, limitEnabled: true, now: now) == .idle)
+        #expect(PaceEngine.verdict(spent: 0, limit: 100, limitEnabled: true, now: now, isFresh: true) == .idle)
     }
 
     @Test("less than 60 seconds since midnight UTC with real spend is a generic pace, not a false idle")
     func paceGenericWhenTooEarlyInTheDayWithSpend() {
         let now = ISODate.parse("2026-08-01T00:00:30Z")!
-        let verdict = PaceEngine.verdict(spent: 5, limit: 100, limitEnabled: true, now: now)
+        let verdict = PaceEngine.verdict(spent: 5, limit: 100, limitEnabled: true, now: now, isFresh: true)
         let nextMidnightUTC = ISODate.parse("2026-08-02T00:00:00Z")!
         #expect(verdict == .pace(eta: nextMidnightUTC))
         // Since the eta is exactly next midnight (not before it), sentence()
@@ -57,7 +57,7 @@ struct PaceEngineTests {
         // now = noon UTC -> 43200s elapsed since midnight UTC.
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
         // rate = 100 / 43200s. remaining = 50. secondsToLimit = 50 / rate = 21600s (6h).
-        let verdict = PaceEngine.verdict(spent: 100, limit: 150, limitEnabled: true, now: now)
+        let verdict = PaceEngine.verdict(spent: 100, limit: 150, limitEnabled: true, now: now, isFresh: true)
         guard case .pace(let eta) = verdict else {
             Issue.record("expected .pace, got \(verdict)")
             return
@@ -71,7 +71,7 @@ struct PaceEngineTests {
         // now = noon UTC; a very slow burn rate pushes the projected ETA
         // days into the future, well past the next UTC midnight.
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
-        let verdict = PaceEngine.verdict(spent: 1, limit: 1000, limitEnabled: true, now: now)
+        let verdict = PaceEngine.verdict(spent: 1, limit: 1000, limitEnabled: true, now: now, isFresh: true)
         guard case .pace(let eta) = verdict else {
             Issue.record("expected .pace, got \(verdict)")
             return
@@ -399,5 +399,46 @@ struct PaceEngineTests {
         #expect(ghost?[10] == 100)
         // Hour 11 has only 4 samples < 5 → nil.
         #expect(ghost?[11] == nil)
+    }
+
+    // MARK: - freshness gate
+
+    @Test("stale data never produces a fabricated ETA — verdict falls back to the honest generic pace")
+    func staleDataProducesGenericPace() {
+        // Noon UTC, spend that would otherwise project a concrete ETA.
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let verdict = PaceEngine.verdict(spent: 100, limit: 150, limitEnabled: true, now: now, isFresh: false)
+        let nextMidnightUTC = ISODate.parse("2026-08-02T00:00:00Z")!
+        #expect(verdict == .pace(eta: nextMidnightUTC))
+        // And the sentence must be the generic line, never "Budget reached around …".
+        #expect(PaceEngine.sentence(for: verdict, now: now) == "On pace to stay under budget today.")
+    }
+
+    @Test("stale exhausted data still reports exhausted — freshness never hides a crossed limit")
+    func staleExhaustedStillReportsExhausted() {
+        let now = ISODate.parse("2026-08-01T18:40:00Z")!
+        #expect(PaceEngine.verdict(spent: 150, limit: 100, limitEnabled: true, now: now, isFresh: false) == .exhausted(reachedAt: now))
+    }
+
+    @Test("stale data with no limit still reports cruising — freshness only gates the pace projection")
+    func staleNoLimitStillCruises() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        #expect(PaceEngine.verdict(spent: 500, limit: 100, limitEnabled: false, now: now, isFresh: false) == .cruisingNoLimit)
+    }
+
+    // MARK: - ageMinutes
+
+    @Test("ageMinutes floors at zero on clock skew — never a negative minute count")
+    func ageMinutesFloorsAtZero() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let lastSuccess = ISODate.parse("2026-08-01T12:05:00Z")! // 5 min in the FUTURE
+        #expect(PaceEngine.ageMinutes(now: now, lastSuccessAt: lastSuccess) == 0)
+    }
+
+    @Test("ageMinutes truncates sub-minute remainder toward zero")
+    func ageMinutesTruncates() {
+        let now = ISODate.parse("2026-08-01T12:05:59Z")!
+        let lastSuccess = ISODate.parse("2026-08-01T12:00:00Z")!
+        #expect(PaceEngine.ageMinutes(now: now, lastSuccessAt: lastSuccess) == 5)
     }
 }

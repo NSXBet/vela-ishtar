@@ -174,7 +174,8 @@ public final class PopoverView: NSView {
                 limit: usage.dailyBudget.limitUSD,
                 limitEnabled: usage.dailyBudget.limitEnabled,
                 now: now,
-                exhaustedAt: exhaustedAt
+                exhaustedAt: exhaustedAt,
+                isFresh: isFresh
             )
             // Median-day benchmark: compare today's spend against the median
             // of past days at this same UTC hour. Only used when the pace
@@ -319,7 +320,7 @@ public final class PopoverView: NSView {
 
         // 7. Stale note (if applicable)
         if !isFresh && usageResponse != nil, let lastSuccess = lastSuccessAt {
-            let minutesOld = Int(now.timeIntervalSince(lastSuccess) / 60)
+            let minutesOld = PaceEngine.ageMinutes(now: now, lastSuccessAt: lastSuccess)
             yOffset += makeStaleBanner(minutesOld: minutesOld, at: &yOffset)
             yOffset += 6
         }
@@ -823,7 +824,7 @@ public final class PopoverView: NSView {
         let loginTitle = atLogin ? "✓ Start at login" : "Start at login"
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
-        let statusText = "AI Hub · " + (isFresh ? "" : "stale ") + formatter.string(from: now)
+        let statusText = "AI Hub · " + (isFresh ? "" : "stale ") + formatter.string(from: lastSuccessAt ?? now)
 
         let layout = FooterLayout.layout(
             metrics: FooterLayout.Metrics(
