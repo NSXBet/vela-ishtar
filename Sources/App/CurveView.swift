@@ -48,6 +48,15 @@ public final class CurveView: NSView {
     /// down on exit/popover close. Owns its own level above the popover's
     /// .statusBar — the same hard-won lesson as the VersionBulletView tip.
     private var readoutPanel: NSPanel?
+    /// The pointer's lane-x, remembered across a PopoverView rebuild. The 60s
+    /// update tears the hierarchy down and re-adds this view, which fires
+    /// viewWillMove(toWindow: nil) → clearScrub() and kills the hover — so the
+    /// x is stashed on teardown and the hover re-derived in
+    /// viewDidMoveToWindow, where `window` is valid again. nil everywhere
+    /// else: a scrub that ended for any other reason (mouseExited, midnight
+    /// rollover) leaves nothing to restore, so no card can resurrect over a
+    /// hover that's already gone.
+    private var pendingScrubRestoreX: CGFloat?
     /// One-shot guard: the sonar ring fires on the FIRST hover of a popover
     /// session, never again. Re-armed ONLY by rearmScrubRing() at popover open
     /// (PopoverView.animateCurveDrawOn) — never in configure(), which the 60s
@@ -80,18 +89,27 @@ public final class CurveView: NSView {
         self.nowHourUTC = nowHourUTC
         self.ghost = ghost
         self.drawGhostStroke = drawGhostStroke
-        // Rebuild-safe scrub (v0.5.1): update() calls configure() every 60s on
-        // the SAME view, so a hover in progress survives — re-derive the dot
-        // from the FRESH hourly at the pointer's last x (kept in `scrub`),
-        // never drop it just because the data ticked.
-        if let current = scrub {
-            scrub = CurveScrub.scrubPoint(atX: current.x, hourly: hourly, laneWidth: Double(bounds.width))
-        }
-        // If the re-derive went nil — the UTC-midnight rollover is the case
-        // that matters, when the fresh day starts all-nil — the floating card
-        // must die with the dot, or it hovers for a full poll cycle showing
+        // Rebuild-safe scrub (v0.5.1): a hover in progress survives a data
+        // tick — re-derive the dot from the FRESH hourly at the pointer's
+        // last x (kept in `scrub`), never drop it just because the data
+        // ticked. If the re-derive went nil — the UTC-midnight rollover is
+        // the case that matters, when the fresh day starts all-nil — the
+        // floating card must die with the dot, or it hovers showing
         // yesterday's hour over a dot that no longer exists.
-        if scrub == nil { clearScrub() }
+        //
+        // All of this only applies while the view STAYS in its window. On a
+        // hierarchy rebuild, update() calls configure() AFTER
+        // removeFromSuperview but BEFORE re-add: scrub is already nil
+        // (viewWillMove cleared it) and window is nil, so there is nothing to
+        // re-derive and no way to show a card. That path's hover restore lives
+        // in viewDidMoveToWindow — and calling clearScrub() here would wipe
+        // the pendingScrubRestoreX it restores from.
+        if window != nil {
+            if let current = scrub {
+                scrub = CurveScrub.scrubPoint(atX: current.x, hourly: hourly, laneWidth: Double(bounds.width))
+            }
+            if scrub == nil { clearScrub() }
+        }
         needsDisplay = true
     }
 
@@ -418,12 +436,37 @@ public final class CurveView: NSView {
     /// must not outlive the curve that spawned it. Tearing down here (panel
     /// removed from screen) mirrors VersionBulletView's tip teardown.
     public override func viewWillMove(toWindow newWindow: NSWindow?) {
-        if newWindow == nil { clearScrub() }
+        if newWindow == nil {
+            // Stash the pointer's lane-x BEFORE clearScrub drops it, so the
+            // hover can be rebuilt after the re-add (viewDidMoveToWindow).
+            // Only an active scrub stashes — a hover that already ended (or a
+            // midnight-rollover clear) leaves nothing to resurrect.
+            if let scrub { pendingScrubRestoreX = scrub.x }
+            clearScrub()
+        }
         super.viewWillMove(toWindow: newWindow)
+    }
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Rebuild restore: update() re-adds this view right after configure()
+        // set the fresh data, so the hover comes back against the NEW hourly —
+        // re-derived from the stashed lane-x, the card re-shown now that
+        // `window` is valid. A nil re-derive (the day rolled over mid-rebuild)
+        // leaves the card dead, which is exactly right.
+        if window != nil, let x = pendingScrubRestoreX {
+            pendingScrubRestoreX = nil
+            scrub = CurveScrub.scrubPoint(atX: Double(x), hourly: hourly, laneWidth: Double(bounds.width))
+            if scrub != nil { updateReadout() }
+        }
     }
 
     private func clearScrub() {
         scrub = nil
+        // A scrub that ends for real (mouseExited, rollover, a readout that
+        // lost its window) must not be restorable — drop any rebuild stash
+        // with it, or the next re-add would resurrect a dead hover.
+        pendingScrubRestoreX = nil
         // Unparent BEFORE orderOut: the card is a child window of the popover
         // (see updateReadout), and a child left in the list after its view is
         // rebuilt would be ordered out by PopoverPanel.dismiss() against a
