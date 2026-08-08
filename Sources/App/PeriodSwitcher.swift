@@ -83,15 +83,32 @@ public final class PeriodSwitcher: NSView {
     }
 
     /// Lay out labels left-to-right with a fixed gap, sized to fit their
-    /// text, and position the indicator under the selected label WITHOUT
-    /// animating. Called whenever our bounds change (a rebuild re-adds us at
-    /// the same size, so this is effectively a re-position pass).
+    /// text, RIGHT-PACKED inside our bounds, and position the indicator under
+    /// the selected label WITHOUT animating. Called whenever our bounds change
+    /// (a rebuild re-adds us at the same size, so this is effectively a
+    /// re-position pass).
+    ///
+    /// Why right-packed (v1.0.0): the caller pins our FRAME's right edge to the
+    /// content margin so the tabs read as scoping the numbers below. But the
+    /// labels only need ~94pt of the 118pt frame, and packing them from x=0 left
+    /// all 24pt of that slack on the RIGHT — so the visible tabs ended up 24pt
+    /// short of the cost/efficiency columns they label. Right-packing spends the
+    /// slack on the left instead, and "Month" lands on the same edge as the
+    /// figures beneath it. The frame stays 118pt (its generous hit targets
+    /// depend on it); only the content moves.
     public override func layout() {
         super.layout()
         let gap: CGFloat = 18
-        var x: CGFloat = 0
+
+        // Measure first so the content block can be right-aligned as a unit.
+        for label in labelViews { label.sizeToFit() }
+        let contentWidth = labelViews.reduce(0) { $0 + $1.frame.width }
+            + gap * CGFloat(max(labelViews.count - 1, 0))
+        // max(0, …) so a frame narrower than its own text degrades to
+        // left-packed rather than sliding the first label off the left edge.
+        var x = max(0, bounds.width - contentWidth)
+
         for (index, label) in labelViews.enumerated() {
-            label.sizeToFit()
             let w = label.frame.width
             label.frame = NSRect(x: x, y: (bounds.height - label.frame.height) / 2, width: w, height: label.frame.height)
             hitButtons[index].frame = NSRect(x: x - 6, y: 0, width: w + 12, height: bounds.height)

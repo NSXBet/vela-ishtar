@@ -15,6 +15,11 @@ public final class PopoverView: NSView {
     /// into token-entry mode so the user can paste a rotated token.
     public var onReplaceToken: (() -> Void)?
 
+    /// Fired when a subview (the update bell's "View release notes") needs
+    /// the whole popover gone. PopoverView doesn't own its panel — main.swift
+    /// does — so dismissal travels up as a closure, not a panel reference.
+    public var onRequestDismiss: (() -> Void)?
+
     let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))   // internal: PopoverPanel/main drive the draw-on animation
     private var managedSubviews: [NSView] = []
 
@@ -36,6 +41,12 @@ public final class PopoverView: NSView {
     // so periodChanged() can re-render the Today segment without a fresh poll.
     private var latestModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)
 
+    /// The update checker (v0.5.2), injected by main.swift after launch.
+    /// addVersionBullet reads `pendingRelease` to place the update bell left
+    /// of the version dot; nil means no bell (never checked, nothing newer,
+    /// or the user skipped it).
+    public var updateChecker: UpdateChecker?
+
     private let sidePadding: CGFloat = 18
     private let sectionSpacing: CGFloat = 12
     private let hairlineHeight: CGFloat = 0.5
@@ -49,9 +60,9 @@ public final class PopoverView: NSView {
         WhatsNew.bundled(fallback: whatsNewFallback)
     }
     private static let whatsNewFallback: [(version: String, note: String)] = [
-        ("0.4.3", "fixed-height card — the tab switch never resizes"),
-        ("0.4.2", "motion polish — tab switch is a true crossfade morph"),
-        ("0.4.1", "motion polish — tab switch is one smooth transition"),
+        ("1.0.0", "a true Mon–Sun week you can hover, plus the update bell"),
+        ("0.5.1", "the spend curve is now scrubable"),
+        ("0.5.0", "the models table, re-set: aligned numbers and a share figure"),
     ]
 
     public init() {
@@ -313,6 +324,10 @@ public final class PopoverView: NSView {
             yOffset += 6
         }
 
+        // 7b. The 7-day strip, sitting directly on the footer hairline — its
+        // own section, away from the curve it used to butt against.
+        yOffset += makeDayStrip(history: history, usageResponse: usageResponse, isFresh: isFresh, at: &yOffset)
+
         // 8. Hairline
         yOffset += makeHairline(at: &yOffset)
         yOffset += sectionSpacing
@@ -525,6 +540,13 @@ public final class PopoverView: NSView {
         let label = NSTextField(labelWithString: sentence)
         label.font = NSFont.systemFont(ofSize: 13)
         label.textColor = .secondaryLabelColor
+        // The slot is a fixed 18pt single line (v0.4.3's equal-height
+        // guarantee). PaceEngine keeps its sentences short, but if one ever
+        // outgrows 284pt, truncate with an ellipsis instead of hard-clipping
+        // a word in half (the "…3:38 ar" report).
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - 18, width: 320 - 2 * sidePadding, height: 18)
         addSubview(label)
         managedSubviews.append(label)
@@ -576,25 +598,31 @@ public final class PopoverView: NSView {
         addSubview(curveView)
         managedSubviews.append(curveView)
 
-        // 7-day strip (v0.3.0): hairline bars under the curve, one per
-        // gateway day ending at today. Same freshness gate as the ghost.
-        // Second gate (v0.3.2): at least 4 of the 7 days must have data —
-        // a 3-day history renders as floating ticks with no grid to read
-        // against, which is worse than no strip. Silence over noise.
-        var stripHeight: CGFloat = 0
-        if let usage = usageResponse, isFresh {
-            let week = DayStrip.week(in: history.allDays, today: usage.dailyBudget.spendDate)
-            let daysWithData = week.filter { $0.total != nil }.count
-            if daysWithData >= 4 {
-                let stripY = curveY - 6 - DayStripView.height
-                let strip = DayStripView(week: week, frame: NSRect(x: (320 - 284) / 2, y: stripY, width: 284, height: DayStripView.height))
-                addSubview(strip)
-                managedSubviews.append(strip)
-                stripHeight = DayStripView.height + 6
-            }
-        }
+        return labelHeight + sectionSpacing + 92
+    }
 
-        return labelHeight + sectionSpacing + 92 + stripHeight
+    /// The 7-day strip (v0.5.2), placed directly above the footer hairline
+    /// rather than under the curve. Why it moved out of the TODAY block: butted
+    /// against the curve's baseline the cells read as part of the chart — a
+    /// second, contradictory x-axis on the same lane. Its own section, sitting
+    /// on the footer rule, reads as what it is: the week around today.
+    ///
+    /// Gates (unchanged from the under-curve version): a response must exist
+    /// and be FRESH — a stale reading would pin the week's shape against
+    /// hours-old data — and at least 4 of the 7 days must carry data, because a
+    /// 3-day history renders as floating cells with no grid to read against.
+    /// Silence over noise. Returns 0 (consuming no height) when gated off.
+    private func makeDayStrip(history: HistoryStore, usageResponse: UsageResponse?, isFresh: Bool, at yOffset: inout CGFloat) -> CGFloat {
+        guard let usage = usageResponse, isFresh else { return 0 }
+        let week = DayStrip.week(in: history.allDays, today: usage.dailyBudget.spendDate)
+        guard week.filter({ $0.total != nil }).count >= 4 else { return 0 }
+
+        let strip = DayStripView(week: week, frame: NSRect(x: (320 - 284) / 2, y: bounds.height - yOffset - DayStripView.height, width: 284, height: DayStripView.height))
+        addSubview(strip)
+        // In managedSubviews (and not an NSButton), so the stale-alpha pass
+        // dims it with the rest of the data — same as under the curve.
+        managedSubviews.append(strip)
+        return DayStripView.height + 6
     }
 
     private func makeModelsHeader(at yOffset: inout CGFloat) -> CGFloat {
@@ -609,10 +637,14 @@ public final class PopoverView: NSView {
         yOffset += 12
 
         // Period switcher (v0.4.0): custom Today/Month tabs with a sliding
-        // indicator. CRITICAL: position the indicator WITHOUT animating here —
-        // update() rebuilds all subviews every 60s, so an animated setSelected
-        // would re-slide the indicator once a minute for no reason. Only a
-        // real click animates (see the onSelect handler below).
+        // indicator, flush RIGHT at the content margin so the tabs read as
+        // scoping the numbers below (the "tabs shifted from the numbers"
+        // report — the old home pinned the right edge 66pt in, on the
+        // efficiency column, visibly short of the rightmost figures).
+        // CRITICAL: position the indicator WITHOUT animating here — update()
+        // rebuilds all subviews every 60s, so an animated setSelected would
+        // re-slide the indicator once a minute for no reason. Only a real
+        // click animates (see the onSelect handler below).
         let switcher = PeriodSwitcher(labels: ["Today", "Month"])
         switcher.frame = NSRect(x: 320 - sidePadding - 118, y: bounds.height - yOffset - 20, width: 118, height: 20)
         switcher.onSelect = { [weak self] index in
@@ -765,59 +797,100 @@ public final class PopoverView: NSView {
 
     private func makeFooter(isFresh: Bool, lastSuccessAt: Date?, now: Date, at yOffset: inout CGFloat) -> CGFloat {
         let footerHeight: CGFloat = 20
+        let rowY = bounds.height - yOffset - footerHeight
+
+        // All the horizontal arithmetic lives in VelaCore.FooterLayout, which is
+        // unit-tested; this method only measures glyphs and hangs views on the
+        // result. Why the split: this row produced two bug reports in a row —
+        // "✓ Start at login" overlapping the green dot, then a "fix" that moved
+        // the link CLOSER, because the dot is right-anchored while the link sat
+        // at a hardcoded x. The gaps are named inputs now, and the invariants
+        // (nothing overlaps; the login→dot gap is identical in both ✓ states)
+        // are pinned by FooterLayoutTests instead of eyeballed on a screenshot.
+        //
+        // Widths are MEASURED. The old hardcoded frames (78pt for 75pt of
+        // "Dashboard ↗", 56pt for 42pt of "API key") reserved 17pt of invisible
+        // padding, which was exactly the space the login↔dot gap needed: the row
+        // was over-subscribed, so opening a gap on the right could only be paid
+        // for by overlapping something on the left.
+        let linkFont = NSFont.systemFont(ofSize: 12)
+        let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        func measure(_ title: String, _ font: NSFont) -> CGFloat {
+            ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        }
+
+        let atLogin = SMAppService.mainApp.status == .enabled
+        let loginTitle = atLogin ? "✓ Start at login" : "Start at login"
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let statusText = "AI Hub · " + (isFresh ? "" : "stale ") + formatter.string(from: now)
+
+        let layout = FooterLayout.layout(
+            metrics: FooterLayout.Metrics(
+                dashboard: measure("Dashboard ↗", linkFont),
+                apiKey: measure("API key", linkFont),
+                login: measure(loginTitle, linkFont),
+                widestLogin: measure("✓ Start at login", linkFont),
+                statusWithTimestamp: measure(statusText, statusFont),
+                statusShort: measure("AI Hub", statusFont)
+            ),
+            spacing: FooterLayout.Spacing(
+                totalWidth: 320,
+                sidePadding: sidePadding,
+                linkSpacing: Self.linkSpacing,
+                linkGutter: Self.linkGutter,
+                loginToDotGap: Self.loginToDotGap,
+                dotToStatus: 12
+            )
+        )
 
         // Borderless link-style buttons -- chrome stays quiet per the design.
-        let dashboardButton = Self.makeLinkButton(title: "Dashboard ↗", frame: NSRect(x: sidePadding, y: bounds.height - yOffset - footerHeight, width: 78, height: footerHeight))
+        let dashboardButton = Self.makeLinkButton(title: "Dashboard ↗", frame: NSRect(x: layout.dashboard.x, y: rowY, width: layout.dashboard.width, height: footerHeight))
         dashboardButton.target = self
         dashboardButton.action = #selector(openDashboard)
         addSubview(dashboardButton)
         managedSubviews.append(dashboardButton)
 
-        let apiKeyButton = Self.makeLinkButton(title: "API key", frame: NSRect(x: sidePadding + 84, y: bounds.height - yOffset - footerHeight, width: 56, height: footerHeight))
+        let apiKeyButton = Self.makeLinkButton(title: "API key", frame: NSRect(x: layout.apiKey.x, y: rowY, width: layout.apiKey.width, height: footerHeight))
         apiKeyButton.target = self
         apiKeyButton.action = #selector(replaceTokenTapped)
         addSubview(apiKeyButton)
         managedSubviews.append(apiKeyButton)
 
         // Launch-at-login toggle: a quiet text link that reflects and flips
-        // SMAppService registration. The checkmark shows current state.
-        let atLogin = SMAppService.mainApp.status == .enabled
-        let loginTitle = atLogin ? "✓ Start at login" : "Start at login"
-        let loginButton = Self.makeLinkButton(title: loginTitle, frame: NSRect(x: sidePadding + 146, y: bounds.height - yOffset - footerHeight, width: 96, height: footerHeight))
+        // SMAppService registration. The checkmark shows current state; the link
+        // hangs off the health DOT (see FooterLayout), so the space beside the
+        // dot is a stated constant rather than whatever happened to be left.
+        let loginButton = Self.makeLinkButton(title: loginTitle, frame: NSRect(x: layout.login.x, y: rowY, width: layout.login.width, height: footerHeight))
         loginButton.target = self
         loginButton.action = #selector(toggleLaunchAtLogin)
         addSubview(loginButton)
         managedSubviews.append(loginButton)
 
-        // Health unit, right-aligned as ONE group: dot + "AI Hub · time".
+        // Health unit, right-aligned as ONE group: dot + "AI Hub · time". The
+        // timestamp yields to a bare "AI Hub" when the row is tight — the exact
+        // time is nice-to-have, the clearances are not.
         let dotColor: NSColor = isFresh ? .systemGreen : (lastSuccessAt != nil ? .systemOrange : .labelColor.withAlphaComponent(0.35))
-
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let statusText = "AI Hub · " + (isFresh ? "" : "stale ") + formatter.string(from: now)
-        let statusFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        let statusWidth = ceil((statusText as NSString).size(withAttributes: [.font: statusFont]).width)
-
-        // The left button group ends at sidePadding+146+96; the health unit
-        // right-anchors. If they'd collide (long timestamp), fall back to
-        // dot + "AI Hub" only — the exact time is nice-to-have, not chrome.
-        let leftGroupEnd = sidePadding + 146 + 96
-        let healthFits = (320 - sidePadding - statusWidth - 12) > leftGroupEnd
-        let finalStatusText = healthFits ? statusText : "AI Hub"
-        let finalStatusWidth = healthFits ? statusWidth : ceil((finalStatusText as NSString).size(withAttributes: [.font: statusFont]).width)
+        let finalStatusText = layout.showsTimestamp ? statusText : "AI Hub"
 
         let statusLabel = NSTextField(labelWithString: finalStatusText)
         statusLabel.font = statusFont
         statusLabel.textColor = .labelColor.withAlphaComponent(0.38)
         statusLabel.alignment = .right
-        statusLabel.frame = NSRect(x: 320 - sidePadding - finalStatusWidth, y: bounds.height - yOffset - footerHeight + 3, width: finalStatusWidth, height: 14)
+        statusLabel.frame = NSRect(x: layout.statusX, y: rowY + 3, width: 320 - sidePadding - layout.statusX, height: 14)
+        // Same right-anchor pin as the version dot: the footer's health unit is
+        // right-anchored, so it must track the window-frame open animation or it
+        // sits 13pt in from the edge (and collides with the login button) until
+        // the first poll re-anchors it.
+        statusLabel.autoresizingMask = [.minXMargin, .minYMargin]
         addSubview(statusLabel)
         managedSubviews.append(statusLabel)
 
-        let dot = NSView(frame: NSRect(x: 320 - sidePadding - finalStatusWidth - 12, y: bounds.height - yOffset - footerHeight + 6, width: 7, height: 7))
+        let dot = NSView(frame: NSRect(x: layout.dotX, y: rowY + 6, width: 7, height: 7))
         dot.wantsLayer = true
         dot.layer?.backgroundColor = dotColor.cgColor
         dot.layer?.cornerRadius = 3.5
+        dot.autoresizingMask = [.minXMargin, .minYMargin]
         addSubview(dot)
         managedSubviews.append(dot)
 
@@ -825,6 +898,9 @@ public final class PopoverView: NSView {
     }
 
     /// Borderless button that looks like quiet text, not chrome.
+    /// Centres its title, so a frame `linkGutter` wider than the glyphs leaves
+    /// exactly half that slack on each side — the arithmetic makeFooter's
+    /// login↔dot gap relies on.
     private static func makeLinkButton(title: String, frame: NSRect) -> NSButton {
         let button = NSButton(frame: frame)
         button.setButtonType(.momentaryLight)
@@ -838,6 +914,26 @@ public final class PopoverView: NSView {
         return button
     }
 
+    /// Clear space the footer keeps between the "Start at login" link's FRAME
+    /// and the health dot. Each link frame carries linkGutter/2 of dead padding
+    /// a side, so the space the eye actually sees between the last letter and
+    /// the dot is this + linkGutter/2 = 14pt.
+    /// THIS is the single constant to change to re-tune that gap. Note the row
+    /// is genuinely tight in the "✓ Start at login" state — at 320pt there are
+    /// only ~20pt of slack for all three gaps — so raising this much past 12
+    /// has to come out of the gap left of the login link.
+    private static let loginToDotGap: CGFloat = 12
+
+    /// Clear space between two adjacent footer links' FRAMES (so linkGutter/2
+    /// more between their glyphs). Kept modest so the login↔dot gap above —
+    /// the one the user reads as "is the ✓ crowding the dot" — gets the slack.
+    private static let linkSpacing: CGFloat = 5
+
+    /// Slack added around a link button's measured title so a borderless
+    /// button never clips its own tail (AppKit insets the glyphs ~2pt a side).
+    /// FooterLayout applies this to every measured width.
+    private static let linkGutter: CGFloat = 4
+
     /// The top-right version bullet: a 6pt dot that shows "vX.Y.Z" plus the
     /// embedded what's-new list on hover. Custom-drawn tip (VersionBulletView)
     /// because this popover is a nonactivating panel — native tooltips never
@@ -848,12 +944,45 @@ public final class PopoverView: NSView {
         let margin: CGFloat = 6
 
         let bullet = VersionBulletView(version: version, notes: Self.whatsNew)
-        // bounds.width, not the 320 literal: during the 96%-scale open
-        // animation the view is narrower, and a hardcoded 320 can push the
-        // bullet outside the layer-masked content and swallow mouseEntered.
+        // Pin with autoresizing, NOT a bounds-derived x: the open animation
+        // resizes the WINDOW frame (width and height 0.96×→1.0× together), so
+        // any x computed from a bounds read is only right at one instant — a
+        // static pin ends up in from the edge (and a bounds/0.96 pin clipped
+        // OUT of the narrowing window). minXMargin + minYMargin anchor the dot
+        // to the top-right corner through every resize, settle included.
+        bullet.autoresizingMask = [.minXMargin, .minYMargin]
         bullet.frame = NSRect(x: bounds.width - margin - hitSize, y: bounds.height - margin - hitSize, width: hitSize, height: hitSize)
         addSubview(bullet)
         managedSubviews.append(bullet)
+
+        // The update bell (v1.0.0) sits immediately LEFT of the version dot and
+        // is now ALWAYS present. It used to appear only while a newer release
+        // was known, which meant its absence carried no information — you
+        // couldn't tell "up to date" from "the bell hasn't checked / doesn't
+        // exist". A permanent light that is grey-and-still when current, and
+        // yellow-and-rocking when not, makes "no news" readable. The checker
+        // re-renders the popover when that state changes, so the bell's look
+        // always reflects the latest fetch or skip.
+        let bell = UpdateBellView(release: updateChecker?.pendingRelease, runningVersion: version)
+        bell.onSkip = { [weak self] in
+            self?.updateChecker?.skipCurrent()
+        }
+        // Every card action (copy, release notes, skip) ends the update
+        // moment — the popover goes with it, never a card over empty air.
+        bell.onOpenRelease = { [weak self] in
+            self?.onRequestDismiss?()
+        }
+        bell.autoresizingMask = [.minXMargin, .minYMargin]
+        // Derived from the same top-right corner arithmetic as the dot, one
+        // slot to its left — NOT read off `bullet.frame`. Same numbers, but
+        // it can't be broken by someone reordering these two blocks, and it
+        // states the intent ("second chrome slot from the corner") instead
+        // of chaining off a sibling that happens to be positioned already.
+        bell.frame = NSRect(x: bounds.width - margin - 2 * hitSize - 4, y: bounds.height - margin - hitSize, width: hitSize, height: hitSize)
+        addSubview(bell)
+        managedSubviews.append(bell)
+        // Chrome is added AFTER the stale-alpha dimming pass (this whole
+        // method runs after it), so dot and bell land full-strength.
     }
 
 

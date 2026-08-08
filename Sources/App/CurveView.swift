@@ -104,9 +104,15 @@ public final class CurveView: NSView {
         // top of the lane. The $400 ceiling line still reads as "far above"
         // via the dotted hairline (drawn at the lane top when off-scale).
         // Floor at 25% of limit so a tiny-peak day doesn't zoom to absurdity.
+        //
+        // v1.0.0: the plot bottoms at `plotBottom`, not lane.minY — see
+        // nowLabelGutter. Everything that touches the floor (the value scale,
+        // the area fill's base, the tick and crosshair feet) reads it from
+        // here, so the label band below stays clear of all of them.
         let peak = max(hourly.compactMap { $0 }.max() ?? 0, ghost?.compactMap { $0 }.max() ?? 0)
         let yMax = max(limit, peak, 1) * 1.08
-        func y(for value: Double) -> CGFloat { lane.minY + lane.height * CGFloat(value / yMax) }
+        let plotBottom = lane.minY + Self.nowLabelGutter
+        func y(for value: Double) -> CGFloat { plotBottom + (lane.maxY - plotBottom) * CGFloat(value / yMax) }
         func x(for hour: Int) -> CGFloat { lane.minX + lane.width * CGFloat(hour) / 23.0 }
 
         // When the budget ceiling is above the visible scale, pin the
@@ -114,10 +120,26 @@ public final class CurveView: NSView {
         let ceilingY = min(y(for: limit), lane.maxY - 8)
         drawBudgetCeiling(in: lane, y: ceilingY)
         drawGhost(in: lane, x: x, y: y)
-        drawCurve(in: lane, x: x, y: y)
-        drawNowTick(in: lane, x: x(for: nowHourUTC))
-        drawScrub(in: lane, x: x, y: y)
+        drawCurve(in: lane, plotBottom: plotBottom, x: x, y: y)
+        drawNowTick(in: lane, plotBottom: plotBottom, x: x(for: nowHourUTC))
+        drawScrub(in: lane, plotBottom: plotBottom, x: x, y: y)
     }
+
+    /// Vertical band reserved at the BOTTOM of the lane for the "now" label.
+    ///
+    /// Why a gutter and not a nudge: the label sat at `lane.minY + 2` while the
+    /// curve's $0 baseline sat at `lane.minY` exactly, so on a normal day (spend
+    /// far below the ceiling) the stroke ran at ~minY+10 — straight through the
+    /// label's ink, which spans roughly minY+4 to minY+9. Moving the label
+    /// "down" can't fix that: it has only 2pt left before minY, and the view is
+    /// layer-backed (v0.4.0), so anything drawn below `bounds` is clipped away
+    /// — which is the exact bug that put the label INSIDE the lane in the first
+    /// place. The clearance has to come from the plot floor lifting instead.
+    ///
+    /// 13pt: the 9pt label's text box is 11pt tall drawn at minY+2 (so it ends
+    /// at minY+13), leaving the curve's $0 baseline resting just above it with
+    /// a few points of air over the actual glyph tops.
+    private static let nowLabelGutter: CGFloat = 13
 
     /// The median-day ghost: same polyline shape as today's curve, 20%
     /// opacity hairline, drawn BENEATH the main curve. No fill, no label —
@@ -185,7 +207,7 @@ public final class CurveView: NSView {
     /// slots for hours not yet observed) are skipped by simply omitting
     /// their point -- the segment on either side of a gap draws straight
     /// across it, which reads as "interpolated" without any extra math.
-    private func drawCurve(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
+    private func drawCurve(in lane: CGRect, plotBottom: CGFloat, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
         // The curve reads as a DAY, not a stub: anchor the line at $0 on
         // the left edge (midnight UTC) so its shape is visible even when
         // only a few late hours have data (e.g. app restarted mid-day).
@@ -204,9 +226,9 @@ public final class CurveView: NSView {
 
         if let ctx = NSGraphicsContext.current?.cgContext {
             let area = CGMutablePath()
-            area.move(to: CGPoint(x: visible[0].x, y: lane.minY))
+            area.move(to: CGPoint(x: visible[0].x, y: plotBottom))
             visible.forEach { area.addLine(to: $0) }
-            area.addLine(to: CGPoint(x: visible[visible.count - 1].x, y: lane.minY))
+            area.addLine(to: CGPoint(x: visible[visible.count - 1].x, y: plotBottom))
             area.closeSubpath()
 
             ctx.saveGState()
@@ -217,7 +239,7 @@ public final class CurveView: NSView {
                 NSColor.labelColor.withAlphaComponent(0).cgColor,
             ]
             if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1]) {
-                ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: lane.maxY), end: CGPoint(x: 0, y: lane.minY), options: [])
+                ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: lane.maxY), end: CGPoint(x: 0, y: plotBottom), options: [])
             }
             ctx.restoreGState()
         }
@@ -232,10 +254,13 @@ public final class CurveView: NSView {
     }
 
     /// Thin vertical tick at the current UTC hour's x position, with a
-    /// small "now" label centered underneath.
-    private func drawNowTick(in lane: CGRect, x tickX: CGFloat) {
+    /// small "now" label centered underneath — in the gutter below the plot,
+    /// so the curve's stroke can no longer run through the word (v1.0.0).
+    private func drawNowTick(in lane: CGRect, plotBottom: CGFloat, x tickX: CGFloat) {
         let tick = NSBezierPath()
-        tick.move(to: CGPoint(x: tickX, y: lane.minY))
+        // The tick stops at the plot floor rather than the lane's: running it
+        // into the gutter would strike straight through the label it captions.
+        tick.move(to: CGPoint(x: tickX, y: plotBottom))
         tick.line(to: CGPoint(x: tickX, y: lane.maxY))
         tick.lineWidth = 0.75
         NSColor.labelColor.withAlphaComponent(0.30).setStroke()
@@ -248,9 +273,10 @@ public final class CurveView: NSView {
             .foregroundColor: NSColor.labelColor.withAlphaComponent(0.35),
         ])
         let size = attributed.size()
-        // v0.4.0: the view is layer-backed now, so anything drawn outside
-        // `bounds` is clipped. The "now" label used to hang BELOW the lane
-        // (minY - height); draw it just INSIDE the bottom edge instead.
+        // The view is layer-backed (v0.4.0), so anything drawn outside `bounds`
+        // is clipped — the label must stay INSIDE the lane. It sits at the very
+        // bottom, in the reserved gutter; the plot floor is now `plotBottom`
+        // above it, so nothing the chart draws reaches down here.
         attributed.draw(at: CGPoint(x: tickX - size.width / 2, y: lane.minY + 2))
     }
 
@@ -324,12 +350,14 @@ public final class CurveView: NSView {
     /// hairline at the snapped hour's x, and a filled dot on the curve at
     /// that hour's value. The math (which hour, where it sits) is CurveScrub's
     /// — this only renders its answer.
-    private func drawScrub(in lane: CGRect, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
+    private func drawScrub(in lane: CGRect, plotBottom: CGFloat, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
         guard let scrub else { return }
         let cx = x(scrub.hour)
 
         let line = NSBezierPath()
-        line.move(to: CGPoint(x: cx, y: lane.minY))
+        // Stops at the plot floor for the same reason the "now" tick does —
+        // the gutter below belongs to the label.
+        line.move(to: CGPoint(x: cx, y: plotBottom))
         line.line(to: CGPoint(x: cx, y: lane.maxY))
         line.lineWidth = 0.75
         NSColor.labelColor.withAlphaComponent(0.45).setStroke()
@@ -454,7 +482,17 @@ public final class CurveView: NSView {
             panel.contentView = content
             readoutPanel = panel
         }
+        // Resize the panel AND its content to the new text (v1.0.0 fix). The
+        // card is reused as the pointer scrubs, and the readout width varies a
+        // lot across the day ("9 am · $4.20" vs "12 pm · $197.33"), so resizing
+        // only the window left the content view and its blur at the first
+        // hover's size — a frosted slab overhanging the window. Same bug, and
+        // same fix, as the day strip's per-day card.
         panel.setFrame(NSRect(origin: panel.frame.origin, size: NSSize(width: cardWidth, height: cardHeight)), display: false)
+        panel.contentView?.frame = NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight)
+        panel.contentView?.subviews.compactMap { $0 as? NSVisualEffectView }.forEach {
+            $0.frame = NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight)
+        }
 
         // Reuse a single label across moves.
         let label: NSTextField
@@ -493,11 +531,14 @@ public final class CurveView: NSView {
 
     /// The dot's y in VIEW coordinates, mirroring draw(_:)'s y-scale. The
     /// readout anchors to the dot, so it must resolve the same scale the
-    /// curve used. draw(_:)'s lane is `bounds`, so lane.minY is 0 here.
+    /// curve used. draw(_:)'s lane is `bounds`, so lane.minY is 0 here — and
+    /// the plot floor is nowLabelGutter above it (v1.0.0). Keep this in step
+    /// with draw(_:)'s `y(for:)` or the card detaches from the dot.
     private func yOffset(for value: Double) -> CGFloat {
         let peak = max(hourly.compactMap { $0 }.max() ?? 0, ghost?.compactMap { $0 }.max() ?? 0)
         let yMax = max(limit, peak, 1) * 1.08
-        return bounds.minY + bounds.height * CGFloat(value / yMax)
+        let plotBottom = bounds.minY + Self.nowLabelGutter
+        return plotBottom + (bounds.maxY - plotBottom) * CGFloat(value / yMax)
     }
 
     // MARK: Sonar ring

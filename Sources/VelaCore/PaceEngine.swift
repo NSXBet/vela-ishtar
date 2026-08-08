@@ -90,20 +90,28 @@ public enum PaceEngine {
         case .cruisingNoLimit:
             return "No daily limit on your account."
         case .exhausted(let reachedAt):
-            return "Budget reached at \(localTime(reachedAt)). Resets at midnight UTC."
+            // "· resets at midnight" — every char is budget in the 284pt
+            // pace slot; the UTC qualifier lives in the What's New note.
+            return "Reached at \(localTime(reachedAt)) · resets at midnight"
         case .pace(let eta):
             // Shared with verdict()'s early-day fallback so both agree on
             // where "today" ends -- otherwise the two computations could
             // silently drift apart.
             let midnightBoundary = Self.nextMidnightUTC(after: now)
             if eta < midnightBoundary {
-                return "At this pace you'll reach budget around \(localTime(eta))."
+                // Short on purpose: the pace row is a fixed single-line 18pt
+                // slot (v0.4.3's equal-height guarantee), and "At this pace
+                // you'll reach budget around 3:38 am." clipped its tail in a
+                // 284pt field. The terse form fits at every sane width.
+                return "Budget reached around \(localTime(eta))."
             } else if let typical {
                 // Median-day comparison (v0.2.0): replaces the inert
                 // "On pace to stay under budget today." with a benchmark
                 // from the user's own history. Whole-dollar formatting
-                // matches the hero suffix style.
-                return String(format: "Typical day by now: $%.0f — you're at $%.0f.", typical.median, typical.spent)
+                // matches the hero suffix style. "Typical day:" (not "…by
+                // now:") — the longer form measures 291pt at 13pt and clips
+                // the 284pt pace slot; every char is budget here.
+                return String(format: "Typical day: $%.0f — you're at $%.0f.", typical.median, typical.spent)
             } else {
                 return "On pace to stay under budget today."
             }

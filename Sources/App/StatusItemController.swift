@@ -254,9 +254,9 @@ public final class StatusItemController: NSObject {
 
         let image = NSImage(size: size, flipped: false) { rect in
             // Resolve semantic colors under the TARGET appearance, not the ambient one -- snapshots need to force light/dark.
-            var (ink, secondary, orange, red) = (NSColor.labelColor, NSColor.secondaryLabelColor, NSColor.systemOrange, NSColor.systemRed)
+            var (ink, secondary, yellow, orange, red) = (NSColor.labelColor, NSColor.secondaryLabelColor, NSColor.systemYellow, NSColor.systemOrange, NSColor.systemRed)
             appearance.performAsCurrentDrawingAppearance {
-                (ink, secondary, orange, red) = (.labelColor, .secondaryLabelColor, .systemOrange, .systemRed)
+                (ink, secondary, yellow, orange, red) = (.labelColor, .secondaryLabelColor, .systemYellow, .systemOrange, .systemRed)
             }
             guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
 
@@ -274,7 +274,7 @@ public final class StatusItemController: NSObject {
                 // stays full strength" exception below.
                 ctx.saveGState()
                 ctx.setAlpha(0.55)
-                Self.drawBorder(rect: rect, usedPercent: usedPercent, limitEnabled: limitEnabled, ink: ink, orange: orange, red: red)
+                Self.drawBorder(rect: rect, usedPercent: usedPercent, limitEnabled: limitEnabled, ink: ink, yellow: yellow, orange: orange, red: red)
                 if drawsSparkline { Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink) }
                 if drawsContents { Self.drawAmount(pillRect: rect, text: Self.amountText(for: state, compact: !drawsSparkline), color: secondary) }
                 ctx.restoreGState()
@@ -282,8 +282,14 @@ public final class StatusItemController: NSObject {
             case .fresh, .neverFetched:
                 // Border draws at full strength always -- it's the alarm and
                 // must not dim even when exhausted. Only contents dim then.
+                //
+                // Deliberately `isFull` (100%), NOT the border's alarm
+                // threshold (90%): dimming the amount says "your budget is
+                // gone", which is only true once it actually is. The border
+                // shouts earlier; the number stays full strength until the
+                // money really has run out. Do not "align" these two.
                 let exhausted = limitEnabled && BorderDash.isFull(usedPercent / 100.0)
-                Self.drawBorder(rect: rect, usedPercent: usedPercent, limitEnabled: limitEnabled, ink: ink, orange: orange, red: red)
+                Self.drawBorder(rect: rect, usedPercent: usedPercent, limitEnabled: limitEnabled, ink: ink, yellow: yellow, orange: orange, red: red)
                 ctx.saveGState()
                 ctx.setAlpha(exhausted ? 0.55 : 1.0)
                 if drawsSparkline { Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink) }
@@ -324,18 +330,34 @@ public final class StatusItemController: NSObject {
     /// The border-is-the-budget trace. f = usedPercent / 100 (the API is
     /// 0...100, BorderDash's math is 0...1 -- this divide is the one place
     /// that conversion happens).
-    /// f<=0 or !limitEnabled -> faint full outline, no trace.
-    /// 0<f<0.85 -> faint outline + ink-70% trace. 0.85<=f<1 -> + orange
-    /// trace. f>=1 -> solid closed loop in systemRed (no faint outline).
-    private static func drawBorder(rect: CGRect, usedPercent: Double, limitEnabled: Bool, ink: NSColor, orange: NSColor, red: NSColor) {
+    ///
+    /// The thresholds are BorderDash.level's, not inline numbers (v1.0.0):
+    /// .empty  -> faint full outline, no trace.
+    /// .trace  -> faint outline + ink-70% trace.
+    /// .notice -> + yellow trace (past 50%).
+    /// .amber  -> + amber trace (past 75%).
+    /// .alarm  -> solid closed loop in systemRed, no faint outline (past 90%).
+    ///
+    /// The colour ramp escalates ink → yellow → amber → red, so the border
+    /// reads as one rising signal. Yellow at the halfway mark is a heads-up
+    /// ("half your day is gone"), amber is the warning, red is the alarm.
+    ///
+    /// Note the alarm now fires at 90%, BEFORE the budget is actually spent.
+    /// The dash pattern still has to be drawn for 0.90 <= f < 1: `pattern`
+    /// returns nil only at f >= 1, so a red partial loop would otherwise
+    /// render as a red DASH sitting at 90-something percent. We close the loop
+    /// explicitly for the whole alarm band instead, which is the point — the
+    /// alarm is "you are about to run out", and a closed ring says that.
+    private static func drawBorder(rect: CGRect, usedPercent: Double, limitEnabled: Bool, ink: NSColor, yellow: NSColor, orange: NSColor, red: NSColor) {
         let borderRect = rect.insetBy(dx: 0.75, dy: 0.75)
         let r = min(cornerRadius, min(borderRect.width, borderRect.height) / 2)
         let path = clockwiseRoundedRectPath(in: borderRect, cornerRadius: r)
         path.lineWidth = 1.5
 
         let f = usedPercent / 100.0
+        let level = BorderDash.level(forFraction: f, limitEnabled: limitEnabled)
 
-        if limitEnabled, BorderDash.isFull(f) {
+        if level == .alarm {
             clearDash(path)
             red.setStroke()
             path.stroke()
@@ -348,13 +370,20 @@ public final class StatusItemController: NSObject {
         ink.withAlphaComponent(0.12).setStroke()
         path.stroke()
 
-        guard limitEnabled, f > 0 else { return }
+        guard level != .empty else { return }
 
         let perimeter = BorderDash.perimeter(width: Double(borderRect.width), height: Double(borderRect.height), cornerRadius: Double(r))
         guard let pattern = BorderDash.pattern(forFraction: f, perimeter: perimeter) else { return }
 
         applyDash(path, on: CGFloat(pattern.on), off: CGFloat(pattern.off), phase: CGFloat(BorderDash.phase(perimeter: perimeter)))
-        (f < 0.85 ? ink.withAlphaComponent(0.70) : orange).setStroke()
+        let traceColor: NSColor
+        switch level {
+        case .amber:  traceColor = orange
+        case .notice: traceColor = yellow
+        // .empty and .alarm both returned above; .trace is the quiet default.
+        default:      traceColor = ink.withAlphaComponent(0.70)
+        }
+        traceColor.setStroke()
         path.stroke()
     }
 

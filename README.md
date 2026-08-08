@@ -4,12 +4,12 @@
 
 **Your AI Hub spend, in the corner of your eye — never in your face.**
 
-A premium macOS menu bar app that shows your personal AI Hub (LLM gateway)
-usage at a glance. An instrument, not a scoreboard.
+A macOS menu bar app that shows your personal AI Hub (LLM gateway) usage at a
+glance. An instrument, not a scoreboard.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-156%20passing-30d158?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-219%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 [![Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-blue?style=flat-square)](CHANGELOG.md)
 
@@ -23,28 +23,78 @@ One pill. Three instruments.
 
 <img src="docs/assets/pill-dark.png" alt="The pill: burn sparkline + amount + budget border">
 
-- **The pulse** — a live sparkline of your last hour of burn
+- **The pulse** — a live sparkline of your last hour of burn, age-faded so the
+  newest samples read brightest
 - **The amount** — today's spend in dollars
 - **The border IS the budget** — the pill's own outline traces your daily
-  budget as it fills. Amber past 85%, a closed red loop at 100% (the only
-  red in the app):
+  budget as it fills, and it's the one element allowed to raise its voice. It
+  escalates in one direction only, as the day goes:
 
-<img src="docs/assets/pill-amber-dark.png" alt="Amber past 85%"> <img src="docs/assets/pill-exhausted-dark.png" alt="Red closed loop at 100%"> <img src="docs/assets/pill-stale-dark.png" alt="Dimmed when the gateway is unreachable">
+| Border | | Meaning |
+|---|---|---|
+| quiet ink | <img src="docs/assets/pill-dark.png" alt="ink trace"> | under half your budget |
+| **yellow past 50%** | <img src="docs/assets/pill-notice-dark.png" alt="yellow past 50%"> | a heads-up; nothing to act on yet |
+| **amber past 75%** | <img src="docs/assets/pill-amber-dark.png" alt="amber past 75%"> | the warning, while you can still change course |
+| **closed red loop past 90%** | <img src="docs/assets/pill-exhausted-dark.png" alt="red loop past 90%"> | the alarm, while there's still budget to protect |
+
+The *number* only dims once you've actually spent 100%. The border warns early;
+the app never claims your budget is gone while a tenth of it remains.
+
+<img src="docs/assets/pill-stale-dark.png" alt="Dimmed when the gateway is unreachable">
+
+Everything dims when the gateway is unreachable — your data is never silently
+stale.
+
+**Pill size ladder.** Full (88pt) → compact (52pt) → hairline (26pt). Pick one
+from the right-click menu, or let it choose automatically when a notch clips the
+status item. Right-click also offers *Copy today's spend*, *Open history
+folder*, and *Quit*.
 
 ## The popover
 
-Click the pill. One panel, no tabs — hairlines and whitespace only.
-
-- **$54.51 of $400 today**, plus one computed sentence:
-  *"At this pace you'll reach budget around 9:40 pm."*
-- **Today's curve** — cumulative spend hour by hour, against the ceiling
-- **Models** — ranked by cost, with a Today / Month switcher
-- **● AI Hub** — a health dot that goes amber and dims everything when
-  the gateway is unreachable (your data is never silently stale)
-- **Loading state** — on first open you get a calm "Connecting to AI Hub…"
-  panel that swaps to real data the moment the first poll lands
+Click the pill. One panel, hairlines and whitespace only. It answers four
+questions, in order, and each answer holds a fixed slot — the card never
+resizes under your pointer.
 
 <img src="docs/assets/popover-light.png" width="340" alt="Popover, light appearance">
+
+**How much today?** `$54.51 of $400 today`, in large monospaced digits.
+
+**At what pace?** One computed sentence — *"At this pace you'll reach budget
+around 9:40 pm."* When there's nothing urgent to say, it compares you against
+yourself instead: *"Typical day by now: $34 — you're at $12."* On the Month tab
+it adds a runway line, *"On track for ~$X this month."*
+
+**Today's curve.** Cumulative spend hour by hour against a dotted budget
+ceiling, with the median of your recent days drawn faintly behind it — no
+legend, no label; the shape is the sentence. **Hover it** for a crosshair and a
+dot that snaps to the nearest hour you actually have a reading for, plus a
+floating readout in your local time. A gap hour never answers: the pointer past
+your last reading snaps back to it rather than inventing a value.
+
+**This week.** Seven cells, Monday through Sunday, each shaded by that day's
+share of the week's biggest — the contribution-graph grammar, so the week's
+shape reads at a glance. Today wears a ring and advances through a fixed row as
+the week goes; the days still ahead sit empty. **Hover any cell** for that day's
+cost. A day with no reading stays silent rather than claiming `$0.00`.
+
+**Which models?** Ranked by cost, with a Today / Month switcher. Each row shows
+the model, its share of the period's spend (`gpt-5 · 62%`), the cost, and the
+unit price in `$/M tokens` — because two models can burn identical tokens at
+wildly different prices, so raw token counts are a vanity metric.
+
+**The chrome, top-right.** A 6pt version dot (hover for the changelog and the
+version you're running) and an update bell beside it — grey and still when
+you're up to date, yellow and gently rocking when a newer release exists. Click
+the bell for the install command with a Copy button.
+
+**The footer.** `Dashboard ↗` · `API key` · `Start at login` · a health dot
+that goes amber and dims everything when the gateway is unreachable.
+
+**Opening cold.** If today's local history holds a reading, the popover shows it
+immediately — dimmed, captioned *"Last reading · 4m ago"* — and the live poll
+brightens it in place. A brightness change, not a numbers jump. A true first run
+shows an honest spinner.
 
 ## Install
 
@@ -68,11 +118,13 @@ brew update && brew upgrade --cask vela-ishtar
 xattr -cr "/Applications/Vela Ishtar.app"
 ```
 
+That's the same one-liner the update bell hands you.
+
 **Direct download:**
 
 ```bash
-curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v0.5.0/VelaIshtar-0.5.0.zip
-unzip VelaIshtar-0.5.0.zip -d /Applications/
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v1.0.0/VelaIshtar-1.0.0.zip
+unzip VelaIshtar-1.0.0.zip -d /Applications/
 xattr -cr "/Applications/Vela Ishtar.app"
 open -a "Vela Ishtar"
 ```
@@ -104,26 +156,39 @@ Optional: toggle **Start at login** in the popover footer.
 - Polls `GET https://ai-llm-gateway.fbr.land/v1/me/usage` every 60s with
   your token. The response is scoped to you only.
 - Your daily budget resets at **midnight UTC** — that's how the gateway
-  buckets spend. The pace sentence uses that boundary.
+  buckets spend, so that's the boundary the pace sentence uses.
 - Your personal limit comes from the API, so the UI auto-scales whether
   your budget is $100, $400, or anything else.
 - Hourly spend history is cached locally in
   `~/Library/Application Support/VelaIshtar/history.json` — it powers
-  the curve and gets richer the longer you run the app.
+  the curve, the week strip, and the median comparisons, and gets richer
+  the longer you run the app.
 
-**Models period switcher:** Today derives a per-model split by
-differencing the gateway's month-cumulative figures against a locally
-stored snapshot of yesterday — reconciled against your real daily total,
-so the rows always tie (any truncation residue lands in an explicit
-"Other" row). The split unlocks after the app has observed one midnight
-UTC; before that, Today shows your real daily total from the API. Month
-ranks models by current-month cost. A Week segment was removed for now —
-the gateway's `/v1/me/usage` has no weekly per-model endpoint.
+**Days are the gateway's, not your clock's.** History is keyed by the API's
+`spend_date` label, because the two disagree around midnight — keying by local
+UTC used to file yesterday's total under today and make the curve visibly
+decrease within a day.
 
-**Comparison surfaces** (the ghost curve behind today's, the median-day
-sentence, and the 7-day strip) switch on after ~5 days of clean local
-history — the app prefers silence over a confident number computed from
-thin data.
+**Models period switcher.** Month ranks models by current-month cost, straight
+from the API. Today is *derived*: the gateway exposes only month-cumulative
+per-model figures, so today's split is computed by differencing against a stored
+snapshot of yesterday, then reconciled against your authoritative daily total
+(any residue lands in an explicit `Other` row). It unlocks after the app has
+observed one midnight UTC. If the numbers don't tie — the app wasn't running at
+yesterday's close, or a month rolled over — you get your real daily total plus a
+line saying why there's no split, never a confident wrong breakdown. A Week
+segment was removed: `/v1/me/usage` has no weekly per-model endpoint.
+
+**Comparison surfaces wait for enough data.** The ghost curve, the median-day
+sentence, and the week strip switch on after roughly five days of clean local
+history (the strip also needs at least 4 days of the current week to carry data).
+Below that they stay hidden. Silence beats a confident number computed from thin
+data — the same rule everywhere in the app.
+
+**Update checks.** The app asks GitHub for the latest release tag at most once
+every six hours, and only to compare version numbers. Nothing is downloaded or
+installed automatically: the bell hands you a Homebrew command and gets out of
+the way. "Skip this version" is remembered, per version.
 
 **Rebuilding from source:** each `./build.sh` changes the ad-hoc signature,
 so macOS may ask once for Keychain access on the first run of a new build.
@@ -134,32 +199,55 @@ One prompt per rebuild; one-time for a build you keep. Apple Silicon only
 
 Calm assurance. Facts, plainly stated, then silence. No leaderboards, no
 notifications, no "AI insights", no celebration mechanics. Monochrome
-everywhere except one amber warning and one red alarm. The fewer pixels
-that move, the more each one means.
+everywhere except the budget border, which is the one thing allowed to raise
+its voice — and only in one direction, as spend climbs.
+
+Two rules earn most of the behaviour above:
+
+- **Never show a number the data doesn't support.** Gaps stay gaps, derived
+  splits that don't reconcile aren't shown, stale readings are dimmed and
+  bannered, and every comparison surface waits for enough history.
+- **The fewer pixels that move, the more each one means.** The card is a fixed
+  height in both periods, so a tab tap moves nothing but the indicator. Motion
+  is reserved for the curve's draw-on and the bell — and all of it respects
+  Reduce Motion.
 
 ## Tech
 
-Pure AppKit + Swift, zero dependencies, ~1,400 LOC. Builds with bare
-`swiftc` into an ad-hoc-signed `.app` — no Xcode. SwiftPM runs the
-`VelaCore` unit tests.
+Pure AppKit + Swift 6, zero dependencies, ~6,200 LOC (comments included — this
+codebase explains itself). Builds with bare `swiftc` into an ad-hoc-signed
+`.app` — no Xcode. SwiftPM runs the unit tests.
 
 ```bash
-make test     # 156 unit tests (pace math, burn buffer, border dash, history)
+make test     # 219 unit tests
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
+make release  # sync README, rebuild, zip for the Homebrew cask
 ```
+
+The split is deliberate. `Sources/VelaCore` is pure Foundation and holds every
+rule worth pinning — pace verdicts and the median-day benchmark, the week
+window, cell-intensity buckets, the budget border's dash math and colour
+thresholds, hover-readout text, the Today-by-model differencing engine, footer
+arithmetic, semver comparison — so all of it is unit-tested. `Sources/App` is
+AppKit rendering and event handling, verified on screen rather than in tests:
+geometry that only means something once it's drawn.
+
+Every bugfix that has a VelaCore seam gets a regression test that fails without
+the fix. Ones that don't — pixel alignment, tracking areas, layer transforms —
+are verified by rendering offscreen and probing the result.
 
 ## Release checklist
 
 Single source of truth for the version is `Info.plist`. Everything else
-(README badge, install URL, what's-new list) derives from it or from
-`CHANGELOG.md` at build time — edit those two files, never the derived
-bits by hand.
+(README badge, install URL, the in-app what's-new list) derives from it or from
+`CHANGELOG.md` at build time — edit those two files, never the derived bits by
+hand.
 
 1. Bump **both** `CFBundleShortVersionString` and `CFBundleVersion` in
-   `Info.plist` to the new version.
-2. Add a `## [x.y.z]` section to the top of `CHANGELOG.md`; the first
-   line after each header is the one-liner that ships in the version
-   bullet's what's-new list.
+   `Info.plist`.
+2. Add a `## [x.y.z]` section to the top of `CHANGELOG.md`; the first line
+   after each header is the one-liner that ships in the version dot's
+   what's-new list.
 3. `make test` — all green.
 4. `make release` — syncs the README (`readme-version`), rebuilds, and
    zips `build/VelaIshtar-x.y.z.zip` with its SHA256.
@@ -167,10 +255,14 @@ bits by hand.
 6. `gh release create vx.y.z build/VelaIshtar-x.y.z.zip …`, then bump
    the cask in `NSXBet/homebrew-tap` (version + sha256).
 7. Verify the 3-way match: tag commit == release asset digest == cask
-   sha256.
+   sha256 == live download.
 
 ## Privacy
 
 Reads only your own usage. Stores only your token (Keychain) and your
-spend history (a local file). No analytics, no telemetry, no third-party
-network calls — the only host it ever talks to is the AI Hub gateway.
+spend history (a local file). No analytics, no telemetry, no tracking.
+
+It talks to exactly two hosts, and only these two: the AI Hub gateway (your
+usage, with your token) and `api.github.com` (an unauthenticated read of the
+latest release tag, at most once every six hours, to decide whether to show the
+update bell). The GitHub call sends no token and no usage data.

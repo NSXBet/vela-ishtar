@@ -1,7 +1,8 @@
 // Sources/VelaCore/BorderDash.swift
 // Math for animating the pill's border as a dashed loop that fills in as
-// budget is spent — perimeter of a rounded rect, and the on/off dash
-// pattern for a given "fraction spent".
+// budget is spent — perimeter of a rounded rect, the on/off dash pattern for a
+// given "fraction spent", and which alarm LEVEL that fraction has reached
+// (ink → yellow at 50% → amber at 75% → red loop at 90%).
 // Why: kept separate from any rendering code so it stays pure Foundation
 // and unit-testable without AppKit/CoreGraphics.
 // Convention: the border path starts at top-center and runs clockwise,
@@ -11,6 +12,62 @@
 import Foundation
 
 public enum BorderDash {
+
+    /// How loud the border should be at a given fraction spent. The renderer
+    /// switches on this instead of comparing magic numbers inline, so the
+    /// thresholds live in exactly one place and are pinned by tests.
+    ///
+    /// The ramp is deliberately monotonic in loudness — ink → yellow → amber →
+    /// red — so the border reads as one escalating signal rather than four
+    /// unrelated states.
+    public enum Level: Equatable, Sendable {
+        /// Nothing spent yet (or no limit): the faint empty-gauge outline only.
+        case empty
+        /// Spending, still comfortable: an ink trace over the faint outline.
+        case trace
+        /// Past `noticeThreshold`: the trace turns yellow — "half your day is
+        /// gone", a heads-up, not a warning.
+        case notice
+        /// Past `amberThreshold`: the trace turns amber.
+        case amber
+        /// Past `alarmThreshold`: a solid closed red loop, no dash.
+        case alarm
+    }
+
+    /// Where the trace turns yellow. v1.0.0: the first waypoint on the ramp —
+    /// past half your daily budget you should know it, but there is nothing to
+    /// act on yet, so this is the quietest possible colour change rather than a
+    /// warning.
+    public static let noticeThreshold = 0.50
+
+    /// Where the trace turns amber. v1.0.0 moved this 0.85 → 0.75: at 85% of a
+    /// daily budget there is often less than an hour of normal burn left, which
+    /// is too late for the warning to change what you do. 75% still leaves room
+    /// to act.
+    public static let amberThreshold = 0.75
+
+    /// Where the border becomes a closed red loop. v1.0.0 moved this 1.00 →
+    /// 0.90, so the alarm fires while there is still budget to protect rather
+    /// than only once it's gone.
+    ///
+    /// Deliberately NOT the same question as `isFull`: this is the VISUAL alarm,
+    /// while `isFull` is the FACTUAL "budget is spent". Keeping them separate is
+    /// what lets the border shout at 90% without the app claiming your budget is
+    /// exhausted when a tenth of it remains.
+    public static let alarmThreshold = 0.90
+
+    /// The alarm level for a fraction spent. `limitEnabled: false` is always
+    /// `.empty` — with no budget there is nothing to trace against.
+    /// Ordered high-to-low so each band's upper edge belongs to the louder
+    /// level, making every threshold inclusive.
+    public static func level(forFraction f: Double, limitEnabled: Bool = true) -> Level {
+        guard limitEnabled, f > 0 else { return .empty }
+        if f >= alarmThreshold { return .alarm }
+        if f >= amberThreshold { return .amber }
+        if f >= noticeThreshold { return .notice }
+        return .trace
+    }
+
     /// Perimeter of a rounded rectangle: two straight edges of each side
     /// (shortened by the corner radius on both ends) plus the four corners,
     /// which together sweep one full circle of radius `cornerRadius`.
@@ -34,7 +91,9 @@ public enum BorderDash {
         return (on: f * p, off: p)
     }
 
-    /// True once spend reaches or exceeds 100% of budget.
+    /// True once spend reaches or exceeds 100% of budget — the FACTUAL
+    /// "budget is spent", used for content dimming and the exhausted verdict.
+    /// The border's red loop fires earlier, at `alarmThreshold`; see `level`.
     public static func isFull(_ f: Double) -> Bool {
         f >= 1
     }

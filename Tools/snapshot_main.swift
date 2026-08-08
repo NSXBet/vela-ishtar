@@ -73,9 +73,12 @@ func writeSnapshots() throws {
     let rising: [Double] = [0, 0.4, 0.9, 1.1, 1.8, 2.6, 2.9, 3.8, 4.4, 5.1, 5.4, 6.2, 6.79]
     let controller = StatusItemController()
     let pillFixtures: [(String, PollState, BurnBuffer)] = [
-        ("pill-dark", .fresh(makeUsage(spent: 200, limit: 400)), makeBurnBuffer(rising)),
-        ("pill-amber-dark", .fresh(makeUsage(spent: 360, limit: 400)), makeBurnBuffer(rising)),
-        ("pill-exhausted-dark", .fresh(makeUsage(spent: 400, limit: 400)), makeBurnBuffer(rising)),
+        // v1.0.0 ramp: ink < 50%, yellow >= 50%, amber >= 75%, red loop >= 90%.
+        // One fixture per band so the README shows the whole escalation.
+        ("pill-dark", .fresh(makeUsage(spent: 140, limit: 400)), makeBurnBuffer(rising)),           // 35% - ink
+        ("pill-notice-dark", .fresh(makeUsage(spent: 240, limit: 400)), makeBurnBuffer(rising)),    // 60% - yellow
+        ("pill-amber-dark", .fresh(makeUsage(spent: 330, limit: 400)), makeBurnBuffer(rising)),     // 82.5% - amber
+        ("pill-exhausted-dark", .fresh(makeUsage(spent: 380, limit: 400)), makeBurnBuffer(rising)), // 95% - red loop
         ("pill-stale-dark", .stale(makeUsage(spent: 180.40, limit: 400), consecutiveFailures: 3), makeBurnBuffer(rising)),
     ]
     for (name, state, buffer) in pillFixtures {

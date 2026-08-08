@@ -205,9 +205,13 @@ public final class PopoverPanel: NSPanel {
     /// app must never steal activation just to show numbers, but asking
     /// for a credential is exactly the moment the user expects to type.
     public func showForKeyboardInput(relativeTo button: NSStatusBarButton?) {
-        show(relativeTo: button)
-        NSApp.activate(ignoringOtherApps: true)
-        makeKey()
+        // Activation must commit BEFORE the window orders front (see
+        // activateThen) or the first click on a button is eaten by
+        // click-through even though the button accepts first mouse.
+        activateThen {
+            self.show(relativeTo: button)
+            self.makeKey()
+        }
     }
 
     /// Shows the panel centered on the screen that currently has keyboard
@@ -229,8 +233,9 @@ public final class PopoverPanel: NSPanel {
         )
         setFrame(centered, display: false)
         alphaValue = 1
-        NSApp.activate(ignoringOtherApps: true)
-        makeKeyAndOrderFront(nil)
+        // Activation must commit BEFORE ordering front (see activateThen) —
+        // without it the first click on Cancel is eaten by window activation.
+        activateThen { self.makeKeyAndOrderFront(nil) }
         installClickMonitors()
     }
 
@@ -296,6 +301,15 @@ public final class PopoverPanel: NSPanel {
         // not deactivate an app it never activated.
         let wasKey = isKeyWindow
         removeClickMonitors()
+        // Child windows (the update bell's card, the version bullet's tip)
+        // live ABOVE us at statusBar+1 — ordering out without closing them
+        // leaves a floating card over empty air (the "card stays after the
+        // panel minimizes" report). Close them first; their views' own
+        // viewWillMove(toWindow: nil) teardown also fires, harmlessly.
+        for child in childWindows ?? [] {
+            removeChildWindow(child)
+            child.orderOut(nil)
+        }
 
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             // 80ms fade, then orderOut. The generation guard prevents a
@@ -342,10 +356,17 @@ public final class PopoverPanel: NSPanel {
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else { return event }
             // Ignore clicks inside the panel itself (that's content
-            // interaction) and clicks on the anchor button (its own
-            // action already toggles show/dismiss) -- everything else
-            // inside our app counts as "outside" and dismisses.
+            // interaction), clicks on the anchor button (its own action
+            // already toggles show/dismiss), and clicks in any CHILD window
+            // (the update bell's card and the version bullet's tip live at
+            // level statusBar+1 — treating their clicks as "outside" would
+            // dismiss the popover under the card the user is interacting
+            // with). Everything else inside our app counts as "outside" and
+            // dismisses.
             if event.window === self || event.window === self.anchorButton?.window {
+                return event
+            }
+            if let eventWindow = event.window, eventWindow.parent === self {
                 return event
             }
             self.dismiss()
@@ -362,5 +383,20 @@ public final class PopoverPanel: NSPanel {
             NSEvent.removeMonitor(monitor)
             localClickMonitor = nil
         }
+    }
+
+    /// The token-entry shows activate the app so the panel can own the
+    /// keyboard. On modern macOS, `NSButton.acceptsFirstMouse` is honored
+    /// only when the app is ACTIVE at the moment the click lands — and
+    /// `NSApp.activate` is not synchronous (the app reports active only on a
+    /// later runloop turn). If the panel orders front in the same turn as the
+    /// activate call, the user's very first click can still land on an
+    /// inactive window and be eaten (the v0.5.2 "Cancel needs a second click"
+    /// report, still reproducing after the button was made a first-mouse
+    /// acceptor). Deferring the show to the next runloop turn lets activation
+    /// commit first, so the first click is a real click.
+    private func activateThen(_ show: @escaping @MainActor () -> Void) {
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { show() }
     }
 }

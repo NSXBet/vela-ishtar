@@ -4,6 +4,123 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [1.0.0] — 2026-08-08
+
+Vela Ishtar 1.0: the week is now a real calendar week you can hover, the app
+tells you when it's out of date, and the curve reads cleanly at every scale.
+
+This is the release the last five feature versions were building toward. The
+popover answers its four questions — how much today, at what pace, on which
+models, and how does this week compare — and it answers each one in a fixed,
+unmoving frame. Nothing resizes under you, nothing claims data it doesn't have,
+and every surface I could hover, I made hoverable.
+
+### Added
+
+- **The day strip is a true Monday–Sunday week.** It used to be a rolling
+  7-day window ending at today, which meant every column silently re-labelled
+  itself each morning — the row could never become a frame you learn. Now the
+  seven cells are always Monday through Sunday of the current week, the
+  weekday letters are a fixed `M T W T F S S`, and today's ring advances
+  through a stable row. Days later in the week render as empty cells: a gap
+  waiting to be filled, which is exactly what they are. A day that hasn't
+  happened never joins the week's max, so it can't wash out the cells that
+  have.
+- **Hover any day in the strip for its cost.** A small floating card above the
+  hovered cell, cost and nothing else (`$42.18`) — the column's letter and
+  ring already say which day, so repeating the date would be noise. A day with
+  no reading stays silent rather than showing `$0.00`, which would be a
+  different claim than "we have no data."
+- **The update bell.** When a newer release exists on GitHub, a bell appears
+  beside the version dot and rocks gently for four seconds. Click it for the
+  one-line install command with a Copy button, a link to the release notes, and
+  "Skip this version." It checks at most once every six hours, stays silent
+  when offline, and remembers a skip across relaunches.
+- **The spend curve is scrubable.** Hover it for a crosshair and a filled dot
+  that snaps to the nearest *observed* hour, with a floating readout that
+  speaks the hour in your local time. A gap hour never answers — the pointer
+  past your last reading snaps back to it rather than inventing a value. A
+  one-shot sonar ring on first hover announces that the curve is interactive.
+
+### Changed
+
+- **The "now" label no longer collides with the curve.** On an ordinary day —
+  spend well below the ceiling — the curve's baseline ran straight through the
+  word. The plot now reserves a 13pt band at the bottom of the lane for the
+  label, so the chart's floor sits above the text instead of on top of it. The
+  "now" tick and the hover crosshair both stop at that floor for the same
+  reason.
+- **The models table is set as columns.** Cost and $/M efficiency use
+  monospaced digits, right-aligned on a shared edge, with column widths taken
+  from a measured glyph audit so a long figure can neither clip nor shove its
+  neighbour. The old per-model bar is gone — it restated the cost column as
+  decoration — and its answer now reads inline as a share of the period's
+  spend (`gpt-5 · 62%`).
+- **The card is a fixed height.** Tapping Today / Month renders the same
+  sections at the same height, so the panel never resizes under your pointer
+  and the hero number you're reading never moves.
+- **The bell is now a permanent status light.** It used to appear only when
+  an update existed, which meant its absence told you nothing — you couldn't
+  distinguish "up to date" from "hasn't checked". It's now always there:
+  grey and perfectly still when you're current (clicking says which version
+  you're running, and offers nothing else, because there's nothing to do),
+  yellow and rocking only when a real update is waiting.
+- **The budget border now escalates through four colours.** It used to be one
+  amber step at 85% and a red loop at 100%. Now it reads as a rising signal:
+  quiet ink for the first half of the day, **yellow past 50%** (a heads-up —
+  half your budget is gone, nothing to act on yet), **amber past 75%** (the
+  warning, early enough to change what you do), and a **closed red loop past
+  90%** (the alarm, while there's still budget to protect). At 85% of a normal
+  day there's often under an hour of burn left, which was too late for the old
+  amber to be useful. The pill's *number* still only dims at a true 100%: the
+  border shouts early, but the app never claims your budget is gone while a
+  tenth of it remains.
+- **Today / Month now line up with the numbers they label.** The tab strip's
+  frame was already pinned to the content margin, but its labels were packed
+  from the left, leaving all 24pt of slack on the right — so the visible tabs
+  sat short of the cost and efficiency columns beneath them. The labels are
+  right-packed now and "Month" lands on exactly the same edge as the figures
+  below it.
+
+### Fixed
+
+- **A week cell could look off-centre inside its ring, intermittently.** The
+  strip is 284pt across seven columns — 40.571… each — so six of the seven
+  cells landed on fractional device pixels and antialiased unevenly, more ink
+  on one edge than the other. It read as intermittent because the hover ring
+  and today's ring round differently, so the apparent offset came and went
+  with whichever ring was drawn. Column centres are rounded to whole points
+  now, which puts the cell, both rings, and the weekday letter all on whole
+  device pixels.
+- **The update bell sat 7pt off its slot, intermittently.** The frame was
+  always right; the glyph's *layer* was drawn wrong. Rocking the bell via
+  `anchorPoint` moved the layer's position with it (the two are coupled), and
+  AppKit resyncs `anchorPoint` back on the next layout pass — so the offset
+  appeared and vanished depending on whether a layout had run, which is why it
+  read as random drift and survived every re-pin. The rock now pivots through
+  a pre-composed transform and leaves `anchorPoint` alone.
+- **The bell card's Cancel needed two clicks.** The first click was being
+  spent dismissing something else. The hit-testing now routes it to the button
+  on the first press, and a 401 from the gateway bounces straight back to token
+  entry instead of leaving the popover in a dead state.
+- **The footer no longer overlaps itself.** All of the row's horizontal
+  arithmetic moved into a unit-tested `FooterLayout` seam, with the gaps as
+  named inputs and the invariants (nothing overlaps; the login→dot gap is
+  identical whether or not the checkmark shows) pinned by tests rather than
+  eyeballed on a screenshot.
+- **The week strip moved out from under the curve.** Butted against the
+  curve's baseline the cells read as a second, contradictory x-axis on the same
+  lane. It now sits in its own section on the footer rule, where it reads as
+  what it is: the week around today.
+- **The hover card no longer overhangs its own text.** Both floating readouts
+  (the week strip's and the curve scrubber's) reuse one panel as the pointer
+  moves, and only the window was being resized — the content view and its
+  frosted backing kept the FIRST hover's width. Sliding from a wide reading to
+  a narrower one ($197.33 → $46.65) left a 7pt slab of blur hanging past the
+  card. It only reproduced when arriving from a neighbouring cell, since
+  approaching from above builds a fresh card at the right size. The content and
+  its backing are now resized with the window.
+
 ## [0.5.1] — 2026-08-08
 
 The spend curve is now scrubable: hover it and a crosshair + dot snap to the
@@ -339,6 +456,9 @@ First public release.
 - Token entry (AI Hub `gt_` key), 60s polling, stale-data banner, spend
   history persisted across launches.
 
+[1.0.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v1.0.0
+[0.5.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.5.1
+[0.5.0]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.5.0
 [0.4.3]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.3
 [0.4.2]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.2
 [0.4.1]: https://github.com/NSXBet/vela-ishtar/releases/tag/v0.4.1

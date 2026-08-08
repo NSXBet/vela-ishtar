@@ -96,8 +96,8 @@ struct PaceEngineTests {
     func exhaustedSentence() throws {
         let reachedAt = ISODate.parse("2026-08-01T18:40:00Z")!
         let sentence = PaceEngine.sentence(for: .exhausted(reachedAt: reachedAt))
-        #expect(sentence.hasPrefix("Budget reached at "))
-        #expect(sentence.hasSuffix(". Resets at midnight UTC."))
+        #expect(sentence.hasPrefix("Reached at "))
+        #expect(sentence.hasSuffix(" · resets at midnight"))
         #expect(try sentence.contains(Regex(#"\b\d{1,2}:\d{2} [ap]m\b"#)))
     }
 
@@ -106,9 +106,32 @@ struct PaceEngineTests {
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
         let eta = now.addingTimeInterval(21600) // 6h later, still same UTC day.
         let sentence = PaceEngine.sentence(for: .pace(eta: eta), now: now)
-        #expect(sentence.hasPrefix("At this pace you'll reach budget around "))
+        // Terse form (v0.5.2): "At this pace you'll reach budget around …"
+        // clipped its tail in the fixed 18pt, 284pt-wide pace row.
+        #expect(sentence.hasPrefix("Budget reached around "))
         #expect(sentence.hasSuffix("."))
         #expect(try sentence.contains(Regex(#"\b\d{1,2}:\d{2} [ap]m\b"#)))
+    }
+
+    @Test("every pace-row sentence fits the popover's single-line slot")
+    func paceSentencesFitTheSlot() {
+        // Regression (v0.5.2): the pace row is a fixed 18pt single-line slot
+        // 284pt wide at 13pt (v0.4.3's equal-height guarantee forbids growing
+        // it). ~46 chars ≈ 280pt at that size — anything longer clips.
+        // Measured from the worst live report: "At this pace you'll reach
+        // budget around 3:38 am." (47 chars) clipped; 44 fits with margin.
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let eta = now.addingTimeInterval(21600)
+        let sentences = [
+            PaceEngine.sentence(for: .idle, now: now),
+            PaceEngine.sentence(for: .cruisingNoLimit, now: now),
+            PaceEngine.sentence(for: .exhausted(reachedAt: now), now: now),
+            PaceEngine.sentence(for: .pace(eta: eta), now: now),
+            PaceEngine.sentence(for: .pace(eta: eta), now: now, typical: (median: 1234, spent: 5678)),
+        ]
+        for sentence in sentences {
+            #expect(sentence.count <= 45, "'\(sentence)' is \(sentence.count) chars — over the ~45-char budget of the 284pt pace slot")
+        }
     }
 
     @Test("pace sentence clamps to a generic message once the eta crosses midnight UTC")
@@ -224,7 +247,7 @@ struct PaceEngineTests {
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
         let eta = ISODate.parse("2026-08-03T00:00:00Z")! // past midnight
         let sentence = PaceEngine.sentence(for: .pace(eta: eta), now: now, typical: (median: 31.4, spent: 54.2))
-        #expect(sentence == "Typical day by now: $31 — you're at $54.")
+        #expect(sentence == "Typical day: $31 — you're at $54.")
     }
 
     @Test("pace before midnight ignores the typical benchmark")
@@ -232,14 +255,14 @@ struct PaceEngineTests {
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
         let eta = now.addingTimeInterval(21600) // 6h later, same UTC day
         let sentence = PaceEngine.sentence(for: .pace(eta: eta), now: now, typical: (median: 31.4, spent: 54.2))
-        #expect(sentence.hasPrefix("At this pace you'll reach budget around "))
+        #expect(sentence.hasPrefix("Budget reached around "))
     }
 
     @Test("exhausted ignores the typical benchmark")
     func exhaustedIgnoresTypical() {
         let reachedAt = ISODate.parse("2026-08-01T18:40:00Z")!
         let sentence = PaceEngine.sentence(for: .exhausted(reachedAt: reachedAt), typical: (median: 31.4, spent: 54.2))
-        #expect(sentence.hasPrefix("Budget reached at "))
+        #expect(sentence.hasPrefix("Reached at "))
     }
 
     @Test("idle ignores the typical benchmark")
@@ -257,7 +280,7 @@ struct PaceEngineTests {
         let now = ISODate.parse("2026-08-01T12:00:00Z")!
         let midnight = ISODate.parse("2026-08-02T00:00:00Z")! // exactly the boundary
         let sentence = PaceEngine.sentence(for: .pace(eta: midnight), now: now, typical: (median: 31.4, spent: 54.2))
-        #expect(sentence == "Typical day by now: $31 — you're at $54.")
+        #expect(sentence == "Typical day: $31 — you're at $54.")
     }
 
     @Test("medianSpend returns nil for an out-of-range hour instead of crashing")

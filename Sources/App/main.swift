@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: PopoverPanel?
     private var popoverView: PopoverView?
     private var firstRunView: FirstRunView?
+    private var updateChecker: UpdateChecker?
     private let keychain = KeychainStore()
 
     /// True once the user has clicked the status item at least once. The
@@ -97,6 +98,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.poller = poller
         self.statusItem = controller
 
+        // Update bell (v0.5.2): one checker for the app's lifetime. The
+        // launch check runs while the popover is closed, so by the time the
+        // user opens it the bell's state is already known — no network wait
+        // on the UI path. When a fetch (or a skip) changes the state, an
+        // open popover re-renders through the same path polls use.
+        let runningVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        let checker = UpdateChecker(runningVersion: runningVersion)
+        checker.onChange = { [weak self] in
+            self?.refreshOpenPopover()
+        }
+        self.updateChecker = checker
+        checker.checkIfDue()
+
         // First run: no token saved yet — open the token flow at launch so
         // the app's one question gets answered immediately.
         if keychain.read() == nil {
@@ -108,17 +122,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         poller?.machine.saveHistory()
     }
 
+    /// Re-renders the popover if it's currently open, from the poller's
+    /// latest state. Used by the update checker when the bell's state
+    /// changes mid-session (a fetch landed, or the user skipped a version).
+    private func refreshOpenPopover() {
+        guard let poller, let panel = popover, panel.isShown, let view = popoverView else { return }
+        view.update(state: poller.machine.state, history: poller.machine.history,
+                    exhaustedAt: poller.machine.exhaustedAt,
+                    lastSuccessAt: poller.machine.lastSuccessAt, now: Date(),
+                    todayModelSplit: poller.machine.todayModelSplit)
+    }
+
     /// Builds (once) and shows the popover under the status item. When
     /// `firstRunPrompt` is set — or no token exists — the content is the
     /// token-entry view; otherwise the normal usage view.
-    private func openPopover(relativeTo controller: StatusItemController, firstRunPrompt: String? = nil) {
+    ///
+    /// `pollOnOpen` is false only on the Cancel path out of the token flow:
+    /// polling there re-fires the dead token and the resulting 401 re-opens
+    /// the prompt the user just dismissed (see onCancel).
+    private func openPopover(relativeTo controller: StatusItemController, firstRunPrompt: String? = nil, pollOnOpen: Bool = true) {
         guard let poller else { return }
 
         let needsToken = keychain.read() == nil || firstRunPrompt != nil
 
         // Fresh data on demand — but NOT in the first-run/unauthorized path:
         // with a dead token that's a guaranteed-failing extra request.
-        if !needsToken {
+        if !needsToken, pollOnOpen {
             poller.pollNow()
         }
 
@@ -129,6 +158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if case .neverFetched = poller.machine.state, !needsToken {
             let view = self.popoverView ?? PopoverView()
             self.popoverView = view
+            view.updateChecker = updateChecker
+            view.onRequestDismiss = { [weak self] in self?.popover?.dismiss() }
             view.onReplaceToken = { [weak self, weak controller] in
                 guard let self, let controller else { return }
                 self.popover?.dismiss()
@@ -167,7 +198,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 poller?.resetUnauthorizedNotification()
                 self.popover?.dismiss()
                 self.popover = nil
-                self.openPopover(relativeTo: controller)
+                // ...but do NOT poll on the way out. Re-arming the latch and
+                // then immediately firing a request with the same dead token
+                // guarantees a 401 within a few hundred ms, which re-opens
+                // this very panel — Cancel appeared to do nothing at all. The
+                // 60s timer still polls, still 401s, and still re-prompts, so
+                // the forever-amber guard is intact; it just no longer bounces
+                // the user straight back into the prompt they dismissed.
+                self.openPopover(relativeTo: controller, pollOnOpen: false)
             }
             view.onSave = { [weak self, weak poller] token in
                 guard let self, let poller else { return false }
@@ -201,6 +239,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let view = self.popoverView ?? PopoverView()
         self.popoverView = view
+        view.updateChecker = updateChecker
+        view.onRequestDismiss = { [weak self] in self?.popover?.dismiss() }
         // "API key" swaps the popover into token-entry mode so a rotated
         // token can be pasted — the token itself never touches this view.
         view.onReplaceToken = { [weak self, weak controller] in

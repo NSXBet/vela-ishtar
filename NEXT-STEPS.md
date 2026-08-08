@@ -7,15 +7,56 @@ this up cold.
 
 ## Current state (as of 2026-08-08)
 
-- **Shipped:** v0.5.0 and **v0.5.1** are both live. v0.5.1 (curve hover
-  scrubber) is tagged (`v0.5.1`, commit `21ccb6e`), released on GitHub, cask
-  bumped, 3-way verify green, and installed on your Mac.
-- **Still open — the readout truncation.** The hover readout card shows
-  `3 pm ·` but the money (`$35.00`) is cut off. Layout is provably correct
-  (offscreen renders show the full text), so it's environmental — top suspect
-  is the **60s rebuild firing mid-hover** and leaving the floating readout
-  panel stale/clipped. This fix now lands in **v0.5.2** alongside the update
-  bell.
+- **v1.0.0 is staged in the working tree, not yet committed or tagged.**
+  Everything below is done: `./build.sh` clean, `make test` green at **210
+  tests**, Info.plist bumped on BOTH keys, CHANGELOG `## [1.0.0]` written,
+  `make readme-version` run, README + this file updated.
+- **What v1.0.0 gathers up.** The whole five-feature line, released as one:
+  the update bell + one-line install, the curve hover scrubber, the models
+  table polish, the GitHub-style day strip — now a true **Monday–Sunday
+  calendar week with per-day cost on hover** — and the round-3/4 fixes (bell
+  layer drift via `anchorPoint`, Cancel's first click, footer overlap moved
+  into the tested `FooterLayout` seam, strip relocated off the curve).
+- **Landed in this pass:**
+  - `Sources/VelaCore/DayStrip.swift` — `week()` is now a Monday-anchored
+    calendar week; days after today come back nil (a future day must never
+    join the week's max). New `hoverText(total:)` seam for the cost card.
+  - `Tests/VelaCoreTests/DayStripTests.swift` — rewritten week half: Monday
+    ordering, today mid-week, future-days-nil, month AND year boundary
+    crossings, and the `>=4` gate proven un-gameable by future days. 9 of
+    them fail against the old rolling window (verified by reverting just the
+    arithmetic).
+  - `Sources/App/DayStripView.swift` — static `M T W T F S S` letters, hover
+    highlight ring, floating cost card (a non-activating `NSPanel`, same
+    idiom as the curve readout — native tooltips still don't fire on this
+    panel).
+  - `Sources/App/CurveView.swift` — 13pt `nowLabelGutter` at the bottom of
+    the lane. The "now" label wasn't misplaced; the plot floor was sitting on
+    top of it. Before/after offscreen renders show the stroke and the glyphs
+    sharing a row previously, three rows apart now.
+
+### Before tagging
+
+- **Clear the fake-release seed.** There's a local `defaults write` on this Mac
+  pinning `updateCheck.cachedTag` to a phantom high version, so the bell stays
+  visible for testing. It's UserDefaults only — verified absent from the repo,
+  the bundle, and the binary — but clear it once you've eyeballed the real bell
+  behaviour, or the shipped 1.0.0 will keep announcing a release that doesn't
+  exist on your own machine:
+  ```
+  defaults delete com.nsxbet.velaishtar updateCheck.cachedTag
+  defaults delete com.nsxbet.velaishtar updateCheck.cachedURL
+  defaults delete com.nsxbet.velaishtar updateCheck.lastCheck
+  ```
+  (Dropping `lastCheck` too lets the next launch re-check immediately instead
+  of waiting out the 6h throttle, so you see the true state right away.)
+- Then the usual pipeline: commit → you push branch + tag (`!`) →
+  `gh release create v1.0.0` + upload zip under its canonical name → cask bump
+  → 3-way verify → review.
+
+---
+
+## History
 
 ### What shipped in v0.5.1 (committed at `21ccb6e`)
 - `Sources/VelaCore/CurveScrub.swift` — seam math (hour snap, gaps-stay-gaps,
@@ -30,56 +71,9 @@ this up cold.
 Review (kimi k3, deep-reasoner) verdict was **ship**; both its findings were
 fixed before release.
 
----
-
-## Immediate next step (do this FIRST)
-
-**Fix the readout truncation with real data, not mocks.** Stop rendering
-offscreen probes — they look fine and don't reproduce it. Instrument the real
-app to log the panel frame + label state *while hovering*, so we catch the
-truncation in the act:
-
-1. Add temporary `NSLog`/`print` in `CurveView.updateReadout()` (around line
-   409-477) logging: `scrub.hour`, `text`, `textSize`, `cardWidth`,
-   `panel.frame`, `label.frame`, `label.fittingSize`, and whether a rebuild
-   (`configure()`) just ran.
-2. Also log in `PopoverView.update()` (line 90) each time the 60s rebuild
-   fires, so we can see if it lands mid-hover.
-3. Build, install, hover the curve, read the log (`log show --last 2m` or
-   Console.app).
-4. Find the mismatch, fix it, remove the logging.
-
-Only after the readout shows the full `3 pm · $35.00` on YOUR screen is this
-bug actually closed. Fold the fix into the v0.5.2 release below.
-
----
-
-## v0.5.2 — readout truncation fix + update bell (last of the five features)
-
-**Part 1 — the truncation fix** (from the step above): whatever the logging
-reveals, fix it, add a VelaCore regression test if the logic is testable, and
-confirm on your screen.
-
-**Part 2 — the update bell:** the bell near the changelog dot that shows "a new
-version is available", pulls from GitHub, and gives an easy install.
-
-- `Sources/VelaCore/VersionCheck.swift` — `isNewer(_:than:)` semver compare +
-  a `GitHubRelease` DTO. TDD (~8 tests).
-- `Sources/VelaCore/ReleaseChecker.swift` — hits
-  `api.github.com/repos/NSXBet/vela-ishtar/releases/latest`, sets a User-Agent
-  header, 6h throttle, silent when offline.
-- UI: SF Symbol bell to the LEFT of the version dot, visible only when a newer
-  release exists. Click → card with: Copy-command button
-  (`brew update && brew upgrade --cask vela-ishtar && xattr -cr
-  "/Applications/Vela Ishtar.app"`), a GitHub releases link, and "Skip this
-  version" (stored in UserDefaults).
-
-**v0.5.2 release pipeline (same as always):** tests → `./build.sh` → CHANGELOG
-`## [0.5.2]` entry → bump BOTH Info.plist keys to 0.5.2 → `make readme-version`
-→ commit → you push branch + tag (`!`) → `gh release create v0.5.2` + upload
-zip (canonical filename) → cask bump (`gh api -X PUT`, base64 + current blob
-sha) → 3-way verify (tag commit == asset digest == cask sha256 == live
-download) → kimi k3 review.
+The readout truncation that was open at v0.5.1 is closed — the fix was sizing
+the card from the label's own `fittingSize` rather than the attributed string's
+tight glyph box (commit `7059ecc`).
 
 ---
 

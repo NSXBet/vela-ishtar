@@ -1,8 +1,9 @@
 // Tests/VelaCoreTests/BorderDashTests.swift
-// Verifies BorderDash's perimeter math and its dash-pattern rules at the
-// boundary fractions (0, mid, near-full, full).
+// Verifies BorderDash's perimeter math, its dash-pattern rules at the
+// boundary fractions (0, mid, near-full, full), and the amber/alarm levels.
 // Why: the pill border animation is the app's signature visual; a wrong
-// perimeter or off-by-one at f==1 would show a visible seam or gap.
+// perimeter or off-by-one at f==1 would show a visible seam or gap, and a
+// drifted threshold would warn too late to be useful.
 // RELEVANT FILES: Sources/VelaCore/BorderDash.swift
 
 import Testing
@@ -36,8 +37,10 @@ struct BorderDashTests {
         #expect(pattern!.off == Self.expectedPerimeter)
     }
 
-    @Test("fraction 0.85 scales the on-length, off stays full perimeter")
+    @Test("a high fraction scales the on-length, off stays full perimeter")
     func fractionNearFull() {
+        // 0.85 is arbitrary here — the point is that `pattern` is pure
+        // proportional math and knows nothing about the amber/alarm levels.
         let pattern = BorderDash.pattern(forFraction: 0.85, perimeter: Self.expectedPerimeter)
         #expect(pattern != nil)
         #expect(abs(pattern!.on - 0.85 * Self.expectedPerimeter) < 1e-9)
@@ -74,5 +77,102 @@ struct BorderDashTests {
     func phaseIsZero() {
         #expect(BorderDash.phase(perimeter: 192) == 0)
         #expect(BorderDash.phase(perimeter: 1) == 0)
+    }
+
+    // MARK: - alarm levels (v1.0.0: yellow past 50%, amber past 75%, red loop past 90%)
+
+    @Test("the thresholds are 50% notice, 75% amber, 90% alarm")
+    func thresholdValues() {
+        // Pinned as VALUES, not just behaviour: these three numbers are a
+        // product decision (warn early enough to act on), and a silent drift
+        // back toward 85/100 would quietly un-fix the thing we changed.
+        #expect(BorderDash.noticeThreshold == 0.50)
+        #expect(BorderDash.amberThreshold == 0.75)
+        #expect(BorderDash.alarmThreshold == 0.90)
+    }
+
+    @Test("the thresholds ascend, so every band is reachable")
+    func thresholdsAscend() {
+        // If these ever cross, a whole colour band becomes dead code and the
+        // ramp silently loses a step — cheaper to assert than to notice.
+        #expect(BorderDash.noticeThreshold < BorderDash.amberThreshold)
+        #expect(BorderDash.amberThreshold < BorderDash.alarmThreshold)
+        #expect(BorderDash.alarmThreshold <= 1.0)
+    }
+
+    @Test("no spend, or no budget, is the empty gauge")
+    func levelEmpty() {
+        #expect(BorderDash.level(forFraction: 0) == .empty)
+        #expect(BorderDash.level(forFraction: -0.1) == .empty)
+        // A disabled limit has nothing to trace against, at any fraction.
+        #expect(BorderDash.level(forFraction: 0.5, limitEnabled: false) == .empty)
+        #expect(BorderDash.level(forFraction: 0.95, limitEnabled: false) == .empty)
+    }
+
+    @Test("the first half of the budget traces in quiet ink")
+    func levelTrace() {
+        #expect(BorderDash.level(forFraction: 0.01) == .trace)
+        #expect(BorderDash.level(forFraction: 0.25) == .trace)
+        // Just under the halfway mark is still quiet.
+        #expect(BorderDash.level(forFraction: 0.4999) == .trace)
+    }
+
+    @Test("yellow starts AT 50% and holds until amber")
+    func levelNotice() {
+        #expect(BorderDash.level(forFraction: 0.50) == .notice)   // inclusive
+        #expect(BorderDash.level(forFraction: 0.60) == .notice)
+        #expect(BorderDash.level(forFraction: 0.7499) == .notice)
+    }
+
+    @Test("amber starts AT 75% and holds until the alarm")
+    func levelAmber() {
+        #expect(BorderDash.level(forFraction: 0.75) == .amber)   // inclusive
+        #expect(BorderDash.level(forFraction: 0.85) == .amber)   // the old amber line
+        #expect(BorderDash.level(forFraction: 0.8999) == .amber)
+    }
+
+    @Test("the red loop starts AT 90%, not at 100%")
+    func levelAlarm() {
+        #expect(BorderDash.level(forFraction: 0.90) == .alarm)   // inclusive
+        #expect(BorderDash.level(forFraction: 0.95) == .alarm)
+        #expect(BorderDash.level(forFraction: 1.0) == .alarm)
+        #expect(BorderDash.level(forFraction: 1.5) == .alarm)    // over budget stays alarm
+    }
+
+    @Test("the ramp escalates monotonically across the whole range")
+    func rampIsMonotonic() {
+        // Walk 1%..120% and assert the level never goes BACKWARDS. This is the
+        // property that makes the border readable as one rising signal, and it
+        // catches a mis-ordered comparison chain that spot-checks would miss.
+        func rank(_ l: BorderDash.Level) -> Int {
+            switch l {
+            case .empty: return 0
+            case .trace: return 1
+            case .notice: return 2
+            case .amber: return 3
+            case .alarm: return 4
+            }
+        }
+        var previous = 0
+        for percent in 1...120 {
+            let current = rank(BorderDash.level(forFraction: Double(percent) / 100.0))
+            #expect(current >= previous, "level went backwards at \(percent)%")
+            previous = current
+        }
+        // And all four spending bands actually occur somewhere in the range.
+        let seen = Set((1...120).map { rank(BorderDash.level(forFraction: Double($0) / 100.0)) })
+        #expect(seen == [1, 2, 3, 4])
+    }
+
+    @Test("the visual alarm and the factual 'budget spent' stay separate")
+    func alarmIsNotTheSameAsFull() {
+        // This is the invariant that keeps the earlier red loop honest: at 95%
+        // the border shouts, but the app must NOT claim the budget is gone —
+        // isFull drives content dimming and the exhausted pace verdict.
+        #expect(BorderDash.level(forFraction: 0.95) == .alarm)
+        #expect(BorderDash.isFull(0.95) == false)
+        // And at 100% both agree.
+        #expect(BorderDash.level(forFraction: 1.0) == .alarm)
+        #expect(BorderDash.isFull(1.0) == true)
     }
 }
