@@ -92,4 +92,26 @@ struct WhatsNewTests {
         #expect(visible.count == 1)
         #expect(visible[0].version == "0.4.3")
     }
+
+    @Test("five entries with a mid-list running version: running leads, the other four keep their exact relative order")
+    func fiveEntriesStableOrder() {
+        // This pins the CONTRACT (running version first, the rest in their
+        // original relative order), not the regression: the old comparator
+        // `sorted { lhs, _ in lhs.version == running }` violated strict weak
+        // ordering, but no realistic fixture reliably fails under it on this
+        // runtime — the stdlib's sort happens to tolerate it at these sizes.
+        // That unspecified behavior is exactly WHY the fix is a structural
+        // partition instead of a patched comparator: there was no red test
+        // to be had, so the guarantee now comes from construction, and this
+        // test keeps the contract executable.
+        let notes: [(version: String, note: String)] = [
+            ("0.4.5", "a"),
+            ("0.4.4", "b"),
+            ("0.4.3", "c"),
+            ("0.4.2", "d"),
+            ("0.4.1", "e"),
+        ]
+        let visible = WhatsNew.visibleNotes(running: "0.4.3", notes: notes)
+        #expect(visible.map(\.version) == ["0.4.3", "0.4.5", "0.4.4", "0.4.2", "0.4.1"])
+    }
 }
