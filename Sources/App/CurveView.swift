@@ -92,10 +92,11 @@ public final class CurveView: NSView {
         // Rebuild-safe scrub (v0.5.1): a hover in progress survives a data
         // tick — re-derive the dot from the FRESH hourly at the pointer's
         // last x (kept in `scrub`), never drop it just because the data
-        // ticked. If the re-derive went nil — the UTC-midnight rollover is
-        // the case that matters, when the fresh day starts all-nil — the
-        // floating card must die with the dot, or it hovers showing
-        // yesterday's hour over a dot that no longer exists.
+        // ticked, and re-show the card so its text tracks the moved dot. If
+        // the re-derive went nil — the UTC-midnight rollover is the case that
+        // matters, when the fresh day starts all-nil — the floating card must
+        // die with the dot, or it hovers showing yesterday's hour over a dot
+        // that no longer exists.
         //
         // All of this only applies while the view STAYS in its window. On a
         // hierarchy rebuild, update() calls configure() AFTER
@@ -108,7 +109,14 @@ public final class CurveView: NSView {
             if let current = scrub {
                 scrub = CurveScrub.scrubPoint(atX: current.x, hourly: hourly, laneWidth: Double(bounds.width))
             }
-            if scrub == nil { clearScrub() }
+            if scrub == nil {
+                clearScrub()
+            } else {
+                // The re-derive can move the dot to a new value (fresh data
+                // landed under a stationary pointer): the card must follow,
+                // or it keeps reading the pre-tick number over a moved dot.
+                updateReadout()
+            }
         }
         needsDisplay = true
     }
