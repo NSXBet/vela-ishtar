@@ -54,10 +54,38 @@ awk '
   }
 ' CHANGELOG.md > "$APP/Contents/Resources/whatsnew.txt"
 
-# Strip quarantine (dev machines may have copied this repo) and ad-hoc sign
-# so the Keychain item and login item behave consistently between rebuilds.
+# Strip quarantine (dev machines may have copied this repo) and sign so the
+# Keychain item and login item behave consistently between rebuilds.
 xattr -cr "$APP"
-codesign --force --sign - "$APP"
+
+# Code-signing identity. Two modes:
+#
+#   1. Preferred — a self-signed code-signing certificate named
+#      "Vela Ishtar Code Signing". Signing with a CERT pins the Keychain
+#      item's designated requirement (DR) to the certificate, which is stable
+#      across version bumps, so macOS stops re-prompting for the login-keychain
+#      password after every update. This is the root-cause fix for the
+#      post-update re-prompt (see docs/keychain-signing.md).
+#   2. Fallback — ad-hoc (`--sign -`) when the cert isn't in any keychain.
+#      The DR then degenerates to a bare cdhash that shifts on every version
+#      bump, so updates re-prompt. A fresh clone (no cert) still builds.
+#
+# `security find-identity -v -p codesigning` filters on TRUST, which a
+# self-signed cert may not have non-interactively — that would wrongly fall
+# back to ad-hoc. codesign happily signs with a self-signed cert when named
+# explicitly, so detect by NAME instead (any keychain on the search list).
+# Losing the private key means generating a NEW cert (new identity → users
+# re-grant once), so back it up — see docs/keychain-signing.md.
+CERT_NAME="Vela Ishtar Code Signing"
+if security find-certificate -c "$CERT_NAME" >/dev/null 2>&1; then
+  echo "Signing with self-signed certificate: $CERT_NAME (stable identity)"
+  codesign --force --sign "$CERT_NAME" "$APP"
+else
+  echo "NOTE: '$CERT_NAME' not found — falling back to ad-hoc signing."
+  echo "      Updates will re-prompt for the Keychain password. To fix, create"
+  echo "      the cert once per docs/keychain-signing.md."
+  codesign --force --sign - "$APP"
+fi
 
 echo "Built $APP"
 echo "Run with: open \"$APP\""
