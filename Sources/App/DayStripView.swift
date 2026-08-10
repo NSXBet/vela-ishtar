@@ -163,6 +163,9 @@ public final class DayStripView: NSView {
     /// through the key window's event path, so they never fire here at all
     /// (the v0.3.2 report that produced VersionBulletView's custom tip).
     private var readoutPanel: NSPanel?
+    /// The index currently shown by the card. Repeated mouseMoved events inside
+    /// one cell do not need to rebuild or reposition the same panel.
+    private var lastReadoutIndex: Int? = nil
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -212,6 +215,7 @@ public final class DayStripView: NSView {
 
     private func clearHover() {
         hoveredIndex = nil
+        lastReadoutIndex = nil
         // Unparent BEFORE orderOut: the card is a child window of the popover
         // (see showReadout), and PopoverPanel.dismiss() closes child windows
         // in one pass — a card left parented after rebuild would be torn down
@@ -234,6 +238,10 @@ public final class DayStripView: NSView {
             clearHover()
             return
         }
+        // Mouse jitter delivers many moved events per second inside one cell;
+        // skip rebuilding and repositioning a card that is already shown.
+        guard index != lastReadoutIndex || readoutPanel == nil else { return }
+        lastReadoutIndex = index
 
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
         let attributed = NSAttributedString(string: text, attributes: [

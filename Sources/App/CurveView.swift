@@ -41,7 +41,11 @@ public final class CurveView: NSView {
     /// Set on mouseMoved/Entered (via CurveScrub), cleared on mouseExited.
     /// Drawing it is just two extra strokes in draw(_:) — no view rebuild.
     private var scrub: CurveScrub.ScrubPoint? = nil {
-        didSet { needsDisplay = true }
+        didSet {
+            // Mouse jitter delivers many moved events per second on one point;
+            // redraw only when the resolved scrub point changes.
+            if scrub != oldValue { needsDisplay = true }
+        }
     }
     private var scrubTrackingArea: NSTrackingArea?
     /// The floating readout card ("2 pm · $31.40"). Created on hover, torn
@@ -427,7 +431,11 @@ public final class CurveView: NSView {
     public override func mouseMoved(with event: NSEvent) {
         let local = convert(event.locationInWindow, from: nil)
         guard bounds.contains(local) else { clearScrub(); return }
-        scrub = CurveScrub.scrubPoint(atX: Double(local.x), hourly: hourly, laneWidth: Double(bounds.width))
+        let nextScrub = CurveScrub.scrubPoint(atX: Double(local.x), hourly: hourly, laneWidth: Double(bounds.width))
+        // Mouse jitter delivers many moved events per second on one point;
+        // skip the redraw and panel reposition when the resolved point matches.
+        guard nextScrub != scrub else { return }
+        scrub = nextScrub
         updateReadout()
     }
 
