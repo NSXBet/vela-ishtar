@@ -171,37 +171,90 @@ struct DayStripTests {
 
     @Test("sparse history yields the nil-slot count the display gate keys on")
     func sparseWeekExposesNilSlots() {
-        // The display gate hides the strip when fewer than 4 days carry data —
-        // a 3-day history renders as floating cells. The App layer reads
-        // `day.total != nil` per slot, so pin that a sparse history produces
-        // exactly the nil distribution the gate counts. With a Monday-first
-        // week the gate now counts Mon..today, so future days can never help
-        // it across the line.
+        // The day-count boundary belongs to intensity resolution now: a
+        // 3-day history is sparse and a 4-day history resumes the relative
+        // ramp. DayStrip.week still exposes the exact nil distribution used by
+        // that rule, and future days can never contribute observations.
         var days: [String: DayRecord] = [:]
         days["2026-08-04"] = makeDay(hours: [23: 50])
         days["2026-08-05"] = makeDay(hours: [23: 60])
         days["2026-08-06"] = makeDay(hours: [23: 70])
         let week = DayStrip.week(in: days, today: "2026-08-06")
         #expect(week.count == 7)
-        #expect(week.filter { $0.total != nil }.count == 3)   // below the >=4 gate
-        // And crossing the gate: add Monday and the count flips.
+        #expect(week.filter { $0.total != nil }.count == 3)   // sparse path
+        // At four observations the resolver uses relative bucketing again.
         days["2026-08-03"] = makeDay(hours: [23: 40])
         let week4 = DayStrip.week(in: days, today: "2026-08-06")
-        #expect(week4.filter { $0.total != nil }.count == 4)  // at the >=4 gate
+        #expect(week4.filter { $0.total != nil }.count == 4)  // relative path
     }
 
-    @Test("a Monday can never pass the gate on future days alone")
-    func gateCannotBeMetByFutureDays() {
-        // The regression the Monday-first window could have introduced: on a
-        // Monday only ONE day of the week has happened, so a history full of
-        // records for the days ahead must still leave the strip gated off.
+    @Test("a Monday can never fill future slots")
+    func futureDaysNeverBecomeObserved() {
+        // The Monday-first window must leave six future slots nil even when
+        // history accidentally contains records ahead of the gateway day.
         var days: [String: DayRecord] = [:]
         for key in mondayFirstWeek { days[key] = makeDay(hours: [23: 50]) }
         let week = DayStrip.week(in: days, today: "2026-08-03")
         #expect(week.filter { $0.total != nil }.count == 1)   // Monday alone
     }
 
-    // MARK: - hover readout (v1.0.0 per-day hover)
+    // MARK: - intensity bucketing (v0.5.2 GitHub-style cells)
+
+    @Test("a one-day week pins its observed day to the sparse floor")
+    func sparseOneDayIntensityIsFloor() {
+        let week = [
+            DayStrip.Day(key: "2026-08-03", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-04", total: 80, isToday: true, exhausted: false),
+            DayStrip.Day(key: "2026-08-05", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-06", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-07", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-08", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-09", total: nil, isToday: false, exhausted: false),
+        ]
+
+        #expect(DayStrip.intensities(week: week) == [0, 1, 0, 0, 0, 0, 0])
+    }
+
+    @Test("a three-day week pins every observed day to the sparse floor")
+    func sparseThreeDayIntensitiesAreFloor() {
+        let week = [
+            DayStrip.Day(key: "2026-08-03", total: 10, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-04", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-05", total: 30, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-06", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-07", total: 90, isToday: true, exhausted: false),
+            DayStrip.Day(key: "2026-08-08", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-09", total: nil, isToday: false, exhausted: false),
+        ]
+
+        #expect(DayStrip.intensities(week: week) == [1, 0, 1, 0, 1, 0, 0])
+    }
+
+    @Test("a four-day week resumes relative intensity bucketing")
+    func fourDayIntensitiesUseRelativeBuckets() {
+        let week = [
+            DayStrip.Day(key: "2026-08-03", total: 25, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-04", total: 50, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-05", total: 75, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-06", total: 100, isToday: true, exhausted: false),
+            DayStrip.Day(key: "2026-08-07", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-08", total: nil, isToday: false, exhausted: false),
+            DayStrip.Day(key: "2026-08-09", total: nil, isToday: false, exhausted: false),
+        ]
+
+        let levels = DayStrip.intensities(week: week)
+        #expect(levels[0] == 1)
+        #expect(levels[3] == 4)
+    }
+
+    @Test("a week with no observed days stays empty")
+    func noObservedDayIntensitiesAreZero() {
+        let week = (0..<7).map {
+            DayStrip.Day(key: "2026-08-0\($0 + 3)", total: nil, isToday: false, exhausted: false)
+        }
+
+        #expect(DayStrip.intensities(week: week) == Array(repeating: 0, count: 7))
+    }
 
     @Test("hover speaks that day's cost and nothing else")
     func hoverTextIsCostOnly() {

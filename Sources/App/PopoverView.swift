@@ -608,15 +608,14 @@ public final class PopoverView: NSView {
     /// second, contradictory x-axis on the same lane. Its own section, sitting
     /// on the footer rule, reads as what it is: the week around today.
     ///
-    /// Gates (unchanged from the under-curve version): a response must exist
-    /// and be FRESH — a stale reading would pin the week's shape against
-    /// hours-old data — and at least 4 of the 7 days must carry data, because a
-    /// 3-day history renders as floating cells with no grid to read against.
-    /// Silence over noise. Returns 0 (consuming no height) when gated off.
+    /// Fresh data is still required to anchor today. Once it exists, the strip
+    /// always renders: below four observed days VelaCore pins observed cells to
+    /// the low "something happened" level, so a sparse week keeps its stable
+    /// frame without letting one day over-claim brightness. At four days, the
+    /// normal relative shape resumes. Returns 0 only before a fresh reading.
     private func makeDayStrip(history: HistoryStore, usageResponse: UsageResponse?, isFresh: Bool, at yOffset: inout CGFloat) -> CGFloat {
         guard let usage = usageResponse, isFresh else { return 0 }
         let week = DayStrip.week(in: history.allDays, today: usage.dailyBudget.spendDate)
-        guard week.filter({ $0.total != nil }).count >= 4 else { return 0 }
 
         let strip = DayStripView(week: week, frame: NSRect(x: (320 - 284) / 2, y: bounds.height - yOffset - DayStripView.height, width: 284, height: DayStripView.height))
         addSubview(strip)

@@ -109,6 +109,22 @@ public enum DayStrip {
         day.hourly.last(where: { $0 != nil }) ?? nil
     }
 
+    /// Intensity levels for a whole week, applying the sparse-week flattening
+    /// rule (v1.0.2). Below four observed days, the row has no shape to read
+    /// against, so every observed day pins to level 1 — "something happened,
+    /// but we can't yet say how big" — rather than letting a lone day claim
+    /// the brightest cell. At four or more days, normal relative bucketing
+    /// resumes. Empty and future days have nil totals and always stay level 0.
+    public static func intensities(week: [Day]) -> [Int] {
+        let observed = week.compactMap(\.total)
+        guard observed.count >= 4 else {
+            return week.map { $0.total == nil ? 0 : 1 }
+        }
+
+        let maxTotal = observed.max() ?? 0
+        return week.map { intensity(total: $0.total, maxTotal: maxTotal) }
+    }
+
     /// Maps a day's total onto the 0...4 cell-intensity scale the GitHub-style
     /// strip renders (v0.5.2). Nil (a gap) is always 0 — the flat empty cell.
     /// Any OBSERVED day floors at 1, so a real but tiny day ($13 next to

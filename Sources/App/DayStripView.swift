@@ -1,7 +1,9 @@
 // Sources/App/DayStripView.swift
 // The week strip: seven GitHub-style intensity cells above the footer, one per
-// day of the CURRENT Monday–Sunday week, each cell's fill level ∝ that day's
-// share of the week's biggest day. Hovering a cell shows that day's cost.
+// day of the CURRENT Monday–Sunday week. At four or more observed days, each
+// cell's fill level is proportional to that day's share of the week's biggest
+// day; sparse weeks pin every observed day to level 1 so the stable frame never
+// lets a lone day over-claim brightness. Hovering a cell shows that day's cost.
 // Why: "is today a big day?" needs the week's shape at a glance. The
 // contribution-graph grammar (small rounded cells on a 5-step ramp, a
 // weekday letter under each) reads instantly, survives sparse weeks, and
@@ -60,7 +62,7 @@ public final class DayStripView: NSView {
 
     public override func draw(_ dirtyRect: NSRect) {
         guard !week.isEmpty else { return }
-        let maxTotal = week.compactMap(\.total).max() ?? 0
+        let levels = DayStrip.intensities(week: week)
 
         // 7 full-width columns (the user's pick over a compact cluster): the
         // cell sits centered in each, keeping the edge-to-edge rhythm the
@@ -95,12 +97,11 @@ public final class DayStripView: NSView {
             // most half a point, which is invisible; the crisp edges are not.
             let centerX = (columnWidth * CGFloat(index) + columnWidth / 2).rounded()
 
-            // Every column draws a cell — gaps are level 0 (the flat empty
-            // cell), not an absence. "No data" must look intentional. Future
-            // days this week arrive from DayStrip.week with a nil total, so
-            // they land here as level 0 too: the rest of the week reads as a
-            // gap waiting to be filled, which is exactly what it is.
-            let level = DayStrip.intensity(total: day.total, maxTotal: maxTotal)
+            // Every column draws a cell. VelaCore resolves sparse weeks as a
+            // flat level-1 floor for observed days; gaps and future days stay
+            // level 0. The stable grid appears from day one without making a
+            // lone observation look like the week's brightest day.
+            let level = levels[index]
             let cellRect = NSRect(
                 x: centerX - Self.cellSize / 2,
                 y: cellsBottom + 1,
