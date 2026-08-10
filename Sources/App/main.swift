@@ -143,6 +143,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openPopover(relativeTo controller: StatusItemController, firstRunPrompt: String? = nil, pollOnOpen: Bool = true) {
         guard let poller else { return }
 
+        // Re-check for a newer release each time the popover opens (v1.0.2).
+        // checkIfDue is throttle-guarded (6h), so this is at most one GitHub
+        // request per throttle window even if the user opens the popover all day.
+        // Runs before any branch so a long-lived menu-bar app — which may stay
+        // running for weeks between restarts — still lights the bell when a new
+        // release ships mid-session. The launch check alone (below) only fires on
+        // process restart.
+        updateChecker?.checkIfDue()
+
         let needsToken = keychain.read() == nil || firstRunPrompt != nil
 
         // Fresh data on demand — but NOT in the first-run/unauthorized path:

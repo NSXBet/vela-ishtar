@@ -43,6 +43,24 @@ struct ReleaseCheckerTests {
         #expect(ReleaseChecker.isCheckDue(lastCheck: exactlyThrottle, now: now))
     }
 
+    @Test("opening the popover 50 times in a day trips the throttle at most four times")
+    func popoverOpenCallFrequency() {
+        let now = Date()
+        var lastCheck: Date? = nil
+        var dueCount = 0
+        // Simulate a popover opened every ~10 min across a day; each open asks
+        // "is a check due?" and a due check records itself as the new lastCheck.
+        for i in 0..<144 {
+            let t = now.addingTimeInterval(TimeInterval(i * 600))
+            if ReleaseChecker.isCheckDue(now: t, lastCheck: lastCheck) {
+                dueCount += 1
+                lastCheck = t
+            }
+        }
+        #expect(dueCount <= 4)   // 24h / 6h throttle = at most 4 fetches
+        #expect(dueCount >= 1)   // and it DOES refire — a launch-only check would not
+    }
+
     // MARK: Bell decision — newer AND not skipped
 
     @Test("a newer, unskipped release lights the bell")

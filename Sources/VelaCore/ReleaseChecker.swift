@@ -23,6 +23,13 @@ public enum ReleaseChecker {
         return now.timeIntervalSince(lastCheck) >= throttleInterval
     }
 
+    /// May we fetch again right now? The `now: Date()` default is what the App
+    /// side drives on every popover open — the throttle is the only guard, so
+    /// calling it fifty times a day still costs at most four API calls.
+    public static func isCheckDue(now: Date = Date(), lastCheck: Date?) -> Bool {
+        isCheckDue(lastCheck: lastCheck, now: now)
+    }
+
     /// May the bell light? Only for a release that is strictly newer than the
     /// running build AND is not the exact version the user chose to skip.
     /// Skipping is per-version: skipping 0.5.2 must not hide 0.5.3 later.
