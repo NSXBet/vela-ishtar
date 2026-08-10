@@ -4,6 +4,28 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [1.0.2] — 2026-08-10
+
+Three small quality-of-life fixes: the update bell now actually lights when a
+release ships mid-session, the week strip is always there, and hovering the
+curve no longer spins the CPU on redundant redraws.
+
+### Fixed
+
+- **The update bell lights up without a restart.** The app only checked for a
+  new release once, at launch — so a menu-bar app that stays running for weeks
+  never noticed a release that shipped mid-session. It now re-checks each time
+  you open the popover, still throttled to one request per six hours.
+- **The M T W T F S S strip is always visible.** It used to collapse entirely
+  until a week had four days of data, leaving a hole in the layout. Now it
+  renders from day one; a sparse week just pins its observed days to the low
+  "something happened" level instead of letting one day claim the brightest
+  cell.
+- **Hovering the curve and the week strip is cheaper.** Mouse jitter fires
+  dozens of move events a second over the same point, and each one used to
+  trigger a full redraw and reposition the floating card. Both now only update
+  when the hovered point actually changes.
+
 ## [1.0.1] — 2026-08-09
 
 A stability pass over 1.0: sixteen fixes from a full audit, led by the one
