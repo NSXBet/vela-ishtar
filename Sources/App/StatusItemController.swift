@@ -96,16 +96,25 @@ public final class StatusItemController: NSObject {
 
         let initialBuffer = BurnBuffer()
         statusItem?.length = effectivePillSize.width
-        button.image = makeImage(state: .neverFetched, burnBuffer: initialBuffer, appearance: button.effectiveAppearance)
+        button.image = bakedImage(state: .neverFetched, burnBuffer: initialBuffer, appearance: button.effectiveAppearance)
         lastState = .neverFetched
         lastBurnBuffer = initialBuffer
 
         // A light/dark switch is render-worthy too (different ink colors resolve), but still discrete.
-        // KVO's callback isn't statically MainActor -- hop over explicitly since this class is @MainActor.
-        appearanceObservation = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] btn, _ in
+        // A light/dark switch is render-worthy too (different ink colors resolve), but still discrete.
+        //
+        // Observe NSApp.effectiveAppearance, NOT button.effectiveAppearance:
+        // the button's KVO fires again when WE assign a new image in response
+        // to a change (AppKit re-resolves the button's appearance during
+        // setImage:), so observing it created a render→notify→render loop
+        // that pinned the main thread (observed: ~70% of samples inside the
+        // observer). The app's appearance only changes on a real light/dark
+        // switch — exactly the discrete event we want.
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
             Task { @MainActor in
-                guard let self, let state = self.lastState, let buffer = self.lastBurnBuffer else { return }
-                btn.image = self.makeImage(state: state, burnBuffer: buffer, appearance: btn.effectiveAppearance)
+                guard let self, let button = self.statusItem?.button,
+                      let state = self.lastState, let buffer = self.lastBurnBuffer else { return }
+                button.image = self.bakedImage(state: state, burnBuffer: buffer, appearance: button.effectiveAppearance)
             }
         }
     }
@@ -122,7 +131,7 @@ public final class StatusItemController: NSObject {
         if statusItem?.length != width {
             statusItem?.length = width
             if let button = statusItem?.button {
-                button.image = makeImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
+                button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
             }
         }
         if let lastState, let lastBurnBuffer, lastState == state, lastBurnBuffer == burnBuffer {
@@ -131,7 +140,7 @@ public final class StatusItemController: NSObject {
         lastState = state
         lastBurnBuffer = burnBuffer
         guard let button = statusItem?.button else { return }
-        button.image = makeImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
+        button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
         button.setAccessibilityValue(Self.accessibilityValue(for: state))
     }
 
@@ -237,10 +246,39 @@ public final class StatusItemController: NSObject {
         calmLevel = level
         statusItem?.length = effectivePillSize.width
         guard let button = statusItem?.button, let state = lastState, let buffer = lastBurnBuffer else { return }
-        button.image = makeImage(state: state, burnBuffer: buffer, appearance: button.effectiveAppearance)
+        button.image = bakedImage(state: state, burnBuffer: buffer, appearance: button.effectiveAppearance)
     }
 
     // MARK: - Rendering
+
+    /// `NSImage(size:flipped:drawingHandler:)` produces an image backed by a
+    /// custom image rep — AppKit re-executes the closure EVERY time the
+    /// image draws. For an NSStatusItem that's catastrophic: the system's
+    /// replicant layer snapshots the button's window on a repeating
+    /// timer, and each snapshot re-runs the whole draw block (sparkline,
+    /// border, text) plus a WindowServer round-trip. Observed: ~73% of main-
+    /// thread samples inside `_updateReplicants`, footprint growing to 247MB
+    /// from leaked replicant bitmaps. The fix is to bake the closure output
+    /// into a plain bitmap once per real change, and hand AppKit the
+    /// bitmap-backed image from then on.
+    ///
+    /// Used for every status-item assignment. `makeImage` itself stays
+    /// closure-based so the snapshot tool can render arbitrary states
+    /// one-shot without paying for a flatten it never reuses.
+    public func bakedImage(state: PollState, burnBuffer: BurnBuffer, appearance: NSAppearance) -> NSImage {
+        let closureImage = makeImage(state: state, burnBuffer: burnBuffer, appearance: appearance)
+        guard let tiff = closureImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else {
+            // Baking failed (no graphics context?) — fall back to the
+            // closure-backed image. Costs CPU under the replicant loop but
+            // never costs a blank pill.
+            return closureImage
+        }
+        let baked = NSImage(size: closureImage.size)
+        baked.addRepresentation(bitmap)
+        baked.isTemplate = false
+        return baked
+    }
 
     /// Pure render: turns a (state, burnBuffer) pair into an NSImage under
     /// the given appearance. Used by install() and by the snapshot tool
