@@ -146,8 +146,8 @@ That's the same one-liner the update bell hands you.
 **Direct download:**
 
 ```bash
-curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v1.0.2/VelaIshtar-1.0.2.zip
-unzip VelaIshtar-1.0.2.zip -d /Applications/
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v1.0.3/VelaIshtar-1.0.3.zip
+unzip VelaIshtar-1.0.3.zip -d /Applications/
 xattr -cr "/Applications/Vela Ishtar.app"
 open -a "Vela Ishtar"
 ```
