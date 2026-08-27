@@ -1,10 +1,9 @@
 // Sources/App/PopoverView.swift
-// Renders the popover panel content: hero spend, pace sentence, hourly curve,
-// top models, and footer with dashboard link, API key copy, and status indicator.
-// Why: this is the primary UI surface showing budget status and model costs
-// in a fixed 320pt width, laid out with hairline section dividers and a status
-// dot that changes color with fetch freshness.
-// RELEVANT FILES: Sources/App/CurveView.swift, Sources/VelaCore/PaceEngine.swift, Sources/VelaCore/PollStateMachine.swift
+// Renders the popover panel content: hero spend, pace sentence, nested model
+// cap, hourly curve, top models, and footer links with a freshness indicator.
+// Why: it is the primary budget surface, and keeps a nested model cap visibly
+// distinct from global spend history in the fixed 320pt card.
+// RELEVANT FILES: Sources/VelaCore/ModelBudgetSignal.swift, Sources/VelaCore/FooterLayout.swift, Sources/App/CurveView.swift, Sources/VelaCore/PollStateMachine.swift
 
 import Cocoa
 import ServiceManagement
@@ -30,6 +29,9 @@ public final class PopoverView: NSView {
     private var selectedPeriod: ModelPeriod = .today
     private var latestResponse: UsageResponse?
     private var latestHistory: HistoryStore?
+    // NSTextField needs a small inset/ellipsis safety margin beyond its measured
+    // glyph width. The allowance comes from the flexible progress-track column.
+    private static let modelBudgetNameLabelAllowance: CGFloat = 4
     // The last real PollState and its freshness inputs, captured in update().
     // periodChanged() re-renders from these (NOT from latestResponse re-wrapped
     // as .fresh) so a stale reading stays amber/dimmed/bannered across a
@@ -199,7 +201,18 @@ public final class PopoverView: NSView {
             } else {
                 typical = nil
             }
-            let paceSentence = PaceEngine.sentence(for: paceVerdict, now: now, typical: typical)
+            let globalPaceSentence = PaceEngine.sentence(for: paceVerdict, now: now, typical: typical)
+            let modelBudgetInputs = Self.modelBudgetInputs(from: usage.dailyBudget.modelBudgets)
+            let modelBudgetSignals = modelBudgetInputs.map { ModelBudgetSignal(input: $0, now: now) }
+            // Narrative priority is a VelaCore policy. The view supplies the
+            // complete signal set and only renders the returned sentence.
+            let paceSentence = ModelBudgetSignal.narrative(
+                globalSentence: globalPaceSentence,
+                globalVerdict: paceVerdict,
+                modelSignals: modelBudgetSignals,
+                timeZone: .current,
+                calendar: .current
+            )
             yOffset += makePaceRow(paceSentence, at: &yOffset)
 
             // 2b. Month runway: "On track for ~$X this month." — linear
@@ -226,7 +239,22 @@ public final class PopoverView: NSView {
 
         yOffset += sectionSpacing
 
-        // 3. Hairline
+        // 3. Nested model cap. It appears before the global-history divider:
+        // the progress bar is percent of its own cap, not the curve's scale.
+        // No selected signal contributes no row or extra spacing, so hosts
+        // without model-budget policy data do not gain a blank hole.
+        if let usage = usageResponse {
+            let selectedModelBudget = ModelBudgetSignal.mostUrgent(
+                from: Self.modelBudgetInputs(from: usage.dailyBudget.modelBudgets),
+                now: now
+            )
+            if let selectedModelBudget {
+                yOffset += makeModelBudgetRow(selectedModelBudget, at: &yOffset)
+                yOffset += sectionSpacing
+            }
+        }
+
+        // 4. Hairline
         yOffset += makeHairline(at: &yOffset)
         yOffset += sectionSpacing
 
@@ -552,6 +580,110 @@ public final class PopoverView: NSView {
         addSubview(label)
         managedSubviews.append(label)
         return 18
+    }
+
+    /// Converts the gateway DTO into the pure signal module's narrow input.
+    /// `relaxed_until` is parsed once per render so cooldown expiry is judged
+    /// against the same `now` as the pace sentence and row selection.
+    private static func modelBudgetInputs(from budgets: [ModelBudget]) -> [ModelBudgetInput] {
+        budgets.map { budget in
+            ModelBudgetInput(
+                model: budget.model,
+                spentUSD: budget.spentUSD,
+                limitUSD: budget.limitUSD,
+                relaxedUntil: budget.cooldown?.relaxedUntil.flatMap(ISODate.parse)
+            )
+        }
+    }
+
+    /// The nested model-budget row. It gives the right-aligned factual amount
+    /// priority, lets a long model name truncate, and reserves a visible track.
+    private func makeModelBudgetRow(_ signal: ModelBudgetSignal, at yOffset: inout CGFloat) -> CGFloat {
+        let rowHeight: CGFloat = 20
+        let rowWidth = 320 - 2 * sidePadding
+        let modelName = ModelBudgetSignal.displayName(for: signal.model)
+        let valueText = "\(Self.modelBudgetCurrency(signal.spentUSD)) of \(Self.modelBudgetCurrency(signal.limitUSD))"
+        let nameFont = NSFont.systemFont(ofSize: 12)
+        let valueFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+
+        let nameLabel = NSTextField(labelWithString: modelName)
+        nameLabel.font = nameFont
+        nameLabel.textColor = .labelColor
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.maximumNumberOfLines = 1
+        // fittingSize reflects the configured label's actual font metrics. The
+        // allowance prevents AppKit from treating an exact ceil() as unsafe.
+        let measuredNameWidth = ceil(nameLabel.fittingSize.width)
+        let nameWidth = measuredNameWidth + Self.modelBudgetNameLabelAllowance
+        let valueWidth = ceil((valueText as NSString).size(withAttributes: [.font: valueFont]).width)
+        let layout = FooterLayout.modelBudgetRow(
+            metrics: FooterLayout.ModelBudgetRowMetrics(name: nameWidth, value: valueWidth),
+            spacing: FooterLayout.ModelBudgetRowSpacing(totalWidth: rowWidth)
+        )
+        let rowY = bounds.height - yOffset - rowHeight
+        let row = NSView(frame: NSRect(x: sidePadding, y: rowY, width: rowWidth, height: rowHeight))
+
+        nameLabel.frame = NSRect(x: layout.name.x, y: 1, width: layout.name.width, height: 18)
+        row.addSubview(nameLabel)
+
+        let track = NSView(frame: NSRect(x: layout.track.x, y: 9, width: layout.track.width, height: 2))
+        track.wantsLayer = true
+        track.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.14).cgColor
+        track.layer?.cornerRadius = 1
+        track.layer?.masksToBounds = true
+        if let fraction = signal.fraction, layout.track.width > 0 {
+            let fill = NSView(frame: NSRect(x: 0, y: 0, width: layout.track.width * fraction, height: 2))
+            fill.wantsLayer = true
+            // State-specific colors cover notice, amber, and alarm; the default
+            // stays achromatic.
+            fill.layer?.backgroundColor = Self.modelBudgetFillColor(for: signal).cgColor
+            track.addSubview(fill)
+        }
+        row.addSubview(track)
+
+        let valueLabel = NSTextField(labelWithString: valueText)
+        valueLabel.font = valueFont
+        valueLabel.textColor = .labelColor
+        valueLabel.alignment = .right
+        valueLabel.lineBreakMode = .byClipping
+        valueLabel.frame = NSRect(x: layout.value.x, y: 2, width: layout.value.width, height: 16)
+        row.setAccessibilityElement(true)
+        row.setAccessibilityLabel("Model budget and progress")
+        row.setAccessibilityValue(
+            signal.accessibilityValue(
+                amountText: valueText,
+                timeZone: .current,
+                calendar: .current
+            )
+        )
+        row.addSubview(valueLabel)
+
+        addSubview(row)
+        managedSubviews.append(row)
+        return rowHeight
+    }
+
+    /// The nested row borrows the full BorderDash ramp. Cooldown and quiet
+    /// states remain achromatic because the model cap is not currently binding.
+    private static func modelBudgetFillColor(for signal: ModelBudgetSignal) -> NSColor {
+        switch signal.state {
+        case .notice:
+            return .systemYellow
+        case .amber:
+            return .systemOrange
+        case .alarm, .exhausted, .blocked:
+            return .systemRed
+        case .empty, .trace, .relaxed, .invalid:
+            return NSColor.labelColor.withAlphaComponent(0.45)
+        }
+    }
+
+    /// Keep the factual limit compact when it is whole dollars, matching the
+    /// hero's "$20" convention without rounding non-whole admin overrides.
+    private static func modelBudgetCurrency(_ amount: Double) -> String {
+        amount.rounded() == amount
+            ? String(format: "$%.0f", amount)
+            : String(format: "$%.2f", amount)
     }
 
     private func makeHairline(at yOffset: inout CGFloat) -> CGFloat {

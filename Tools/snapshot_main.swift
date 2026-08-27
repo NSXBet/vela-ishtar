@@ -47,7 +47,24 @@ func makeBurnBuffer(_ cumulative: [Double]) -> BurnBuffer {
     return buffer
 }
 
-func makeUsage(spent: Double, limit: Double) -> UsageResponse {
+func makeModelBudget(
+    model: String = "aihub/claude-opus-5",
+    spent: Double,
+    limit: Double,
+    cooldown: ModelCooldown? = nil
+) -> ModelBudget {
+    ModelBudget(
+        model: model,
+        spentUSD: spent,
+        limitUSD: limit,
+        remainingUSD: max(limit - spent, 0),
+        percentUsed: limit > 0 ? spent / limit * 100 : 0,
+        cooldownEligible: cooldown != nil,
+        cooldown: cooldown
+    )
+}
+
+func makeUsage(spent: Double, limit: Double, modelBudgets: [ModelBudget] = []) -> UsageResponse {
     UsageResponse(
         tokenId: "snapshot",
         dailyBudget: DailyBudget(
@@ -56,7 +73,8 @@ func makeUsage(spent: Double, limit: Double) -> UsageResponse {
             remainingUSD: max(limit - spent, 0),
             usedPercent: limit > 0 ? spent / limit * 100 : 0,
             limitEnabled: true,
-            spendDate: "2026-08-04T00:00:00Z"
+            spendDate: "2026-08-04T00:00:00Z",
+            modelBudgets: modelBudgets
         ),
         currentMonth: MonthStats(totalCostUSD: spent, totalTokens: 8_560_000, requests: 73),
         topModels: [
@@ -64,6 +82,12 @@ func makeUsage(spent: Double, limit: Double) -> UsageResponse {
             ModelUsage(model: "anthropic/claude-haiku-4.5", totalCostUSD: 2.21, totalTokens: 4_959_265, requests: 99),
         ]
     )
+}
+
+func makeISO8601String(_ date: Date) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.string(from: date)
 }
 
 @MainActor
@@ -101,7 +125,6 @@ func writeSnapshots() throws {
 
     // Pill states first (the menu bar item itself).
     let rising: [Double] = [0, 0.4, 0.9, 1.1, 1.8, 2.6, 2.9, 3.8, 4.4, 5.1, 5.4, 6.2, 6.79]
-    let controller = StatusItemController()
     let pillFixtures: [(String, PollState, BurnBuffer)] = [
         // v1.0.0 ramp: ink < 50%, yellow >= 50%, amber >= 75%, red loop >= 90%.
         // One fixture per band so the README shows the whole escalation. The
@@ -114,50 +137,141 @@ func writeSnapshots() throws {
         ("pill-stale-dark", .stale(makeUsage(spent: 180.40, limit: 400), consecutiveFailures: 3), makeBurnBuffer(rising)),
     ]
     for (name, state, buffer) in pillFixtures {
-        let pill = controller.makeImage(state: state, burnBuffer: buffer, appearance: NSAppearance(named: .darkAqua)!)
-        guard pill.size.width > 30 else {
-            // The hairline slipped through — the calm-level force above failed,
-            // and shipping a border-only thumbnail as "sparkline + amount +
-            // border" is exactly the bug this guard exists to catch. Fail loud
-            // rather than overwrite a good asset with a wrong one.
-            throw SnapshotError.hairlineRendered(name: name, width: pill.size.width)
-        }
-        let png = try renderPillAsset(pill)
-        let url = assetsDir.appendingPathComponent("\(name).png")
-        try png.write(to: url)
-        print("wrote \(url.path) (\(png.count) bytes, \(Int(pill.size.width))×\(Int(pill.size.height))pt @\(Int(assetScale))x)")
+        try writePillSnapshot(name: name, state: state, buffer: buffer,
+                              appearance: NSAppearance(named: .darkAqua)!, to: assetsDir)
     }
 
-    let view = PopoverView()
-    view.update(state: machine.state, history: machine.history,
-                exhaustedAt: machine.exhaustedAt, lastSuccessAt: machine.lastSuccessAt, now: now)
-    // Do NOT pre-set the frame. update() self-sizes via setFrameSize() once
-    // it knows its content height — pre-setting a frame here can make the
-    // guard at PopoverView.swift:358 skip the resize, leaving rows laid out
-    // against the wrong height with the hero clipped at the top (the defect
-    // that shipped in the v1.0.0 popover-dark.png).
-
-    let appearances: [(String, NSAppearance)] = [
+    // Model-cap fixtures deliberately keep the global budget calm in most
+    // cases. This makes the independent 4pt dot and the nested row legible,
+    // while the large-override fixture proves the displayed limit is not a
+    // hardcoded $20.
+    let futureCooldown = ModelCooldown(
+        createdAt: makeISO8601String(now.addingTimeInterval(-300)),
+        relaxedUntil: makeISO8601String(now.addingTimeInterval(3600))
+    )
+    let modelBudgetFixtures: [(String, PollState, BurnBuffer)] = [
+        ("quiet", .fresh(makeUsage(
+            spent: 140, limit: 400,
+            modelBudgets: [makeModelBudget(spent: 6, limit: 20)]
+        )), makeBurnBuffer(rising)),
+        ("alarm-at-calm-global", .fresh(makeUsage(
+            spent: 140, limit: 400,
+            modelBudgets: [makeModelBudget(spent: 18.4, limit: 20)]
+        )), makeBurnBuffer(rising)),
+        ("zero-limit-blocked", .fresh(makeUsage(
+            spent: 140, limit: 400,
+            modelBudgets: [makeModelBudget(spent: 0, limit: 0)]
+        )), makeBurnBuffer(rising)),
+        ("active-cooldown", .fresh(makeUsage(
+            spent: 140, limit: 400,
+            modelBudgets: [makeModelBudget(spent: 19, limit: 20, cooldown: futureCooldown)]
+        )), makeBurnBuffer(rising)),
+        ("no-cap", .fresh(makeUsage(spent: 140, limit: 400)), makeBurnBuffer(rising)),
+        ("large-override", .fresh(makeUsage(
+            spent: 140, limit: 400,
+            modelBudgets: [makeModelBudget(spent: 45, limit: 50)]
+        )), makeBurnBuffer(rising)),
+    ]
+    let pillAppearances: [(String, NSAppearance)] = [
         ("light", NSAppearance(named: .aqua)!),
         ("dark", NSAppearance(named: .darkAqua)!),
     ]
-    for (name, appearance) in appearances {
-        appearance.performAsCurrentDrawingAppearance {
-            view.display()
+    for (fixtureName, state, buffer) in modelBudgetFixtures {
+        for (appearanceName, appearance) in pillAppearances {
+            try writePillSnapshot(
+                name: "pill-model-\(fixtureName)-\(appearanceName)",
+                state: state,
+                buffer: buffer,
+                appearance: appearance,
+                to: assetsDir
+            )
         }
-        guard
-            let tiff = view.bitmapImageRepForCachingDisplay(in: view.bounds).map({ rep -> Data? in
-                view.cacheDisplay(in: view.bounds, to: rep)
-                return rep.representation(using: .png, properties: [:])
-            }) ?? nil
-        else {
-            FileHandle.standardError.write("popover snapshot failed for \(name)\n".data(using: .utf8)!)
-            continue
-        }
-        let url = scratchDir.appendingPathComponent("popover-\(name).png")
-        try tiff.write(to: url)
-        print("wrote \(url.path) (\(tiff.count) bytes)")
     }
+
+    // Popover snapshots are scratch renders. Update the view separately for
+    // every model-cap state before iterating appearances so a single reused
+    // view cannot leave the previous row or narrative in the next PNG.
+    let view = PopoverView()
+    for (fixtureName, state, _) in modelBudgetFixtures {
+        view.update(state: state, history: machine.history,
+                    exhaustedAt: nil, lastSuccessAt: now, now: now)
+        for (appearanceName, appearance) in pillAppearances {
+            let png = try renderPopoverSnapshot(view, appearance: appearance)
+            let url = scratchDir.appendingPathComponent("popover-model-\(fixtureName)-\(appearanceName).png")
+            try png.write(to: url)
+            print("wrote \(url.path) (\(png.count) bytes, \(Int(view.bounds.width))×\(Int(view.bounds.height))pt @\(Int(assetScale))x)")
+        }
+    }
+}
+
+@MainActor
+func writePillSnapshot(
+    name: String,
+    state: PollState,
+    buffer: BurnBuffer,
+    appearance: NSAppearance,
+    to directory: URL
+) throws {
+    let pill = StatusItemController().makeImage(
+        state: state,
+        burnBuffer: buffer,
+        appearance: appearance
+    )
+    guard pill.size.width > 30 else {
+        // The hairline slipped through — the calm-level force above failed,
+        // and shipping a border-only thumbnail as "sparkline + amount +
+        // border" is exactly the bug this guard exists to catch. Fail loud
+        // rather than overwrite a good asset with a wrong one.
+        throw SnapshotError.hairlineRendered(name: name, width: pill.size.width)
+    }
+    let png = try renderPillAsset(pill)
+    let url = directory.appendingPathComponent("\(name).png")
+    try png.write(to: url)
+    print("wrote \(url.path) (\(png.count) bytes, \(Int(pill.size.width))×\(Int(pill.size.height))pt @\(Int(assetScale))x)")
+}
+
+/// Renders the fully laid-out popover into an explicit 3x bitmap, matching
+/// the pill asset raster path instead of relying on the host display scale.
+@MainActor
+func renderPopoverSnapshot(_ view: PopoverView, appearance: NSAppearance) throws -> Data {
+    let pointSize = view.bounds.size
+    let pixelWidth = Int((pointSize.width * assetScale).rounded())
+    let pixelHeight = Int((pointSize.height * assetScale).rounded())
+    guard pixelWidth > 0, pixelHeight > 0 else {
+        throw SnapshotError.rasterFailed("popover has an empty \(Int(pointSize.width))×\(Int(pointSize.height))pt frame")
+    }
+    guard let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: pixelWidth,
+        pixelsHigh: pixelHeight,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ) else {
+        throw SnapshotError.rasterFailed("could not allocate a \(pixelWidth)×\(pixelHeight) popover bitmap")
+    }
+    bitmap.size = pointSize
+
+    guard let context = NSGraphicsContext(bitmapImageRep: bitmap) else {
+        throw SnapshotError.rasterFailed("could not bind a graphics context to the popover bitmap")
+    }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    appearance.performAsCurrentDrawingAppearance {
+        view.display()
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+    }
+    context.flushGraphics()
+    NSGraphicsContext.restoreGraphicsState()
+
+    guard let png = bitmap.representation(using: .png, properties: [:]) else {
+        throw SnapshotError.rasterFailed("could not encode popover PNG")
+    }
+    return png
 }
 
 enum SnapshotError: Error, CustomStringConvertible {

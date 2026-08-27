@@ -1,6 +1,6 @@
 // Tests/VelaCoreTests/FooterLayoutTests.swift
-// Pins the popover footer's horizontal arithmetic — the row that produced two
-// bug reports in a row ("✓ Start at login overlaps the green dot", then "the
+// Pins pure popover horizontal arithmetic: the footer that produced two bug
+// reports ("✓ Start at login overlaps the green dot", then "the
 // fix REMOVED a space instead of adding one").
 // Why these exist: the old code placed the login link at a hardcoded x while
 // the dot right-anchored behind a variable-width label, so the space between
@@ -141,5 +141,72 @@ struct FooterLayoutTests {
         let spacing = FooterLayout.Spacing()
         let layout = FooterLayout.layout(metrics: metrics(login: plainTitle), spacing: spacing)
         #expect(layout.statusX - layout.dotX == spacing.dotToStatus)
+    }
+
+    @Test("a long model name yields to the factual value and the track minimum")
+    func modelBudgetRowReservesTrackMinimum() {
+        let spacing = FooterLayout.ModelBudgetRowSpacing(
+            totalWidth: 284,
+            nameToTrackGap: 8,
+            trackToValueGap: 8,
+            minimumTrackWidth: 48
+        )
+        let measuredNameWidth = 210.0
+        let layout = FooterLayout.modelBudgetRow(
+            metrics: FooterLayout.ModelBudgetRowMetrics(name: measuredNameWidth + 4, value: 90),
+            spacing: spacing
+        )
+
+        // The value remains right-aligned and factual. The name receives the
+        // remaining truncating region after the 48pt track is protected.
+        #expect(layout.value.x == 194)
+        #expect(layout.name.width == 130)
+        #expect(layout.name.width < measuredNameWidth)
+        #expect(layout.track.x == 138)
+        #expect(layout.track.width == 48)
+        #expect(layout.track.width >= spacing.minimumTrackWidth)
+        #expect(layout.track.end + spacing.trackToValueGap == layout.value.x)
+    }
+
+    @Test("a short model name reserves four points beyond its measured width")
+    func modelBudgetRowAddsLabelAllowance() {
+        let spacing = FooterLayout.ModelBudgetRowSpacing(
+            totalWidth: 284,
+            nameToTrackGap: 8,
+            trackToValueGap: 8,
+            minimumTrackWidth: 48
+        )
+        let measuredNameWidth = 41.0 // "Opus 5" in the configured 12pt font.
+        let labelAllowance = 4.0
+        let layout = FooterLayout.modelBudgetRow(
+            metrics: FooterLayout.ModelBudgetRowMetrics(
+                name: measuredNameWidth + labelAllowance,
+                value: 90
+            ),
+            spacing: spacing
+        )
+
+        #expect(layout.name.width == measuredNameWidth + labelAllowance)
+        #expect(layout.track.width >= spacing.minimumTrackWidth)
+        #expect(layout.value.x == 194)
+    }
+
+    @Test("a short model name leaves the track all remaining width")
+    func modelBudgetRowExpandsTrackForShortName() {
+        let spacing = FooterLayout.ModelBudgetRowSpacing(
+            totalWidth: 284,
+            nameToTrackGap: 8,
+            trackToValueGap: 8,
+            minimumTrackWidth: 48
+        )
+        let layout = FooterLayout.modelBudgetRow(
+            metrics: FooterLayout.ModelBudgetRowMetrics(name: 52, value: 90),
+            spacing: spacing
+        )
+
+        #expect(layout.name.width == 52)
+        #expect(layout.track.width == 126)
+        #expect(layout.value.x == 194)
+        #expect(layout.track.end + spacing.trackToValueGap == layout.value.x)
     }
 }

@@ -1,6 +1,6 @@
 // Sources/VelaCore/FooterLayout.swift
-// The popover footer's horizontal arithmetic: where the three quiet links sit,
-// where the health dot lands, and whether the full timestamp still fits.
+// Pure horizontal arithmetic for the popover footer and nested model-cap row:
+// footer links and health dot, plus the row's name, track, and factual value.
 // Why this lives in VelaCore: the footer has bitten twice in the same way —
 // "✓ Start at login" ran into the green dot, and the nudge meant to open that
 // gap moved the button TOWARD the dot instead. Both were arithmetic mistakes in
@@ -90,6 +90,67 @@ public enum FooterLayout {
             self.loginToDotGap = loginToDotGap
             self.dotToStatus = dotToStatus
         }
+    }
+
+    /// The measured widths for the nested model-cap row. The AppKit view
+    /// measures its text; this pure layer decides which element must yield.
+    public struct ModelBudgetRowMetrics: Sendable {
+        public let name: Double
+        public let value: Double
+
+        public init(name: Double, value: Double) {
+            self.name = name
+            self.value = value
+        }
+    }
+
+    /// Named geometry for the nested model-cap row. The fixed minimum preserves
+    /// a readable progress track when a long model name or large cap appears.
+    public struct ModelBudgetRowSpacing: Sendable {
+        public let totalWidth: Double
+        public let nameToTrackGap: Double
+        public let trackToValueGap: Double
+        public let minimumTrackWidth: Double
+
+        public init(totalWidth: Double, nameToTrackGap: Double = 8,
+                    trackToValueGap: Double = 8, minimumTrackWidth: Double = 48) {
+            self.totalWidth = totalWidth
+            self.nameToTrackGap = nameToTrackGap
+            self.trackToValueGap = trackToValueGap
+            self.minimumTrackWidth = minimumTrackWidth
+        }
+    }
+
+    /// Leading name, flexible track, and right-aligned factual value frames for
+    /// the nested model-cap row. A too-long name truncates before the value or
+    /// the track minimum moves, so large admin overrides remain legible.
+    public struct ModelBudgetRowResult: Equatable, Sendable {
+        public let name: Slot
+        public let track: Slot
+        public let value: Slot
+    }
+
+    /// Lay out a model-cap row. The value is right-anchored, the name uses no
+    /// more than the region left after protecting the minimum track, and the
+    /// track receives every remaining point beyond that minimum.
+    public static func modelBudgetRow(
+        metrics: ModelBudgetRowMetrics,
+        spacing: ModelBudgetRowSpacing
+    ) -> ModelBudgetRowResult {
+        let safeTotalWidth = max(spacing.totalWidth, 0)
+        let safeValueWidth = min(max(metrics.value, 0), safeTotalWidth)
+        let valueX = safeTotalWidth - safeValueWidth
+        let availableBeforeValue = max(valueX - spacing.trackToValueGap, 0)
+        let maximumNameWidth = max(
+            availableBeforeValue - spacing.minimumTrackWidth - spacing.nameToTrackGap,
+            0
+        )
+        let nameWidth = min(max(metrics.name, 0), maximumNameWidth)
+        let name = Slot(x: 0, width: nameWidth)
+        let trackX = min(name.end + spacing.nameToTrackGap, availableBeforeValue)
+        let track = Slot(x: trackX, width: max(availableBeforeValue - trackX, 0))
+        let value = Slot(x: valueX, width: safeValueWidth)
+        return ModelBudgetRowResult(name: name, track: track, value: value)
     }
 
     /// Lay the footer out. The left links flow from the leading margin; the

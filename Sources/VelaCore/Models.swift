@@ -6,7 +6,20 @@
 // (BurnBuffer, PaceEngine, HistoryStore, the App poller) builds on.
 // Note: MonthStats intentionally keeps period_start/period_end as optional
 // Strings — the app derives "today" from spend_date, not from these.
-// RELEVANT FILES: Tests/VelaCoreTests/ModelsTests.swift, BurnBuffer.swift, PaceEngine.swift
+// Note: DailyBudget.modelBudgets carries the gateway's NESTED per-model daily
+// caps (currently "aihub/claude-opus-5" at $20/day). Nested, not separate: a
+// capped model's dollars count toward BOTH that cap and the global limit, so
+// the cap is usually the binding one ($20 is 5% of $400). The field is decoded
+// with decodeIfPresent → [] because older servers (and the checked-in OpenAPI
+// spec) omit it entirely; absent and null must both mean "no caps", never a
+// decode failure. A cap's limit_usd is authoritative per poll and must never be
+// hardcoded — the effective value is route limit + per-user admin override.
+// limit_usd == 0 means the model is BLOCKED, not unlimited.
+// Note: ModelCooldown is a self-service bypass of the MODEL cap only (never the
+// global one). The gateway computes spent/limit/remaining/percent_used WITHOUT
+// regard to it, so an active cooldown does not soften those numbers — callers
+// must consult relaxedUntil themselves before treating a cap as binding.
+// RELEVANT FILES: Tests/VelaCoreTests/ModelsTests.swift, ModelBudgetSignal.swift, PaceEngine.swift
 
 import Foundation
 
@@ -38,6 +51,7 @@ public struct DailyBudget: Codable, Equatable, Sendable {
     public let usedPercent: Double
     public let limitEnabled: Bool
     public let spendDate: String
+    public let modelBudgets: [ModelBudget]
 
     private enum CodingKeys: String, CodingKey {
         case limitUSD = "limit_usd"
@@ -46,15 +60,73 @@ public struct DailyBudget: Codable, Equatable, Sendable {
         case usedPercent = "used_percent"
         case limitEnabled = "limit_enabled"
         case spendDate = "spend_date"
+        case modelBudgets = "model_budgets"
     }
 
-    public init(limitUSD: Double, spentUSD: Double, remainingUSD: Double, usedPercent: Double, limitEnabled: Bool, spendDate: String) {
+    public init(limitUSD: Double, spentUSD: Double, remainingUSD: Double, usedPercent: Double, limitEnabled: Bool, spendDate: String, modelBudgets: [ModelBudget] = []) {
         self.limitUSD = limitUSD
         self.spentUSD = spentUSD
         self.remainingUSD = remainingUSD
         self.usedPercent = usedPercent
         self.limitEnabled = limitEnabled
         self.spendDate = spendDate
+        self.modelBudgets = modelBudgets
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        limitUSD = try container.decode(Double.self, forKey: .limitUSD)
+        spentUSD = try container.decode(Double.self, forKey: .spentUSD)
+        remainingUSD = try container.decode(Double.self, forKey: .remainingUSD)
+        usedPercent = try container.decode(Double.self, forKey: .usedPercent)
+        limitEnabled = try container.decode(Bool.self, forKey: .limitEnabled)
+        spendDate = try container.decode(String.self, forKey: .spendDate)
+        modelBudgets = try container.decodeIfPresent([ModelBudget].self, forKey: .modelBudgets) ?? []
+    }
+}
+
+public struct ModelBudget: Codable, Equatable, Sendable {
+    public let model: String
+    public let spentUSD: Double
+    public let limitUSD: Double
+    public let remainingUSD: Double
+    public let percentUsed: Double
+    public let cooldownEligible: Bool
+    public let cooldown: ModelCooldown?
+
+    private enum CodingKeys: String, CodingKey {
+        case model
+        case spentUSD = "spent_usd"
+        case limitUSD = "limit_usd"
+        case remainingUSD = "remaining_usd"
+        case percentUsed = "percent_used"
+        case cooldownEligible = "cooldown_eligible"
+        case cooldown
+    }
+
+    public init(model: String, spentUSD: Double, limitUSD: Double, remainingUSD: Double, percentUsed: Double, cooldownEligible: Bool, cooldown: ModelCooldown? = nil) {
+        self.model = model
+        self.spentUSD = spentUSD
+        self.limitUSD = limitUSD
+        self.remainingUSD = remainingUSD
+        self.percentUsed = percentUsed
+        self.cooldownEligible = cooldownEligible
+        self.cooldown = cooldown
+    }
+}
+
+public struct ModelCooldown: Codable, Equatable, Sendable {
+    public let createdAt: String?
+    public let relaxedUntil: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case createdAt = "created_at"
+        case relaxedUntil = "relaxed_until"
+    }
+
+    public init(createdAt: String? = nil, relaxedUntil: String? = nil) {
+        self.createdAt = createdAt
+        self.relaxedUntil = relaxedUntil
     }
 }
 

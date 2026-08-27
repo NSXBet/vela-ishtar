@@ -1,11 +1,9 @@
 // Sources/App/StatusItemController.swift
-// Renders the menu bar pill (sparkline + amount + budget-tracing border)
-// and owns the NSStatusItem that displays it.
-// Why: this pill is the app's signature visual -- the border traces
-// used_percent clockwise from top-center so the daily budget is legible
-// at a glance without opening the popover. The border literally IS the
-// budget gauge.
-// RELEVANT FILES: Sources/VelaCore/BorderDash.swift, Sources/VelaCore/BurnBuffer.swift, Sources/VelaCore/PollStateMachine.swift, Sources/App/UsagePoller.swift
+// Renders the menu bar pill: sparkline, global-spend amount and border, plus
+// a separate alert dot for an alarming nested model cap; owns the NSStatusItem.
+// Why: the border remains the global budget gauge, while the dot adds model-cap
+// urgency without changing what the existing pill instrument means.
+// RELEVANT FILES: Sources/VelaCore/BorderDash.swift, Sources/VelaCore/ModelBudgetSignal.swift, Sources/VelaCore/PollStateMachine.swift, Sources/App/UsagePoller.swift
 
 import Cocoa
 
@@ -27,6 +25,9 @@ public final class StatusItemController: NSObject {
     // Last-rendered inputs; render() skips redraw when both unchanged (zero-render-between-polls rule).
     private var lastState: PollState?
     private var lastBurnBuffer: BurnBuffer?
+    // Cooldown expiry can change the dot without changing the response, so the
+    // rendering guard also remembers the derived time-sensitive model signal.
+    private var lastModelBudgetSignal: ModelBudgetSignal?
 
     // Pill geometry, in points -- matches the locked design spec. The three
     // widths are the condensation ladder (v0.3.0): full shows sparkline +
@@ -121,6 +122,7 @@ public final class StatusItemController: NSObject {
 
     /// Re-renders only if `state` or `burnBuffer` actually changed since the last call (or install()'s initial draw).
     public func render(state: PollState, burnBuffer: BurnBuffer) {
+        let modelBudgetSignal = Self.modelBudgetSignal(for: state, now: Date())
         // The condensation level re-evaluates on EVERY call, before the
         // unchanged-guard: clipping changes arrive with no event of their
         // own, so a poll that returns an identical reading (common
@@ -131,22 +133,41 @@ public final class StatusItemController: NSObject {
         if statusItem?.length != width {
             statusItem?.length = width
             if let button = statusItem?.button {
-                button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
+                button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance, modelBudgetSignal: modelBudgetSignal)
             }
         }
-        if let lastState, let lastBurnBuffer, lastState == state, lastBurnBuffer == burnBuffer {
+        if let lastState, let lastBurnBuffer,
+           lastState == state, lastBurnBuffer == burnBuffer,
+           lastModelBudgetSignal == modelBudgetSignal {
             return
         }
         lastState = state
         lastBurnBuffer = burnBuffer
+        lastModelBudgetSignal = modelBudgetSignal
         guard let button = statusItem?.button else { return }
-        button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance)
+        button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance, modelBudgetSignal: modelBudgetSignal)
+        button.setAccessibilityLabel(Self.accessibilityLabel(for: modelBudgetSignal))
         button.setAccessibilityValue(Self.accessibilityValue(for: state))
     }
 
     /// The VoiceOver reading of the pill's current state, e.g.
     /// "$54.51 of $400, 14 percent". Kept terse — VoiceOver users hear
     /// this every time the pill updates.
+    /// The alert label describes the small dot in words, rather than relying
+    /// on its red hue to tell VoiceOver users that a model cap needs attention.
+    private static func accessibilityLabel(for signal: ModelBudgetSignal?) -> String {
+        guard let signal, signal.isAlarming else { return "AI Hub spend" }
+        let modelName = ModelBudgetSignal.displayName(for: signal.model)
+        switch signal.state {
+        case .blocked, .exhausted:
+            return "\(modelName) limit reached"
+        case .alarm:
+            return "\(modelName) limit nearly reached"
+        default:
+            return "\(modelName) limit needs attention"
+        }
+    }
+
     private static func accessibilityValue(for state: PollState) -> String {
         switch state {
         case .neverFetched:
@@ -265,8 +286,18 @@ public final class StatusItemController: NSObject {
     /// Used for every status-item assignment. `makeImage` itself stays
     /// closure-based so the snapshot tool can render arbitrary states
     /// one-shot without paying for a flatten it never reuses.
-    public func bakedImage(state: PollState, burnBuffer: BurnBuffer, appearance: NSAppearance) -> NSImage {
-        let closureImage = makeImage(state: state, burnBuffer: burnBuffer, appearance: appearance)
+    public func bakedImage(
+        state: PollState,
+        burnBuffer: BurnBuffer,
+        appearance: NSAppearance,
+        modelBudgetSignal: ModelBudgetSignal? = nil
+    ) -> NSImage {
+        let closureImage = makeImage(
+            state: state,
+            burnBuffer: burnBuffer,
+            appearance: appearance,
+            modelBudgetSignal: modelBudgetSignal
+        )
         guard let tiff = closureImage.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff) else {
             // Baking failed (no graphics context?) — fall back to the
@@ -283,7 +314,13 @@ public final class StatusItemController: NSObject {
     /// Pure render: turns a (state, burnBuffer) pair into an NSImage under
     /// the given appearance. Used by install() and by the snapshot tool
     /// (which fabricates arbitrary states without a real UsagePoller).
-    public func makeImage(state: PollState, burnBuffer: BurnBuffer, appearance: NSAppearance) -> NSImage {
+    public func makeImage(
+        state: PollState,
+        burnBuffer: BurnBuffer,
+        appearance: NSAppearance,
+        modelBudgetSignal: ModelBudgetSignal? = nil
+    ) -> NSImage {
+        let modelBudgetSignal = modelBudgetSignal ?? Self.modelBudgetSignal(for: state, now: Date())
         let size = effectivePillSize
         // What the current level draws: hairline is the border gauge alone;
         // compact adds a rounded amount; full adds the sparkline + exact amount.
@@ -315,6 +352,7 @@ public final class StatusItemController: NSObject {
                 Self.drawBorder(rect: rect, usedPercent: usedPercent, limitEnabled: limitEnabled, ink: ink, yellow: yellow, orange: orange, red: red)
                 if drawsSparkline { Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink) }
                 if drawsContents { Self.drawAmount(pillRect: rect, text: Self.amountText(for: state, compact: !drawsSparkline), color: secondary) }
+                if modelBudgetSignal?.isAlarming == true { Self.drawModelLimitDot(in: rect, color: red) }
                 ctx.restoreGState()
 
             case .fresh, .neverFetched:
@@ -333,6 +371,7 @@ public final class StatusItemController: NSObject {
                 if drawsSparkline { Self.drawSparkline(lane: sparklineLane, burnBuffer: burnBuffer, ink: ink) }
                 if drawsContents { Self.drawAmount(pillRect: rect, text: Self.amountText(for: state, compact: !drawsSparkline), color: ink) }
                 ctx.restoreGState()
+                if modelBudgetSignal?.isAlarming == true { Self.drawModelLimitDot(in: rect, color: red) }
             }
             return true
         }
@@ -350,6 +389,31 @@ public final class StatusItemController: NSObject {
         case .fresh(let usage), .stale(let usage, _):
             return (usage.dailyBudget.usedPercent, usage.dailyBudget.limitEnabled)
         }
+    }
+
+    /// Selects the same deterministic cap for the dot as the popover row.
+    /// PollState already retains the full response during stale periods, so no
+    /// persistence or second request is needed to carry model budgets here.
+    private static func modelBudgetSignal(for state: PollState, now: Date) -> ModelBudgetSignal? {
+        let budgets: [ModelBudget]
+        switch state {
+        case .neverFetched:
+            return nil
+        case .fresh(let usage), .stale(let usage, _):
+            budgets = usage.dailyBudget.modelBudgets
+        }
+        let inputs = budgets.map { budget in
+            ModelBudgetInput(
+                model: budget.model,
+                spentUSD: budget.spentUSD,
+                limitUSD: budget.limitUSD,
+                relaxedUntil: budget.cooldown?.relaxedUntil.flatMap(ISODate.parse)
+            )
+        }
+        // `mostUrgent` ranks an active cooldown below every enforced cap;
+        // when it is the only model record its `isAlarming` is still false,
+        // so the dot remains suppressed while its spend/limit stays visible.
+        return ModelBudgetSignal.mostUrgent(from: inputs, now: now)
     }
 
     private static func amountText(for state: PollState, compact: Bool = false) -> String {
@@ -489,6 +553,20 @@ public final class StatusItemController: NSObject {
         }
 
         drawLeadingDot(at: points[points.count - 1], ink: ink)
+    }
+
+    /// The separate 4pt marker says that a nested enforced cap needs action.
+    /// It is intentionally independent from the global-budget border gauge.
+    private static func drawModelLimitDot(in pillRect: CGRect, color: NSColor) {
+        let diameter: CGFloat = 4
+        let dot = NSBezierPath(ovalIn: CGRect(
+            x: pillRect.minX + 3,
+            y: pillRect.midY - diameter / 2,
+            width: diameter,
+            height: diameter
+        ))
+        color.setFill()
+        dot.fill()
     }
 
     private static func drawLeadingDot(at point: CGPoint, ink: NSColor) {
