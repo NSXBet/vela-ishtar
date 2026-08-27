@@ -13,6 +13,9 @@ Decisions locked by the user:
    context is retained while blocked/alarm semantics are suppressed until
    expiry.
 
+Independently signed off by the Codex reviewer (vela-review) on the same three
+points, after it verified the baseline at 246 tests / 16 suites green.
+
 ## The policy
 
 The AI Hub gateway caps higher-cost models at a daily dollar amount per user —
