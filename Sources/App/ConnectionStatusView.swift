@@ -80,8 +80,8 @@ final class ConnectionStatusView: NSView {
         }
     }
 
-    public override func resizeSubviewsWithOldSize(_ oldSize: NSSize) {
-        super.resizeSubviewsWithOldSize(oldSize)
+    public override func resizeSubviews(withOldSize oldSize: NSSize) {
+        super.resizeSubviews(withOldSize: oldSize)
         layoutContent()
     }
 }

@@ -29,6 +29,9 @@ public final class CurveView: NSView {
     // v0.3.0 ghost: the median day's cumulative curve (same 24-slot shape),
     // drawn beneath today's. nil = no ghost (below the history gate).
     private var ghost: [Double?]? = nil
+    // B11: a disabled global limit renders NO ceiling line and no "$400"
+    // label — the chart must not draw a ceiling that doesn't exist.
+    private var limitEnabled = true
     // The ghost ALWAYS joins the y-scale even when its stroke is suppressed
     // (stale data): otherwise the scale would jump on every fresh↔stale flap,
     // visibly resizing today's curve for a reason the user can't see. The
@@ -61,12 +64,6 @@ public final class CurveView: NSView {
     /// rollover) leaves nothing to restore, so no card can resurrect over a
     /// hover that's already gone.
     private var pendingScrubRestoreX: CGFloat?
-    /// One-shot guard: the sonar ring fires on the FIRST hover of a popover
-    /// session, never again. Re-armed ONLY by rearmScrubRing() at popover open
-    /// (PopoverView.animateCurveDrawOn) — never in configure(), which the 60s
-    /// rebuild calls and would re-pulse the ring every minute while the
-    /// popover sits open.
-    private var ringFired = false
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
@@ -92,9 +89,10 @@ public final class CurveView: NSView {
     // time — the teardown (viewWillMove(toWindow: nil)) has already cleared
     // any hover, and a readout refresh here would have no window to anchor
     // to. The scrub is therefore simply re-derived on the next mouseMoved.
-    public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int, ghost: [Double?]? = nil, drawGhostStroke: Bool = true) {
+    public func configure(hourly: [Double?], limit: Double, nowHourUTC: Int, ghost: [Double?]? = nil, drawGhostStroke: Bool = true, limitEnabled: Bool = true) {
         self.hourly = hourly
-        self.limit = limit
+        self.limit = limitEnabled ? limit : 0
+        self.limitEnabled = limitEnabled
         self.nowHourUTC = nowHourUTC
         self.ghost = ghost
         self.drawGhostStroke = drawGhostStroke
@@ -243,49 +241,78 @@ public final class CurveView: NSView {
     /// their point -- the segment on either side of a gap draws straight
     /// across it, which reads as "interpolated" without any extra math.
     private func drawCurve(in lane: CGRect, plotBottom: CGFloat, x: (Int) -> CGFloat, y: (Double) -> CGFloat) {
-        // The curve reads as a DAY, not a stub: anchor the line at $0 on
-        // the left edge (midnight UTC) so its shape is visible even when
-        // only a few late hours have data (e.g. app restarted mid-day).
-        var points: [CGPoint] = [CGPoint(x: x(0), y: y(0))]
-        points.append(contentsOf: hourly.enumerated().compactMap { hour, value in
-            guard let value else { return nil }
-            return CGPoint(x: x(hour), y: y(value))
-        })
-        guard points.count > 1 else { return }
+        // B15: SEGMENTED observed paths. The old renderer anchored an
+        // artificial $0 point at midnight and joined straight across nil
+        // gaps — both are claims the data doesn't support. Now each
+        // contiguous run of observed hours is its own sub-path; a gap is a
+        // visible break, and the line starts at the FIRST OBSERVED hour,
+        // never an invented origin.
+        let runs = Self.observedRuns(hourly: hourly)
+        guard !runs.isEmpty else { return }
 
         // drawProgress clips the visible curve to its leading fraction --
         // Task 13's draw-on animation just has to set the property.
-        let visibleCount = max(2, Int(CGFloat(points.count) * drawProgress.clamped(to: 0...1)))
-        let visible = Array(points.prefix(visibleCount))
-        guard visible.count > 1 else { return }
+        let totalPoints = runs.reduce(0) { $0 + $1.count }
+        guard totalPoints > 1 else { return }
+        var consumed = 0
 
-        if let ctx = NSGraphicsContext.current?.cgContext {
-            let area = CGMutablePath()
-            area.move(to: CGPoint(x: visible[0].x, y: plotBottom))
-            visible.forEach { area.addLine(to: $0) }
-            area.addLine(to: CGPoint(x: visible[visible.count - 1].x, y: plotBottom))
-            area.closeSubpath()
+        for run in runs {
+            let points = run.map { (hour: Int, value: Double) in CGPoint(x: x(hour), y: y(value)) }
+            consumed += run.count
+            // Reveal: show points up to the drawProgress fraction of the
+            // whole series; a partially revealed run truncates its tail.
+            let fraction = drawProgress.clamped(to: 0...1)
+            let budget = Int(CGFloat(totalPoints) * fraction)
+            let remaining = budget - (consumed - run.count)
+            let visibleCount = max(0, min(run.count, remaining))
+            let visible = Array(points.prefix(visibleCount))
+            guard visible.count > 1 else { continue }
 
-            ctx.saveGState()
-            ctx.addPath(area)
-            ctx.clip()
-            let colors = [
-                NSColor.labelColor.withAlphaComponent(0.30).cgColor,
-                NSColor.labelColor.withAlphaComponent(0).cgColor,
-            ]
-            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1]) {
-                ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: lane.maxY), end: CGPoint(x: 0, y: plotBottom), options: [])
+            if let ctx = NSGraphicsContext.current?.cgContext {
+                let area = CGMutablePath()
+                area.move(to: CGPoint(x: visible[0].x, y: plotBottom))
+                visible.forEach { area.addLine(to: $0) }
+                area.addLine(to: CGPoint(x: visible[visible.count - 1].x, y: plotBottom))
+                area.closeSubpath()
+
+                ctx.saveGState()
+                ctx.addPath(area)
+                ctx.clip()
+                let colors = [
+                    NSColor.labelColor.withAlphaComponent(0.30).cgColor,
+                    NSColor.labelColor.withAlphaComponent(0).cgColor,
+                ]
+                if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors as CFArray, locations: [0, 1]) {
+                    ctx.drawLinearGradient(gradient, start: CGPoint(x: 0, y: lane.maxY), end: CGPoint(x: 0, y: plotBottom), options: [])
+                }
+                ctx.restoreGState()
             }
-            ctx.restoreGState()
-        }
 
-        let stroke = NSBezierPath()
-        stroke.move(to: visible[0])
-        visible.dropFirst().forEach { stroke.line(to: $0) }
-        stroke.lineWidth = 1.75
-        stroke.lineJoinStyle = .round
-        NSColor.labelColor.setStroke()
-        stroke.stroke()
+            let stroke = NSBezierPath()
+            stroke.move(to: visible[0])
+            visible.dropFirst().forEach { stroke.line(to: $0) }
+            stroke.lineWidth = 1.75
+            stroke.lineJoinStyle = .round
+            NSColor.labelColor.setStroke()
+            stroke.stroke()
+        }
+    }
+
+    /// Contiguous runs of observed (non-nil) hours, in hour order. The
+    /// segmentation rule for B15: gaps break the path, nothing bridges.
+    static func observedRuns(hourly: [Double?]) -> [[(hour: Int, value: Double)]] {
+        var runs: [[(hour: Int, value: Double)]] = []
+        var current: [(hour: Int, value: Double)] = []
+        for (hour, value) in hourly.enumerated() {
+            if let value {
+                current.append((hour, value))
+            } else if !current.isEmpty {
+                runs.append(current)
+                current = []
+            }
+        }
+        if !current.isEmpty { runs.append(current) }
+        return runs
     }
 
     /// Thin vertical tick at the current UTC hour's x position, with a
@@ -372,12 +399,9 @@ public final class CurveView: NSView {
         mask.add(anim, forKey: "reveal")
     }
 
-    /// Re-arms the one-shot sonar ring. Called from PopoverView's
-    /// animateCurveDrawOn() — i.e. at popover OPEN, not on the 60s poll — so
-    /// the ring fires once per popover session, never every minute.
-    public func rearmScrubRing() {
-        ringFired = false
-    }
+    /// Retained API (PopoverView.animateCurveDrawOn calls it). The sonar
+    /// ring it used to re-arm is RETIRED (plan §5.3) — a no-op now.
+    public func rearmScrubRing() {}
 
     // MARK: - Curve scrubber (v0.5.1)
 
@@ -440,14 +464,10 @@ public final class CurveView: NSView {
     }
 
     public override func mouseEntered(with event: NSEvent) {
-        // One-shot sonar ring on the FIRST hover of the session — the
-        // discoverability pulse. Suppressed under Reduce Motion (it's pure
-        // animation); re-armed ONLY by rearmScrubRing() at popover open,
-        // never in configure() (see the note on `ringFired` above).
-        if !ringFired, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            ringFired = true
-            fireSonarRing()
-        }
+        // v2.0: the sonar introduction is RETIRED (plan §5.3 — charts show
+        // interaction through the subtle hover/focus state, no attention
+        // pulse). Hover feedback is the crosshair + dot the scrub already
+        // draws; nothing animates on entry.
     }
 
     public override func mouseExited(with event: NSEvent) {
@@ -616,50 +636,6 @@ public final class CurveView: NSView {
         let yMax = max(limit, peak, 1) * 1.08
         let plotBottom = bounds.minY + Self.nowLabelGutter
         return plotBottom + (bounds.maxY - plotBottom) * CGFloat(value / yMax)
-    }
-
-    // MARK: Sonar ring
-
-    /// A single expanding ring from the lane's center, fired once per session
-    /// to say "this curve is scrubable". A CAShapeLayer stroke animation so
-    /// it rides the compositor like the draw-on reveal — no draw(_:) loop.
-    private func fireSonarRing() {
-        guard let layer else { return }
-        let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        let startRadius: CGFloat = 4
-        let endRadius: CGFloat = bounds.width / 2
-
-        let ring = CAShapeLayer()
-        ring.frame = layer.bounds
-        ring.fillColor = nil
-        ring.strokeColor = NSColor.labelColor.withAlphaComponent(0.5).cgColor
-        ring.lineWidth = 1.0
-        let startPath = CGPath(ellipseIn: CGRect(x: center.x - startRadius, y: center.y - startRadius, width: startRadius * 2, height: startRadius * 2), transform: nil)
-        let endPath = CGPath(ellipseIn: CGRect(x: center.x - endRadius, y: center.y - endRadius, width: endRadius * 2, height: endRadius * 2), transform: nil)
-        ring.path = endPath // model rests at the end; animation is removed on completion
-        layer.addSublayer(ring)
-
-        let expand = CABasicAnimation(keyPath: "path")
-        expand.fromValue = startPath
-        expand.toValue = endPath
-        expand.duration = 0.6
-        expand.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 0.5
-        fade.toValue = 0
-        fade.duration = 0.6
-        fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-        expand.isRemovedOnCompletion = true
-        fade.isRemovedOnCompletion = true
-        ring.add(expand, forKey: "expand")
-        ring.add(fade, forKey: "fade")
-
-        // Remove the sublayer after the animation finishes.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak ring] in
-            ring?.removeFromSuperlayer()
-        }
     }
 }
 

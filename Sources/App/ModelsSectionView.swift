@@ -65,19 +65,22 @@ final class ModelsSectionView: NSView {
 
     static let headerHeight: CGFloat = 26
     static var blockHeight: CGFloat { CGFloat(VelaDesign.Rows.maxModelRows) * VelaDesign.Rows.dataRowStride }
-    var preferredHeight: CGFloat { headerHeight + blockHeight }
+
+    var sectionHeaderHeight: CGFloat { Self.headerHeight }
+    var sectionBlockHeight: CGFloat { Self.blockHeight }
+    var preferredHeight: CGFloat { Self.headerHeight + Self.blockHeight }
 
     func layoutContent(contrast: Bool) {
         let inset = VelaDesign.Layout.contentInset
         let width = bounds.width
         var y = bounds.height
 
-        sectionLabel.frame = NSRect(x: inset, y: y - Self.headerHeight + 6, width: 70, height: 14)
-        totalLabel.frame = NSRect(x: inset, y: y - Self.headerHeight + 5, width: width - 2 * inset - 130, height: 16)
-        switcher.frame = NSRect(x: width - inset - 118, y: y - Self.headerHeight + 3, width: 118, height: 20)
-        y -= Self.headerHeight
+        sectionLabel.frame = NSRect(x: inset, y: y - ModelsSectionView.headerHeight + 6, width: 70, height: 14)
+        totalLabel.frame = NSRect(x: inset, y: y - ModelsSectionView.headerHeight + 5, width: width - 2 * inset - 130, height: 16)
+        switcher.frame = NSRect(x: width - inset - 118, y: y - ModelsSectionView.headerHeight + 3, width: 118, height: 20)
+        y -= ModelsSectionView.headerHeight
 
-        block.frame = NSRect(x: 0, y: y - Self.blockHeight, width: width, height: Self.blockHeight)
+        block.frame = NSRect(x: 0, y: y - ModelsSectionView.blockHeight, width: width, height: ModelsSectionView.blockHeight)
         // Rows sit top-down inside the block (stride-ordered from the top).
         for (index, id) in visibleOrder.enumerated() {
             if let cell = cells[id] {

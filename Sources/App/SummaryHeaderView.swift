@@ -88,8 +88,8 @@ final class SummaryHeaderView: NSView {
     }
 
     /// Natural height of the header block (header + hero + suffix + status slot).
-    static func preferredHeight(hasStatusBand: Bool = false) -> CGFloat {
-        headerHeight + heroHeight + suffixHeight + VelaDesign.Rows.statusSlotHeight
+    var preferredHeight: CGFloat {
+        Self.headerHeight + Self.heroHeight + Self.suffixHeight + VelaDesign.Rows.statusSlotHeight
     }
 
     // MARK: - State application (in-place; the view is built once)
