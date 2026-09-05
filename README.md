@@ -8,8 +8,8 @@ A macOS menu bar app that shows your personal AI Hub (LLM gateway) usage at a
 glance. An instrument, not a scoreboard.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
-![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-285%20passing-30d158?style=flat-square)
+![Swift](https://img.shields.io/badge/Swift%205%20mode-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 [![Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-blue?style=flat-square)](CHANGELOG.md)
 
@@ -193,15 +193,13 @@ UTC used to file yesterday's total under today and make the curve visibly
 decrease within a day.
 
 **Models period switcher.** Month ranks models by current-month cost, straight
-from the API. Today is *derived*: the gateway exposes only month-cumulative
-per-model figures, so today's split is computed by differencing against a stored
-snapshot of yesterday, then reconciled against your authoritative daily total
-(any residue lands in an explicit `Other` row). It needs a yesterday snapshot to
-difference against, so it unlocks after the app has been running across one
-midnight UTC. If the numbers don't tie — the app wasn't running at yesterday's
-close, or a month rolled over — you get your real daily total plus a line saying
-why there's no split, never a confident wrong breakdown. A Week segment was
-removed: `/v1/me/usage` has no weekly per-model endpoint.
+from the API. Today comes from the gateway's `today_models` breakdown when
+the payload carries it, reconciled against your authoritative daily total
+(any sub-cent residue lands in an explicit `Other` row, and a breakdown that
+contradicts the day total is rejected outright). If the gateway doesn't
+provide today-scoped model data, the app says "Per-model breakdown is monthly
+only" instead of inventing a split. A Week segment was removed:
+`/v1/me/usage` has no weekly per-model endpoint.
 
 **Comparison surfaces wait for enough data.** The ghost curve and the median-day
 sentence need five past days holding a reading at the hour being compared; the
@@ -211,12 +209,31 @@ pinning "a typical day" against hours-old data would be a confident lie. Silence
 beats a number computed from thin data; that's the same rule everywhere in the
 app.
 
-**Update checks.** The app asks GitHub for the latest release tag at most once
-every six hours, and only to compare version numbers. It fails closed: offline,
-a rate limit, a draft, a prerelease, or a payload it can't parse all mean "no
-bell" rather than a false alarm. Nothing is downloaded or installed
-automatically — the bell hands you a Homebrew command and gets out of the way.
-"Skip this version" is remembered, per version.
+**History explorer.** Right-click the pill → *History explorer* (or the
+export row in Settings) to open a native window over your locally stored
+readings: pick a scope and a day, see every retained observation with honest
+coverage — a partial day says PARTIAL, an empty day never claims $0.00. From
+there you can export a day (or a scope) as clean RFC-4180 CSV — invariant dot
+decimals, no formulas, no tokens — and clear a credential's history entirely.
+
+**Spend markers.** Inside the explorer, start a marker at an observation and
+finish it at a later one; the app measures the observed spend inside the
+interval and lists it by name. Deltas that can't be measured honestly — a
+token switch mid-interval, a downward correction, a midnight crossing — say
+so explicitly instead of showing a guessed number. Markers persist across
+relaunches, and the last 100 receipts are kept.
+
+**Budget detail.** If your gateway enforces nested per-model caps, the budget
+sheet shows every returned cap with its room, flags which one is binding
+right now, and states plainly that the returned caps are not a model-
+availability catalog. Cooldowns ("relaxed until …") are shown and expire
+correctly.
+
+**Retention and footprint.** History keeps the newest 90 gateway days and
+coarsens the oldest observations first if the store would exceed its 2 MiB
+budget; first, last, and policy-boundary readings are always kept. Markers
+cap at 100 receipts. Everything lives in
+`~/Library/Application Support/VelaIshtar/`.
 
 **Rebuilding from source:** each `./build.sh` changes the ad-hoc signature,
 so macOS may ask once for Keychain access on the first run of a new build.
@@ -243,27 +260,26 @@ Two rules earn most of the behaviour above:
 
 ## Tech
 
-Pure AppKit + Swift 6, zero dependencies, ~6,500 LOC (comments included — this
-codebase explains itself). Builds with bare `swiftc` into an ad-hoc-signed
-`.app` — no Xcode. SwiftPM runs the unit tests.
+Pure AppKit, zero dependencies, ~14,600 LOC (comments included — this
+codebase explains itself). All targets pin the Swift 5 language mode, so
+Swift 6-defaulting toolchains stay usable. Builds with bare `swiftc` into an
+ad-hoc-signed `.app` — no Xcode. SwiftPM runs the unit tests.
 
 ```bash
-make test     # 285 unit tests
+make test     # 585 unit tests in 53 suites
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 make release  # sync README, rebuild, zip for the Homebrew cask
 ```
 
 The split is deliberate. `Sources/VelaCore` is pure Foundation and holds every
-rule worth pinning — pace verdicts and the median-day benchmark, the week
-window, cell-intensity buckets, the budget border's dash math and colour
-thresholds, hover-readout text, the Today-by-model differencing engine, footer
-arithmetic, semver comparison — so all of it is unit-tested. `Sources/App` is
-AppKit rendering and event handling, verified on screen rather than in tests:
-geometry that only means something once it's drawn.
-
-Every bugfix that has a VelaCore seam gets a regression test that fails without
-the fix. Ones that don't — pixel alignment, tracking areas, layer transforms —
-are verified by rendering offscreen and probing the result.
+rule worth pinning — pace verdicts, freshness (a 90-second age window), the
+Observation history engine (validated ingestion, quarantine, 90-day retention,
+a 2 MiB envelope budget), spend markers, CSV export, the budget-overview
+headroom math (nested model caps included), model-share and money formatting,
+release-check state — so all of it is unit-tested. `Sources/App` is AppKit
+rendering and event handling — the persistent popover, the pill, the budget
+detail and history windows — covered by 53 test suites at the seams that
+matter (state derivation, render invalidation, accessibility copy).
 
 ## Release checklist
 

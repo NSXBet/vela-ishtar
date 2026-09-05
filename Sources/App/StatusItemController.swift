@@ -34,6 +34,11 @@ public final class StatusItemController: NSObject {
     /// Fired on left-click.
     public var onClick: (() -> Void)?
 
+    /// WP-12: fired by the "History explorer" menu item. The app layer
+    /// (main.swift) owns the HistoryWindowController — the pill stays
+    /// window-free, matching how onClick delegates the popover.
+    public var onOpenHistoryExplorer: (() -> Void)?
+
     private var statusItem: NSStatusItem?
     private var appearanceObservation: NSKeyValueObservation?
 
@@ -294,6 +299,11 @@ public final class StatusItemController: NSObject {
         let copyItem = NSMenuItem(title: "Copy today's spend", action: #selector(copyTodaysSpend), keyEquivalent: "")
         copyItem.target = self
         menu.addItem(copyItem)
+        // WP-12: the F02/F03 explorer window (markers, day view, export)
+        // lives one menu item away from the pill.
+        let explorerItem = NSMenuItem(title: "History explorer", action: #selector(openHistoryExplorer), keyEquivalent: "")
+        explorerItem.target = self
+        menu.addItem(explorerItem)
 
         let historyItem = NSMenuItem(title: "Open history folder", action: #selector(openHistoryFolder), keyEquivalent: "")
         historyItem.target = self
@@ -353,6 +363,10 @@ public final class StatusItemController: NSObject {
 
     @objc private func quitApp() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func openHistoryExplorer() {
+        onOpenHistoryExplorer?()
     }
 
     /// Applies a calm-level choice from the Pill size submenu and forces a

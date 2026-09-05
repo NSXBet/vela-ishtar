@@ -32,13 +32,14 @@ release: readme-version build
 # can't drift from the binary: Info.plist is the version of record, and the
 # test badge counts @Test/func test across the suite. Run as part of
 # `make release`; safe to run alone after a version bump.
-TESTS := $(shell grep -rhoE '@Test|func test' Tests/ | wc -l | tr -d ' ')
+SUITES := $(shell grep -rhoE '^(public |private |final )?(open )?struct [A-Za-z]+Tests' Tests/ | wc -l | tr -d ' ')
 readme-version:
 	@sed -i '' -E \
 		"s|releases/download/v[0-9]+\.[0-9]+\.[0-9]+/VelaIshtar-[0-9]+\.[0-9]+\.[0-9]+\.zip|releases/download/v$(VERSION)/VelaIshtar-$(VERSION).zip|g; \
 		 s|unzip VelaIshtar-[0-9]+\.[0-9]+\.[0-9]+\.zip|unzip VelaIshtar-$(VERSION).zip|g" \
 		README.md
 	@sed -i '' -E \
-		"s|tests-[0-9]+%20passing|tests-$(TESTS)%20passing|g; s|# [0-9]+ unit tests|# $(TESTS) unit tests|g" \
+		"s|tests-[0-9]+%20passing|tests-$(TESTS)%20passing|g; s|# [0-9]+ unit tests|# $(TESTS) unit tests|g; \
+		 s|# [0-9]+ unit tests in [0-9]+ suites|# $(TESTS) unit tests in $(SUITES) suites|g" \
 		README.md
-	@echo "README synced: version $(VERSION), $(TESTS) tests"
+	@echo "README synced: version $(VERSION), $(TESTS) tests in $(SUITES) suites"

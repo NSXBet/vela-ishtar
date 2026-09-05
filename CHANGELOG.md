@@ -4,6 +4,32 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [2.0.0] — Unreleased
+
+### Added
+
+- **Local history explorer.** A lazily created window shows the retained 90-day observations for your credential, day by day, with per-day coverage (complete, partial, or hour-precision legacy data stated honestly), CSV export of a selected range, and clear-history behind an explicit confirmation that names the affected scope.
+- **Spend markers.** Start a named marker from any observed day; finish it later for a measured delta with start/end observation times. Interval boundaries (day change, credential change, corrected readings) produce an explicit partial or unavailable receipt — never a guessed cross-boundary number. Receipts survive relaunch; at most 100 are kept.
+- **Budget detail surface.** Every returned model cap with its headroom (`min` of global and model room), enforcement state (enforced, relaxed by an active cooldown, blocked at a zero cap, or invalid), and reset context — not just the single most urgent cap.
+- **Settings surface.** Pill size, start-at-login with honest ServiceManagement state (including "waiting for approval" and "unavailable"), credential connection status, and data controls in one place.
+- **Performance signposts** for fetch, decode, persist, presenter, and render intervals in debug builds.
+
+### Changed
+
+- The pill, popover, and history now render from immutable display state derived from validated gateway data; identical states no longer rebuild views.
+- History is timestamp-aware (schema 2): actual receipt time per observation, five-minute coalescing that preserves first/last/policy boundaries, 320-observation per-day cap, 90-day retention, and a 2 MiB active envelope — with a byte-preserving backup before any legacy migration.
+- Spend curve segments break on observation gaps instead of bridging them; the week strip labels last-observed totals rather than implying complete days.
+- The update bell distinguishes never-checked, checking, current, available, skipped, and failed — a skipped release is no longer reported as "up to date".
+- Credential replacement validates a candidate against the gateway before touching the saved one, and persisted history is keyed to a stable per-token identity.
+
+### Fixed
+
+- Post-midnight readings for the previous gateway day no longer overwrite that day's earliest hour (and no longer delete the day).
+- Non-finite gateway values (e.g. `used_percent: 1e100`) can no longer crash integer conversions anywhere in the app.
+- Today's model rows that disagree with the day total render as total-only instead of showing impossible sums; month shares use the authoritative month total.
+- A disabled global limit no longer renders "of $400 today" or a chart ceiling.
+- Stale data is announced as stale in the pill and popover; every mouse action has a keyboard or VoiceOver route, including the update bell and changelog bullet.
+
 ## [1.0.4] — 2026-08-28
 
 ### Added

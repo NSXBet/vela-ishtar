@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var popoverView: PopoverView?
     private var firstRunView: FirstRunView?
     private var updateChecker: UpdateChecker?
+    /// WP-12: WP-09's local history explorer window (F02/F03 surface).
+    private var historyExplorer: HistoryWindowController?
     private let keychain = KeychainStore()
 
     /// True once the user has clicked the status item at least once. The
@@ -60,6 +62,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             self.openPopover(relativeTo: controller)
+        }
+
+        // WP-12: WP-09's local history explorer (day view, markers, CSV
+        // export) — lazily created inside the controller on first open.
+        let historyExplorer = HistoryWindowController(repository: coordinator.repository)
+        self.historyExplorer = historyExplorer
+        controller.onOpenHistoryExplorer = { [weak historyExplorer] in
+            Task { @MainActor in await historyExplorer?.open() }
         }
 
         // The ONE observation point: every committed outcome lands here,
@@ -176,6 +186,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.popover?.dismiss()
                 self.popover = nil
                 self.openPopover(relativeTo: controller, firstRunPrompt: "Paste your new AI Hub token.")
+            }
+            view.onOpenHistoryExplorer = { [weak self] in
+                Task { @MainActor in await self?.historyExplorer?.open() }
             }
             view.renderLoadingState(now: Date())
             let panel = PopoverPanel(contentView: view)
@@ -294,6 +307,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.popover?.dismiss()
             self.popover = nil
             self.openPopover(relativeTo: controller, firstRunPrompt: "Paste your new AI Hub token.")
+        }
+        // WP-12: the settings export row opens the history explorer.
+        view.onOpenHistoryExplorer = { [weak self] in
+            Task { @MainActor in await self?.historyExplorer?.open() }
         }
         // Pre-layout BEFORE the panel exists: update() sizes the view to
         // its content, so the panel is born at the right height — no visible

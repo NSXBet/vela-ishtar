@@ -102,7 +102,7 @@ struct PerformanceTool {
         // BurnBuffer ingest (warm).
         var buffer = BurnBuffer()
         measure("burnbuffer.record 1 sample (warm)", iterations: 2000) {
-            buffer.record(spentToday: Double.random(in: 0...400), at: now)
+            buffer.record(spentToday: Double.random(in: 0...400), at: now, scope: UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://perf-fixture.invalid"), gatewayDay: GatewayDay(spendDate: "2026-09-05")!)
         }
 
         // PaceEngine verdict (warm).

@@ -30,7 +30,10 @@ public final class PopoverView: NSView {
     /// owns real settings surfaces (WP-10); the summary opens the connection
     /// detail through the secondary seam.
     public var onOpenSettings: (() -> Void)?
-
+    /// WP-12: WP-09's explorer is live, so the settings export row is
+    /// enabled; the app layer opens the explorer window (export dialog
+    /// lives there, per-day).
+    public var onOpenHistoryExplorer: (() -> Void)?
     let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))   // internal: PopoverPanel/main drive the draw-on animation
 
     // MARK: - Persistent sections (built once in init)
@@ -421,12 +424,15 @@ public final class PopoverView: NSView {
                 pillSize: StatusItemController.sharedPillSize,
                 login: Self.loginServiceState(),
                 credentialLine: SettingsView.credentialLine(for: credentialStatus),
-                exportAvailable: false,
+                exportAvailable: true,
                 version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
                 updateLine: Self.settingsUpdateLine(updateChecker?.state ?? .neverChecked)
             )
             settings.onSelectPillSize = { level in
                 StatusItemController.shared?.applyPillSize(level)
+            }
+            settings.onOpenExport = { [weak self] in
+                self?.onOpenHistoryExplorer?()
             }
             settings.onOpenHistory = {
                 NSWorkspace.shared.open(HistoryStore.defaultDirectory)
