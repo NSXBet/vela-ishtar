@@ -65,7 +65,17 @@ func makeModelBudget(
 }
 
 func makeUsage(spent: Double, limit: Double, modelBudgets: [ModelBudget] = []) -> UsageResponse {
-    UsageResponse(
+    // Today's models reuse the same two names as topModels, split in roughly
+    // the same ratio (kimi-k3 dominates both the day and the month in this
+    // fixture) — so the snapshot's Today tab shows a populated breakdown
+    // instead of the empty-total fallback.
+    let kimiToday = spent * 0.96
+    let haikuToday = spent - kimiToday
+    let todayModels = [
+        ModelUsage(model: "moonshotai/kimi-k3", totalCostUSD: kimiToday, totalTokens: 3_200_000, requests: 24),
+        ModelUsage(model: "anthropic/claude-haiku-4.5", totalCostUSD: haikuToday, totalTokens: 180_000, requests: 5),
+    ]
+    return UsageResponse(
         tokenId: "snapshot",
         dailyBudget: DailyBudget(
             limitUSD: limit,
@@ -80,7 +90,9 @@ func makeUsage(spent: Double, limit: Double, modelBudgets: [ModelBudget] = []) -
         topModels: [
             ModelUsage(model: "moonshotai/kimi-k3", totalCostUSD: 52.30, totalTokens: 68_013_553, requests: 426),
             ModelUsage(model: "anthropic/claude-haiku-4.5", totalCostUSD: 2.21, totalTokens: 4_959_265, requests: 99),
-        ]
+        ],
+        today: MonthStats(totalCostUSD: spent, totalTokens: todayModels.reduce(0) { $0 + $1.totalTokens }, requests: todayModels.reduce(0) { $0 + $1.requests }),
+        todayModels: todayModels
     )
 }
 

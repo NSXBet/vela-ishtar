@@ -30,27 +30,17 @@ public struct PollStateMachine: Sendable {
     public private(set) var state: PollState = .neverFetched
     public private(set) var burnBuffer = BurnBuffer()
     public private(set) var history: HistoryStore
-    public private(set) var snapshots: ModelSnapshots
 
-    /// The most recent Today-by-model split, recomputed on each successful
-    /// ingest. Starts unavailable (no baseline until the second gateway day).
-    /// The App layer renders `.split` as rows and `.unavailable` as a note.
-    public private(set) var todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)
-
-    /// Loads persisted spend history AND model snapshots from disk
-    /// (no-op-safe if either file is missing). Called once at app launch
-    /// before polling starts.
+    /// Loads persisted spend history from disk (no-op-safe if the file is
+    /// missing). Called once at app launch before polling starts.
     public mutating func loadHistory() {
         try? history.load()
-        try? snapshots.load()
     }
 
-    /// Persists spend history and model snapshots atomically (tmp + rename).
-    /// Called after each successful poll and on quit — a few KB once a
-    /// minute, battery cost nil.
+    /// Persists spend history atomically (tmp + rename). Called after each
+    /// successful poll and on quit — a few KB once a minute, battery cost nil.
     public func saveHistory() {
         try? history.save()
-        try? snapshots.save()
     }
 
     /// The instant today's spend first crossed the limit, or nil if it
@@ -74,17 +64,9 @@ public struct PollStateMachine: Sendable {
 
     /// `historyDirectory` is injectable so tests can point the internal
     /// HistoryStore at a throwaway temp directory instead of the app's real
-    /// support directory. ModelSnapshots shares the same directory (a second
-    /// file, snapshots.json, alongside history.json).
+    /// support directory.
     public init(historyDirectory: URL = HistoryStore.defaultDirectory) {
-        self.init(historyDirectory: historyDirectory, snapshotMaxKeys: ModelSnapshots.maxKeys)
-    }
-
-    /// Internal test seam for the retention-boundary regression. Production
-    /// constructs the public initializer and always keeps seven snapshots.
-    init(historyDirectory: URL, snapshotMaxKeys: Int) {
         self.history = HistoryStore(directory: historyDirectory)
-        self.snapshots = ModelSnapshots(directory: historyDirectory, maxKeys: snapshotMaxKeys)
     }
 
     /// A snapshot of today's last known reading, rehydrated from history for
@@ -155,17 +137,6 @@ public struct PollStateMachine: Sendable {
             // clock's -- the two disagree around the UTC-midnight seam (the
             // whole point of the spendDate keying above).
             exhaustedAt = history.day(spendDate: usage.dailyBudget.spendDate)?.exhaustedAt
-            // Compute the Today-by-model split before recording this response.
-            // `baseline(before:)` always reads the prior gateway day, never
-            // today's key. In ordinary chronological polling either statement
-            // order sees that baseline, but at a full retention window an
-            // out-of-order day can otherwise prune its own prior-day baseline
-            // before the split reads it.
-            todayModelSplit = TodayModelSplitEngine.split(
-                current: usage,
-                baseline: snapshots.baseline(before: usage.dailyBudget.spendDate)
-            )
-            snapshots.record(usage, at: date)
             state = .fresh(usage)
 
         case .failure:

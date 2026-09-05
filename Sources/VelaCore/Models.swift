@@ -6,6 +6,13 @@
 // (BurnBuffer, PaceEngine, HistoryStore, the App poller) builds on.
 // Note: MonthStats intentionally keeps period_start/period_end as optional
 // Strings — the app derives "today" from spend_date, not from these.
+// Note: UsageResponse.today / .todayModels reuse MonthStats / ModelUsage
+// rather than new types, because the gateway's "today" wire shape is byte-
+// for-byte identical to "current_month" / "top_models" — just windowed to
+// the current spend day instead of the month. Both decode tolerantly
+// (decodeIfPresent) so a payload from before this gateway feature shipped
+// (older cached JSON, hand-written test fixtures) still decodes, with
+// "today" zeroed and "todayModels" empty rather than a decode failure.
 // Note: DailyBudget.modelBudgets carries the gateway's NESTED per-model daily
 // caps (currently "aihub/claude-opus-5" at $20/day). Nested, not separate: a
 // capped model's dollars count toward BOTH that cap and the global limit, so
@@ -28,19 +35,43 @@ public struct UsageResponse: Codable, Equatable, Sendable {
     public let dailyBudget: DailyBudget
     public let currentMonth: MonthStats
     public let topModels: [ModelUsage]
+    public let today: MonthStats
+    public let todayModels: [ModelUsage]
 
     private enum CodingKeys: String, CodingKey {
         case tokenId = "token_id"
         case dailyBudget = "daily_budget"
         case currentMonth = "current_month"
         case topModels = "top_models"
+        case today
+        case todayModels = "today_models"
     }
 
-    public init(tokenId: String, dailyBudget: DailyBudget, currentMonth: MonthStats, topModels: [ModelUsage]) {
+    public init(
+        tokenId: String,
+        dailyBudget: DailyBudget,
+        currentMonth: MonthStats,
+        topModels: [ModelUsage],
+        today: MonthStats = MonthStats(totalCostUSD: 0, totalTokens: 0, requests: 0),
+        todayModels: [ModelUsage] = []
+    ) {
         self.tokenId = tokenId
         self.dailyBudget = dailyBudget
         self.currentMonth = currentMonth
         self.topModels = topModels
+        self.today = today
+        self.todayModels = todayModels
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tokenId = try container.decode(String.self, forKey: .tokenId)
+        dailyBudget = try container.decode(DailyBudget.self, forKey: .dailyBudget)
+        currentMonth = try container.decode(MonthStats.self, forKey: .currentMonth)
+        topModels = try container.decode([ModelUsage].self, forKey: .topModels)
+        today = try container.decodeIfPresent(MonthStats.self, forKey: .today)
+            ?? MonthStats(totalCostUSD: 0, totalTokens: 0, requests: 0)
+        todayModels = try container.decodeIfPresent([ModelUsage].self, forKey: .todayModels) ?? []
     }
 }
 

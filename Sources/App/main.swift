@@ -74,8 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let panel = self.popover, panel.isShown, let view = self.popoverView {
                 view.update(state: state, history: poller.machine.history,
                             exhaustedAt: poller.machine.exhaustedAt,
-                            lastSuccessAt: poller.machine.lastSuccessAt, now: Date(),
-                            todayModelSplit: poller.machine.todayModelSplit)
+                            lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
             }
         }
 
@@ -129,8 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let poller, let panel = popover, panel.isShown, let view = popoverView else { return }
         view.update(state: poller.machine.state, history: poller.machine.history,
                     exhaustedAt: poller.machine.exhaustedAt,
-                    lastSuccessAt: poller.machine.lastSuccessAt, now: Date(),
-                    todayModelSplit: poller.machine.todayModelSplit)
+                    lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
     }
 
     /// Builds (once) and shows the popover under the status item. When
@@ -263,8 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // jump from the initial 480pt frame down to content.
         view.update(state: poller.machine.state, history: poller.machine.history,
                     exhaustedAt: poller.machine.exhaustedAt,
-                    lastSuccessAt: poller.machine.lastSuccessAt, now: Date(),
-                    todayModelSplit: poller.machine.todayModelSplit)
+                    lastSuccessAt: poller.machine.lastSuccessAt, now: Date())
         let panel = self.popover ?? PopoverPanel(contentView: view)
         self.popover = panel
         panel.show(relativeTo: controller.button)

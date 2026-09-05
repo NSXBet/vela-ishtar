@@ -179,6 +179,40 @@ struct ModelsTests {
         #expect(decoded == original)
     }
 
+    static let todayModelsFixture = """
+    {"token_id":"00000000-0000-4000-8000-000000000000","daily_budget":{"user_id":"00u000000000000000000","spend_date":"2026-08-28T00:00:00Z","limit_usd":400,"spent_usd":54.51088648,"remaining_usd":345.48911352,"used_percent":13.627721619999999,"limit_enabled":true},"current_month":{"period_start":"2026-08-01T00:00:00-03:00","period_end":"2026-08-28T07:34:44.608728233-03:00","total_cost_usd":3049.237736017,"total_tokens":4215745301,"requests":22634},"top_models":[{"model":"moonshotai/kimi-k3","total_cost_usd":1450.1,"total_tokens":1884123755,"requests":9652}],"today":{"period_start":"2026-08-28T00:00:00-03:00","period_end":"2026-08-28T18:38:31-03:00","total_cost_usd":22.47,"total_tokens":86480000,"requests":421},"today_models":[{"model":"anthropic/claude-sonnet-5","total_cost_usd":12.13,"total_tokens":40000000,"requests":180},{"model":"openai/gpt-5.6-luna-pro","total_cost_usd":5.81,"total_tokens":20000000,"requests":90}]}
+    """
+
+    @Test("decodes today and today_models distinct from current_month and top_models")
+    func decodesTodayModelsPayload() throws {
+        let usage = try JSONDecoder().decode(UsageResponse.self, from: Data(Self.todayModelsFixture.utf8))
+
+        // today must not be confused with current_month — the two totals differ
+        // by two orders of magnitude in this fixture, so a wrong key mapping
+        // (e.g. decoding "today" into currentMonth) fails loudly.
+        #expect(usage.today.totalCostUSD == 22.47)
+        #expect(usage.today.totalTokens == 86480000)
+        #expect(usage.today.requests == 421)
+        #expect(usage.currentMonth.totalCostUSD == 3049.237736017)
+
+        #expect(usage.todayModels.count == 2)
+        #expect(usage.todayModels[0].model == "anthropic/claude-sonnet-5")
+        #expect(usage.todayModels[0].totalCostUSD == 12.13)
+        #expect(usage.todayModels[1].model == "openai/gpt-5.6-luna-pro")
+        #expect(usage.todayModels[1].totalCostUSD == 5.81)
+        #expect(usage.topModels.count == 1)
+        #expect(usage.topModels[0].model == "moonshotai/kimi-k3")
+    }
+
+    @Test("missing today and today_models decode as zeroed/empty (backward compat)")
+    func decodesMissingTodayModelsAsZeroedAndEmpty() throws {
+        // Self.fixture predates the gateway's today/today_models fields entirely.
+        let usage = try JSONDecoder().decode(UsageResponse.self, from: Data(Self.fixture.utf8))
+
+        #expect(usage.today == MonthStats(totalCostUSD: 0, totalTokens: 0, requests: 0))
+        #expect(usage.todayModels == [])
+    }
+
 }
 
 // A VERBATIM capture of the live gateway response (ids redacted), taken while
@@ -225,6 +259,18 @@ struct LiveModelBudgetPayloadTests {
       },
       "top_models": [
         {"model": "moonshotai/kimi-k3", "total_cost_usd": 1450.1, "total_tokens": 1884123755, "requests": 9652}
+      ],
+      "today": {
+        "period_start": "2026-08-27T00:00:00-03:00",
+        "period_end": "2026-08-27T18:38:31.171114877-03:00",
+        "total_cost_usd": 22.47,
+        "total_tokens": 86480000,
+        "requests": 421
+      },
+      "today_models": [
+        {"model": "moonshotai/kimi-k3", "total_cost_usd": 12.13, "total_tokens": 30000000, "requests": 190},
+        {"model": "openai/gpt-5.6-luna-pro", "total_cost_usd": 5.81, "total_tokens": 15000000, "requests": 88},
+        {"model": "openai/gpt-5.6-terra-pro", "total_cost_usd": 1.78, "total_tokens": 4000000, "requests": 22}
       ]
     }
     """
@@ -250,6 +296,17 @@ struct LiveModelBudgetPayloadTests {
         // The gateway's own arithmetic, which our display must not re-derive
         // differently: remaining is exactly limit - spent.
         #expect(abs((cap.limitUSD - cap.spentUSD) - cap.remainingUSD) < 1e-9)
+
+        // today / today_models are new fields on this same live fixture: this
+        // test's whole purpose is to fail loudly on wire-shape drift, so it
+        // must reflect the fields the gateway now actually returns.
+        #expect(usage.today.totalCostUSD == 22.47)
+        #expect(usage.today.totalTokens == 86480000)
+        #expect(usage.today.requests == 421)
+        #expect(usage.todayModels.count == 3)
+        #expect(usage.todayModels[0].model == "moonshotai/kimi-k3")
+        #expect(usage.todayModels[1].model == "openai/gpt-5.6-luna-pro")
+        #expect(usage.todayModels[2].model == "openai/gpt-5.6-terra-pro")
     }
 
     @Test("grace applies to the global budget only, so a model cap is a hard ceiling")

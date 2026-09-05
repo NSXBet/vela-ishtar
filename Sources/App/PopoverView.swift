@@ -39,9 +39,6 @@ public final class PopoverView: NSView {
     private var latestState: PollState = .neverFetched
     private var latestExhaustedAt: Date?
     private var latestSuccessAt: Date?
-    // The latest Today-by-model split, captured in update() like latestState
-    // so periodChanged() can re-render the Today segment without a fresh poll.
-    private var latestModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)
 
     /// The update checker (v0.5.2), injected by main.swift after launch.
     /// addVersionBullet reads `pendingRelease` to place the update bell left
@@ -100,7 +97,7 @@ public final class PopoverView: NSView {
     private static let modelRowSlotHeight: CGFloat = 32
 
     @MainActor
-    public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date, todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)) {
+    public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date) {
         // Clear all subviews and rebuild from scratch on each update.
         subviews.forEach { $0.removeFromSuperview() }
         managedSubviews.removeAll()
@@ -149,7 +146,6 @@ public final class PopoverView: NSView {
         latestState = state
         latestExhaustedAt = exhaustedAt
         latestSuccessAt = lastSuccessAt
-        latestModelSplit = todayModelSplit
         // A poll-driven rebuild re-configures the curve but must not fight the
         // draw-on reveal. v0.4.0: the reveal is a mask animation on CurveView's
         // layer (a persistent subview, so it survives this rebuild), and the
@@ -275,49 +271,38 @@ public final class PopoverView: NSView {
         yOffset += makeModelsHeader(at: &yOffset)
         var modelRowsRendered = 0
         if selectedPeriod == .today, let usage = usageResponse {
-            // Today segment, three states. The split is the snapshot-derived
-            // per-model breakdown (v0.3.0) — only trustable when the data is
-            // fresh, so a stale reading falls back to the honest total-only
-            // row and never shows a derived split against hours-old data.
-            if isFresh, case .split(let s) = todayModelSplit {
-                // Shares are of TODAY's total spend (the authoritative daily
-                // figure), so the percents tie to the hero number. The pinned
-                // "Other" residual passes showsShare=false — it isn't a model.
-                // Display compaction (v0.3.1): at most 5 rows render, and the
-                // reconciling Other row must NEVER be the one dropped — else
-                // the visible breakdown stops tying to the day total. With
-                // >4 named rows, fold the tail into Other so row 5 is always
-                // the pinned residual.
-                let dayTotal = usage.dailyBudget.spentUSD
-                let named = s.rows.filter { !$0.isOther }
-                let engineOther = s.rows.first { $0.isOther }?.costUSD ?? 0
-                let displayRows: [(name: String, cost: Double, tokens: Double, isOther: Bool)]
-                if named.count <= 4 {
-                    displayRows = named.map { ($0.name, $0.costUSD, Double($0.tokens), false) }
-                        + (engineOther > 0 ? [("Other", engineOther, 0, true)] : [])
+            // Today segment. The gateway's `today_models[]` (added in the
+            // 2026-08 /v1/me/usage revision) is already real-time, cost-
+            // descending, and capped at 5 — no more waiting for a full day
+            // of history before a split exists, so there is no "not yet
+            // derivable" state to render a reason for. Only freshness still
+            // matters: a stale reading falls back to the honest total-only
+            // row rather than showing model rows against hours-old data.
+            let dayTotal = usage.dailyBudget.spentUSD
+            if isFresh {
+                let rows = TodayModelRows.rows(from: usage.todayModels, dayTotal: dayTotal)
+                if rows.isEmpty {
+                    // No spend today, or the gateway sent no per-model rows —
+                    // the honest total (here, $0) with no note.
+                    yOffset += makeTodayTotalRow(spent: dayTotal, note: nil, at: &yOffset)
+                    modelRowsRendered = Self.maxModelRows
                 } else {
-                    let kept = named.prefix(4)
-                    let folded = named.dropFirst(4).reduce(0) { $0 + $1.costUSD } + engineOther
-                    displayRows = kept.map { ($0.name, $0.costUSD, Double($0.tokens), false) }
-                        + [( "Other", folded, 0, true )]
+                    // Shares are of TODAY's total spend (the authoritative
+                    // daily figure), so the percents tie to the hero number.
+                    // The pinned "Other" row passes showsShare=false — it
+                    // isn't a model.
+                    for row in rows {
+                        let displayName = row.name.split(separator: "/").last.map(String.init) ?? row.name
+                        let share = ModelShare.percent(cost: row.costUSD, total: dayTotal)
+                        yOffset += makeModelRow(name: displayName, cost: row.costUSD, tokens: Double(row.tokens), sharePercent: share, showsShare: !row.isOther, at: &yOffset)
+                        modelRowsRendered += 1
+                    }
                 }
-                for row in displayRows {
-                    let displayName = row.name.split(separator: "/").last.map(String.init) ?? row.name
-                    let share = ModelShare.percent(cost: row.cost, total: dayTotal)
-                    yOffset += makeModelRow(name: displayName, cost: row.cost, tokens: row.tokens, sharePercent: share, showsShare: !row.isOther, at: &yOffset)
-                    modelRowsRendered += 1
-                }
-            } else if isFresh, case .unavailable(let reason) = todayModelSplit {
-                // Fresh but not derivable (first day, month seam, gap): the
-                // honest total plus WHY there's no split. noSpendYet's nil
-                // note keeps the plain "monthly only" line.
-                yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: reason.note, at: &yOffset)
-                modelRowsRendered = Self.maxModelRows   // total row + note fills the block
             } else {
-                // Stale: total only, no split note — the banner already says
-                // the data is old, and a split note would claim a freshness
-                // the rows below don't have.
-                yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: nil, at: &yOffset)
+                // Stale: total only, no split — the banner already says the
+                // data is old, and a split would claim a freshness the rows
+                // below don't have.
+                yOffset += makeTodayTotalRow(spent: dayTotal, note: nil, at: &yOffset)
                 modelRowsRendered = Self.maxModelRows
             }
         } else if !modelsForPeriod.isEmpty {
@@ -407,7 +392,7 @@ public final class PopoverView: NSView {
         // Rows were laid out against the OLD height — re-lay against the new
         // one so the hero isn't cut off on first open.
         isRelayout = true
-        update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now, todayModelSplit: todayModelSplit)
+        update(state: state, history: history, exhaustedAt: exhaustedAt, lastSuccessAt: lastSuccessAt, now: now)
         isRelayout = false
     }
 
@@ -794,8 +779,8 @@ public final class PopoverView: NSView {
         return 26   // 20pt control + 6pt air before the rows below
     }
 
-    /// Today's total spend as a single row — used when the per-model split
-    /// isn't shown (stale data, or the split is unavailable today). `note`
+    /// Today's total spend as a single row — used when no per-model rows are
+    /// rendered (no spend yet today, or the reading is stale). `note`
     /// overrides the quiet sub-line; nil falls back to the plain "monthly
     /// only" explanation.
     /// v0.4.3: returns the FULL models-block height (maxModelRows × the 32pt
@@ -1146,7 +1131,7 @@ public final class PopoverView: NSView {
         // re-reads the live status, so the checkmark is always true.
         guard let history = latestHistory else { return }
         update(state: latestState, history: history,
-               exhaustedAt: latestExhaustedAt, lastSuccessAt: latestSuccessAt, now: Date(), todayModelSplit: latestModelSplit)
+               exhaustedAt: latestExhaustedAt, lastSuccessAt: latestSuccessAt, now: Date())
     }
 
     /// Swaps the popover into token-entry mode. Deliberately does NOT copy
@@ -1201,14 +1186,14 @@ public final class PopoverView: NSView {
             // and the banner / amber dot / dimming must survive a period toggle.
             self.update(state: self.latestState, history: history,
                         exhaustedAt: self.latestExhaustedAt, lastSuccessAt: self.latestSuccessAt,
-                        now: Date(), todayModelSplit: self.latestModelSplit)
+                        now: Date())
         }
     }
 
     /// Aggregates model usage over the selected window. Month: the API's
-    /// top_models (current-month per-model breakdown). Today: the gateway
-    /// doesn't return per-day model splits, so this returns empty and the
-    /// section shows today's total + a note instead of a fake list.
+    /// top_models (current-month per-model breakdown). Today: the update()
+    /// Today branch renders `usage.todayModels` directly via TodayModelRows,
+    /// so this helper only ever needs the Month case and returns empty here.
     private func aggregatedModels(response: UsageResponse?, history: HistoryStore, now: Date) -> [(model: String, totalCostUSD: Double, totalTokens: Int)] {
         guard let response else { return [] }
         switch selectedPeriod {
