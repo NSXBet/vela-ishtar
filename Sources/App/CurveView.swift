@@ -300,7 +300,7 @@ public final class CurveView: NSView {
 
     /// Contiguous runs of observed (non-nil) hours, in hour order. The
     /// segmentation rule for B15: gaps break the path, nothing bridges.
-    static func observedRuns(hourly: [Double?]) -> [[(hour: Int, value: Double)]] {
+    nonisolated static func observedRuns(hourly: [Double?]) -> [[(hour: Int, value: Double)]] {
         var runs: [[(hour: Int, value: Double)]] = []
         var current: [(hour: Int, value: Double)] = []
         for (hour, value) in hourly.enumerated() {
