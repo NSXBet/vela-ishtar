@@ -27,6 +27,27 @@ public final class DayStripView: NSView {
     public init(week: [DayStrip.Day], frame: NSRect) {
         self.week = week
         super.init(frame: frame)
+        // WP-10 10.2: the strip speaks the whole week — one element, one
+        // summary. A gap day says "no data", never $0.00; hover is not the
+        // only route to a day's cost.
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("This week's daily spend")
+        setAccessibilityValue(Self.accessibilitySummary(week: week))
+    }
+
+    /// Full spoken week, built from the same DayStrip.Day data the cells
+    /// render. Weekday names are fixed Monday-first so the spoken day always
+    /// matches the visible M T W T F S S letters.
+    private static func accessibilitySummary(week: [DayStrip.Day]) -> String {
+        var lines: [String] = []
+        for (index, day) in week.enumerated() {
+            let weekday = index < AccessibilitySummary.weekdayNames.count
+                ? AccessibilitySummary.weekdayNames[index]
+                : "Day \(index + 1)"
+            lines.append(AccessibilitySummary.dayStripCell(weekday: weekday, total: day.total))
+        }
+        return lines.joined(separator: ", ")
     }
 
     public required init?(coder: NSCoder) {

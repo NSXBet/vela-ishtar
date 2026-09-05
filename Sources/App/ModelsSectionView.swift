@@ -100,7 +100,12 @@ final class ModelsSectionView: NSView {
     /// `totalText` is the SELECTED period's authoritative scoped total
     /// (B08: the view renders what the presenter derived — month shares in
     /// Row.fraction already divide by current_month.totalCostUSD).
+
+    /// The selected period's display name for row accessibility ("today" /
+    /// "month"); kept in sync with the switcher index in apply().
+    private var selectedPeriodName = "today"
     func apply(rows: [SummaryDisplayState.Row], totalText: String, selectedPeriodIndex: Int, contrast: Bool) {
+        selectedPeriodName = selectedPeriodIndex == 0 ? "today" : "month"
         totalLabel.stringValue = totalText
         switcher.setSelected(selectedPeriodIndex, animated: false)
         switcher.layoutSubtreeIfNeeded()
@@ -224,10 +229,10 @@ final class ModelsSectionView: NSView {
         let shareW: CGFloat = 44
         cell.nameLabel.frame = NSRect(x: inset, y: 0, width: width - 2 * inset - costW - shareW - 12, height: VelaDesign.Rows.dataRowHeight)
         cell.costLabel.frame = NSRect(x: width - inset - costW - shareW - 8, y: 0, width: costW, height: VelaDesign.Rows.dataRowHeight)
-        cell.shareLabel.frame = NSRect(x: width - inset - shareW, y: 2, width: shareW, height: 20)
-
-        cell.container.setAccessibilityLabel(row.title)
-        var value = "\(moneyText)"
+        // WP-10 10.2: the row announces name, period, cost, share, and the
+        // observed rate — the full route stays the label, so nothing
+        // requires hover to read.
+        var value = "\(selectedPeriodName): \(moneyText)"
         if !shareText.isEmpty { value += ", \(shareText) of the period total" }
         if let rateText { value += ", observed \(rateText)" }
         cell.container.setAccessibilityValue(value)

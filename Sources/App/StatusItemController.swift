@@ -18,6 +18,19 @@ import Cocoa
 /// PillInputs value. No timer, no animation loop lives here.
 @MainActor
 public final class StatusItemController: NSObject {
+
+    /// WP-10: the app's single controller, registered at install() so
+    /// SettingsView can apply a pill-size choice without the app layer
+    /// threading a reference through every view.
+    public private(set) weak static var shared: StatusItemController?
+
+    /// The persisted pill-size level (0=automatic … 3=minimal), readable
+    /// by SettingsView from anywhere on the main actor.
+    public static var sharedPillSize: Int {
+        let level = UserDefaults.standard.integer(forKey: "vela.calmLevel")
+        return (0...3).contains(level) ? level : 0
+    }
+
     /// Fired on left-click.
     public var onClick: (() -> Void)?
 
@@ -107,6 +120,7 @@ public final class StatusItemController: NSObject {
 
     /// Creates the NSStatusItem, draws the initial (neverFetched) image, and wires click + appearance-change handlers.
     public func install() {
+        Self.shared = self
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem = item
 
@@ -239,10 +253,26 @@ public final class StatusItemController: NSObject {
         switch state {
         case .neverFetched:
             return "no data yet"
-        case .fresh(let usage), .stale(let usage, _):
-            let budget = usage.dailyBudget
-            let percent = Int(budget.usedPercent.rounded())
-            return String(format: "$%.2f of $%.0f, %d percent", budget.spentUSD, budget.limitUSD, percent)
+        case .fresh(let usage):
+            // WP-10 10.2 via AccessibilitySummary (test-pinned): unlimited
+            // semantics ("no daily limit", never "of $0") and a stale
+            // reading is announced as stale so the value matches the dimmed
+            // pill.
+            return AccessibilitySummary.pillValue(
+                spentUSD: usage.dailyBudget.spentUSD,
+                limitUSD: usage.dailyBudget.limitUSD,
+                limitEnabled: usage.dailyBudget.limitEnabled,
+                usedPercent: usage.dailyBudget.usedPercent,
+                isFresh: true
+            )
+        case .stale(let usage, _):
+            return AccessibilitySummary.pillValue(
+                spentUSD: usage.dailyBudget.spentUSD,
+                limitUSD: usage.dailyBudget.limitUSD,
+                limitEnabled: usage.dailyBudget.limitEnabled,
+                usedPercent: usage.dailyBudget.usedPercent,
+                isFresh: false
+            )
         }
     }
 
@@ -332,6 +362,15 @@ public final class StatusItemController: NSObject {
         calmLevel = level
         statusItem?.length = effectivePillSize.width
         // Size change always re-renders the baked bitmap at the new width.
+        render(connection: .live, burnBuffer: BurnBuffer(), response: nil, forceAppearanceRefresh: true)
+    }
+
+    /// WP-10 10.3: applies a pill-size choice from SettingsView — the same
+    /// sequence the right-click submenu runs (persist, resize, force redraw).
+    public func applyPillSize(_ level: Int) {
+        guard let calm = CalmLevel(rawValue: level) else { return }
+        calmLevel = calm
+        statusItem?.length = effectivePillSize.width
         render(connection: .live, burnBuffer: BurnBuffer(), response: nil, forceAppearanceRefresh: true)
     }
 

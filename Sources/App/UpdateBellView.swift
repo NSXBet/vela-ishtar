@@ -75,6 +75,9 @@ public final class UpdateBellView: NSView {
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
+        // WP-10 (B14): a button role without a press is a dead control in
+        // VoiceOver — accessibilityPerformPress (below) routes activation
+        // through the same mouseDown path the pointer uses.
         setAccessibilityLabel(Self.accessibilityLabel(for: state))
         setAccessibilityHelp(Self.accessibilityHelp(for: state, runningVersion: runningVersion))
     }
@@ -261,6 +264,13 @@ public final class UpdateBellView: NSView {
 
     public override func mouseDown(with event: NSEvent) {
         if cardWindow == nil { showCard() } else { hideCard() }
+    }
+
+    /// WP-10 (B14): VoiceOver activation toggles the state card exactly as
+    /// a click does — the button role finally has a press behind it.
+    public override func accessibilityPerformPress() -> Bool {
+        mouseDown(with: NSEvent())
+        return true
     }
 
     public override func viewWillMove(toWindow newWindow: NSWindow?) {

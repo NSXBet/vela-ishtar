@@ -45,6 +45,8 @@ public final class VersionBulletView: NSView {
         }
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
+        // WP-10 (B14): the press shows the same tip the hover shows, via
+        // the accessibilityPerformPress override below.
         setAccessibilityLabel("Vela Ishtar changelog")
         setAccessibilityHelp(lines.joined(separator: "\n"))
     }
@@ -81,6 +83,14 @@ public final class VersionBulletView: NSView {
         // A click under a floating panel shouldn't be swallowed silently.
         showWorkItem?.cancel()
         hideTip()
+    }
+
+    /// WP-10 (B14): VoiceOver activation shows the same changelog tip the
+    /// hover shows.
+    public override func accessibilityPerformPress() -> Bool {
+        showWorkItem?.cancel()
+        showTip()
+        return true
     }
 
     public override func viewWillMove(toWindow newWindow: NSWindow?) {
