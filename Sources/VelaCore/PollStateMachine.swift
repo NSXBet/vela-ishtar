@@ -31,6 +31,14 @@ public struct PollStateMachine: Sendable {
     public private(set) var burnBuffer = BurnBuffer()
     public private(set) var history: HistoryStore
 
+    /// Stable identity for this machine's poll scope. A FRESH random UUID
+    /// per ingest would make every poll look like a credential change and
+    /// reset the burn baseline; one UUID per MACHINE is the honest mapping
+    /// until WP-03 wires real credential scopes in.
+    private var pollScope = UsageScope(
+        kind: .credential, opaqueID: UUID(), gatewayOrigin: ""
+    )
+
     /// Loads persisted spend history from disk (no-op-safe if the file is
     /// missing). Called once at app launch before polling starts.
     public mutating func loadHistory() {
@@ -134,7 +142,7 @@ public struct PollStateMachine: Sendable {
             burnBuffer.record(
                 spentToday: usage.dailyBudget.spentUSD,
                 at: date,
-                scope: UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: ""),
+                scope: pollScope,
                 gatewayDay: (GatewayDay(spendDate: usage.dailyBudget.spendDate)
                     ?? GatewayDay(spendDate: ISODate.dayKey(usage.dailyBudget.spendDate))
                     ?? GatewayDay(spendDate: "1970-01-01")!),

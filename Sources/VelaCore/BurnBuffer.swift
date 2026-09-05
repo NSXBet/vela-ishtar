@@ -56,14 +56,26 @@ public struct BurnBuffer: Equatable, Sendable {
     /// spend) but the caller re-baselines comparisons across it —
     /// never a negative burn (§7.3).
     public mutating func record(_ observation: Observation) {
-        // Same-instant duplicate receipt: the later cumulative wins and
-        // no interval is emitted.
-        if let current = latest, observation.receivedAt <= current.receivedAt {
-            latest = observation
-            rederive()
-            return
-        }
         if let current = latest {
+            // Identity FIRST: a credential or gateway-day change makes
+            // cumulative amounts incomparable regardless of receipt order —
+            // an equal/older reading from a NEW identity must still
+            // re-baseline, not silently replace latest while old slots
+            // survive. §7.3: day/scope resets establish a NEW baseline.
+            if current.scope != observation.scope
+                || current.gatewayDay != observation.gatewayDay {
+                slots.removeAll()
+                latest = observation
+                rederive()
+                return
+            }
+            // Same identity: a same-instant duplicate receipt — the later
+            // cumulative wins and no interval is emitted.
+            if observation.receivedAt <= current.receivedAt {
+                latest = observation
+                rederive()
+                return
+            }
             let raw = observation.cumulativeAmount - current.cumulativeAmount
             // Append the interval this poll actually covers. The delta is
             // clamped at 0: a restatement down is a baseline change, not
