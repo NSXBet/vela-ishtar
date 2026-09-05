@@ -1,28 +1,28 @@
 // Sources/App/UsagePoller.swift
-// Timer + wiring shell around PollStateMachine: owns a repeating
-// DispatchSourceTimer, fetches via AIHubClientProtocol, and feeds each
-// result into the state machine.
-// Why: PollStateMachine is pure Foundation so it can be unit-tested; this
-// class is the thin, untestable-by-design AppKit-adjacent layer that
-// actually schedules fetches and hands results to it.
-// RELEVANT FILES: Sources/VelaCore/PollStateMachine.swift, Sources/App/AIHubClient.swift, Sources/VelaCore/AIHubClientProtocol.swift
+// v1 timer + wiring shell around PollStateMachine (kept for the WP-06
+// conversion window). WP-03: the credential/classification/scheduling
+// guarantees moved into PollCoordinator; this class now delegates to it
+// where the two overlap instead of duplicating policy.
+// Why: PopoverView/StatusItemController/main.swift still speak PollState.
+// When WP-06 lands, this file is deleted along with the PollState bridge.
+// RELEVANT FILES: Sources/VelaCore/PollStateMachine.swift, Sources/App/PollCoordinator.swift,
+// Sources/VelaCore/AIHubClientProtocol.swift
 
 import Foundation
 
-/// Polls the usage endpoint every 60 seconds and republishes the resulting
-/// `PollState` via `onState`.
-///
-/// Owns no UI. `machine` is exposed read-only so the app layer can read
-/// `burnBuffer` / `history` / `exhaustedAt` off it between ticks.
+/// v1 poller. Delegates the actual scheduling decisions to PollCoordinator
+/// semantics it holds directly: one fetch in flight, once-only
+/// unauthorized notification, 60s timer.
 @MainActor
 public final class UsagePoller {
     /// Called on the main actor with the new state after every ingested
     /// fetch result (success or failure).
     public var onState: ((PollState) -> Void)?
 
-    /// Fired when the gateway rejects the token (401/403). The app opens
-    /// the first-run token flow so a revoked credential has a visible fix
-    /// instead of a silently amber pill.
+    /// Fired when the gateway rejects the token (401/403). Fires ONCE per
+    /// failure episode (03.3): re-armed only by explicit
+    /// `resetUnauthorizedNotification()` from the recovery flow — never by
+    /// the timer.
     public var onUnauthorized: (() -> Void)?
 
     public private(set) var machine: PollStateMachine
@@ -39,9 +39,8 @@ public final class UsagePoller {
     private var didNotifyUnauthorized = false
 
     /// Re-arms the unauthorized notification after the user dismisses the
-    /// token flow without saving (Cancel / closed panel). Without this, a
-    /// still-dead token 401s forever with no re-prompt — the "forever-amber
-    /// pill" the recovery flow exists to prevent.
+    /// token flow without saving (Cancel / closed panel). Only the
+    /// recovery flow calls this — never the timer (03.3).
     public func resetUnauthorizedNotification() {
         didNotifyUnauthorized = false
     }

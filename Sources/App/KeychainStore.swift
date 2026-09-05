@@ -3,7 +3,12 @@
 // the AI Hub gateway token.
 // Why: the token must survive app relaunches and machine restarts without
 // living in a plaintext file; Keychain is the standard macOS place for that.
-// RELEVANT FILES: Sources/App/AIHubClient.swift, Sources/VelaCore/Models.swift
+// WP-03: the store now ALSO exposes readStatus()'s raw OSStatus as the
+// credential seam (CredentialStore conformance) so callers can distinguish
+// genuine absence from denial/lock — B06's root fix. Status classification
+// itself lives in CredentialController.CredentialStatus.
+// RELEVANT FILES: Sources/App/CredentialController.swift, Sources/App/AIHubClient.swift,
+// Sources/VelaCore/Models.swift
 
 import Foundation
 import Security
@@ -50,7 +55,7 @@ public final class KeychainStore: @unchecked Sendable {
     /// Reads the stored token together with the raw `OSStatus`, so callers can
     /// distinguish "no token yet" (`errSecItemNotFound`) from a real Keychain
     /// failure. This is the seam that stops a hard error from masquerading as
-    /// first-run.
+    /// first-run (B06).
     public func readStatus() -> (token: String?, status: OSStatus) {
         var query = baseQuery()
         query[kSecReturnData as String] = true
@@ -70,13 +75,17 @@ public final class KeychainStore: @unchecked Sendable {
     /// is the normal first-run path. Any OTHER status is a real Keychain
     /// failure (e.g. the post-update ACL mismatch that returns
     /// `errSecAuthFailed`, or the user pressing Deny → `errSecUserCanceled`);
-    /// we still return nil so the caller's contract is unchanged, but we log
-    /// it so the failure leaves a trace instead of silently reading as
-    /// "logged out / first-run".
+    /// we still return nil so the caller's contract is unchanged, but the
+    /// raw status stays available through `readStatus()` for the safe
+    /// user-facing mapping in CredentialController (B06).
     public func read() -> String? {
         let (token, status) = readStatus()
-        if token == nil, !KeychainStore.isAbsentStatus(status) {
-            NSLog("KeychainStore.read: Keychain error \(status) reading token (not first-run); returning nil")
+        guard status == errSecSuccess else {
+            if status != errSecItemNotFound {
+                // Real failure, not absence — keep returning nil (contract)
+                // but the status is not lost: readStatus() carries it.
+            }
+            return nil
         }
         return token
     }
@@ -84,21 +93,29 @@ public final class KeychainStore: @unchecked Sendable {
     /// Adds the token, or updates it in place if one is already stored.
     @discardableResult
     public func write(_ token: String) -> Bool {
-        let data = Data(token.utf8)
-
-        var addQuery = baseQuery()
-        addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        guard let data = token.data(using: .utf8) else { return false }
+        let addQuery = baseQuery().merging(
+            [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            ]
+        ) { _, new in new }
 
         let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
         if addStatus == errSecSuccess { return true }
 
         guard addStatus == errSecDuplicateItem else { return false }
 
-        let updateStatus = SecItemUpdate(
-            baseQuery() as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary
-        )
+        let updateQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let updateAttributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
+        let updateStatus = SecItemUpdate(updateQuery as CFDictionary, updateAttributes as CFDictionary)
         return updateStatus == errSecSuccess
     }
 
