@@ -213,61 +213,6 @@ public struct BudgetOverview: Equatable, Sendable {
     }
 }
 
-// MARK: - SummaryDisplayState
-
-/// The immutable display state the popover renders from.
-///
-/// §7.2: "Equatable section states, stable row IDs, selected model period
-/// and its scoped total, freshness/accessibility text; no Keychain/network
-/// reads while constructing/applying." Pure value: building or applying
-/// this state performs no I/O.
-public struct SummaryDisplayState: Equatable, Sendable {
-    /// One display row: stable ID across refreshes so AppKit diffing
-    /// (and VoiceOver) track the same logical row.
-    public struct Row: Equatable, Sendable, Identifiable {
-        public let id: String
-        public let title: String
-        public let detail: String
-        public let fraction: Double?
-
-        public init(id: String, title: String, detail: String, fraction: Double?) {
-            self.id = id
-            self.title = title
-            self.detail = detail
-            self.fraction = fraction
-        }
-    }
-
-    /// The hero section: headline amount + narrative line.
-    public let hero: Row
-    /// Model rows (max four named + pinned "Other" at the UI layer; the
-    /// cap is presentation policy, not stored here).
-    public let rows: [Row]
-    /// The selected model period and its scoped total ("today" vs "month").
-    public let selectedPeriod: String
-    public let selectedPeriodTotalUSD: Double
-    /// Freshness line for display and accessibility.
-    public let freshnessText: String
-    /// Full accessibility summary of the summary section.
-    public let accessibilitySummary: String
-
-    public init(
-        hero: Row,
-        rows: [Row],
-        selectedPeriod: String,
-        selectedPeriodTotalUSD: Double,
-        freshnessText: String,
-        accessibilitySummary: String
-    ) {
-        self.hero = hero
-        self.rows = rows
-        self.selectedPeriod = selectedPeriod
-        self.selectedPeriodTotalUSD = selectedPeriodTotalUSD
-        self.freshnessText = freshnessText
-        self.accessibilitySummary = accessibilitySummary
-    }
-}
-
 // MARK: - MarkerReceipt
 
 /// A user-placed spend marker with its measured delta.

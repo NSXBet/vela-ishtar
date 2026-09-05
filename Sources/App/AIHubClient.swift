@@ -12,7 +12,7 @@
 
 import Foundation
 
-public final class AIHubClient: @unchecked Sendable {
+public final class AIHubClient: @unchecked Sendable, UsageTransport {
     /// A `let` (not a compile-time constant) so a future debug build can
     /// point this at a staging gateway without touching call sites.
     public let baseURL: URL

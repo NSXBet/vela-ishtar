@@ -3,13 +3,19 @@
 // a separate alert dot for an alarming nested model cap; owns the NSStatusItem.
 // Why: the border remains the global budget gauge, while the dot adds model-cap
 // urgency without changing what the existing pill instrument means.
-// RELEVANT FILES: Sources/VelaCore/BorderDash.swift, Sources/VelaCore/ModelBudgetSignal.swift, Sources/VelaCore/PollStateMachine.swift, Sources/App/UsagePoller.swift
+// WP-06 06.3: invalidation is NARROWED to exactly the fields the drawn
+// bitmap depends on (visible amount, border state, pulse geometry, cap
+// alert, size, appearance, scale, freshness) via PillInputs. The baked
+// bitmap path is retained; the appearance-observer loop stays retired —
+// the observer now re-renders ONLY on real appearance changes.
+// RELEVANT FILES: Sources/VelaCore/BorderDash.swift, Sources/VelaCore/ModelBudgetSignal.swift,
+// Sources/App/AppCoordinator.swift, Sources/App/PerformanceSignposts.swift
 
 import Cocoa
 
 /// Owns the NSStatusItem and re-draws its image only when the caller (the
-/// App layer, fed by UsagePoller.onState) reports a genuinely new
-/// (state, burnBuffer) pair. No timer, no animation loop lives here.
+/// App layer, fed by AppCoordinator.onUpdate) reports a genuinely new
+/// PillInputs value. No timer, no animation loop lives here.
 @MainActor
 public final class StatusItemController: NSObject {
     /// Fired on left-click.
@@ -22,12 +28,34 @@ public final class StatusItemController: NSObject {
     /// Only valid after install(); nil before that.
     public var button: NSStatusBarButton? { statusItem?.button }
 
-    // Last-rendered inputs; render() skips redraw when both unchanged (zero-render-between-polls rule).
-    private var lastState: PollState?
-    private var lastBurnBuffer: BurnBuffer?
-    // Cooldown expiry can change the dot without changing the response, so the
-    // rendering guard also remembers the derived time-sensitive model signal.
-    private var lastModelBudgetSignal: ModelBudgetSignal?
+    // Last-rendered inputs; render() skips redraw when PillInputs is
+    // unchanged (zero-render-between-polls rule, narrowed per WP-06 06.3).
+    private var lastInputs: PillInputs?
+
+    /// Everything the drawn bitmap actually depends on — nothing else.
+    /// Comparing this value decides whether the baked bitmap re-renders:
+    /// a poll that changes nothing visible is free. Deliberately NOT the
+    /// whole PollState/UsageResponse — unused fields must not trigger
+    /// redraws.
+    private struct PillInputs: Equatable {
+        /// The displayed amount ("$54.51", "—" when no data).
+        var amountText: String
+        /// Border gauge fraction + enabled state.
+        var usedPercent: Double
+        var limitEnabled: Bool
+        /// Sparkline pulse geometry (normalized slots).
+        var sparkline: [Double]?
+        /// The alarming-cap dot (nil = no dot; includes state so a cooldown
+        /// expiry that changes urgency still re-renders).
+        var capAlert: ModelBudgetSignal?
+        /// Pill size (calm level / notch clipping).
+        var sizeWidth: CGFloat
+        /// Appearance (light/dark) and screen scale.
+        var appearanceName: String
+        var scale: CGFloat
+        /// Freshness — a stale reading dims the whole pill.
+        var isFresh: Bool
+    }
 
     // Pill geometry, in points -- matches the locked design spec. The three
     // widths are the condensation ladder (v0.3.0): full shows sparkline +
@@ -98,12 +126,9 @@ public final class StatusItemController: NSObject {
         let initialBuffer = BurnBuffer()
         statusItem?.length = effectivePillSize.width
         button.image = bakedImage(state: .neverFetched, burnBuffer: initialBuffer, appearance: button.effectiveAppearance)
-        lastState = .neverFetched
-        lastBurnBuffer = initialBuffer
+        lastInputs = Self.inputs(state: .neverFetched, burnBuffer: initialBuffer, appearance: button.effectiveAppearance, signal: nil, scale: 2)
 
         // A light/dark switch is render-worthy too (different ink colors resolve), but still discrete.
-        // A light/dark switch is render-worthy too (different ink colors resolve), but still discrete.
-        //
         // Observe NSApp.effectiveAppearance, NOT button.effectiveAppearance:
         // the button's KVO fires again when WE assign a new image in response
         // to a change (AppKit re-resolves the button's appearance during
@@ -112,49 +137,91 @@ public final class StatusItemController: NSObject {
         // observer). The app's appearance only changes on a real light/dark
         // switch — exactly the discrete event we want.
         appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-            Task { @MainActor in
+            Task<Void, Never> { @MainActor in
                 guard let self, let button = self.statusItem?.button,
-                      let state = self.lastState, let buffer = self.lastBurnBuffer else { return }
-                button.image = self.bakedImage(state: state, burnBuffer: buffer, appearance: button.effectiveAppearance)
+                      let inputs = self.lastInputs else { return }
+                // Real appearance change only: the image re-renders from
+                // the SAME drawn inputs under the NEW appearance. The
+                // render→notify→render loop stays retired (never restored).
+                let current: String = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]).map { $0.rawValue } ?? ""
+                if inputs.appearanceName != current {
+                    self.render(connection: .live, burnBuffer: BurnBuffer(), response: nil, forceAppearanceRefresh: true)
+                }
             }
         }
     }
 
-    /// Re-renders only if `state` or `burnBuffer` actually changed since the last call (or install()'s initial draw).
-    public func render(state: PollState, burnBuffer: BurnBuffer) {
-        let modelBudgetSignal = Self.modelBudgetSignal(for: state, now: Date())
-        // The condensation level re-evaluates on EVERY call, before the
-        // unchanged-guard: clipping changes arrive with no event of their
-        // own, so a poll that returns an identical reading (common
-        // overnight) must still be able to shrink the pill — otherwise the
-        // notch-clipped state persists indefinitely, the exact failure the
-        // ladder exists to fix.
+    /// The WP-06 entry point: re-renders only when a drawn pixel would
+    /// change. `response` nil = no data yet. Comparison is exact Equatable
+    /// on PillInputs — amount, border, pulse, cap alert, size, appearance,
+    /// scale, freshness.
+    public func render(connection: ConnectionState, burnBuffer: BurnBuffer, response: UsageResponse?, forceAppearanceRefresh: Bool = false) {
+        let signal = Self.modelBudgetSignal(forResponse: response)
+        guard let button = statusItem?.button else { return }
+        let appearance = button.effectiveAppearance
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let inputs = Self.inputs(
+            state: Self.pollState(connection: connection, response: response),
+            burnBuffer: burnBuffer,
+            appearance: appearance,
+            signal: signal,
+            scale: scale
+        )
+        // The condensation level re-evaluates BEFORE the guard: notch
+        // clipping arrives with no event of its own.
         let width = effectivePillSize.width
         if statusItem?.length != width {
             statusItem?.length = width
-            if let button = statusItem?.button {
-                button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance, modelBudgetSignal: modelBudgetSignal)
-            }
         }
-        if let lastState, let lastBurnBuffer,
-           lastState == state, lastBurnBuffer == burnBuffer,
-           lastModelBudgetSignal == modelBudgetSignal {
-            return
+        if !forceAppearanceRefresh, lastInputs == inputs, statusItem?.length == width {
+            return   // nothing a pixel could see changed — no redraw
         }
-        lastState = state
-        lastBurnBuffer = burnBuffer
-        lastModelBudgetSignal = modelBudgetSignal
-        guard let button = statusItem?.button else { return }
-        button.image = bakedImage(state: state, burnBuffer: burnBuffer, appearance: button.effectiveAppearance, modelBudgetSignal: modelBudgetSignal)
-        button.setAccessibilityLabel(Self.accessibilityLabel(for: modelBudgetSignal))
-        button.setAccessibilityValue(Self.accessibilityValue(for: state))
+        lastInputs = inputs
+        Perf.count("redraws")
+        let pollState = Self.pollState(connection: connection, response: response)
+        button.image = bakedImage(state: pollState, burnBuffer: burnBuffer, appearance: appearance, modelBudgetSignal: signal)
+        button.setAccessibilityLabel(Self.accessibilityLabel(for: signal))
+        button.setAccessibilityValue(Self.accessibilityValue(for: pollState))
     }
 
-    /// The VoiceOver reading of the pill's current state, e.g.
-    /// "$54.51 of $400, 14 percent". Kept terse — VoiceOver users hear
-    /// this every time the pill updates.
-    /// The alert label describes the small dot in words, rather than relying
-    /// on its red hue to tell VoiceOver users that a model cap needs attention.
+    /// Maps the v2 connection state onto the v1 PollState the drawing
+    /// code consumes. WP-07 retires this bridge with the visual conversion.
+    private static func pollState(connection: ConnectionState, response: UsageResponse?) -> PollState {
+        switch connection {
+        case .live:
+            return response.map { .fresh($0) } ?? .neverFetched
+        case .stale, .retrying, .authenticationRequired, .invalidResponse, .keychainBlocked:
+            return response.map { .stale($0, consecutiveFailures: 1) } ?? .neverFetched
+        case .noCredential, .connecting:
+            return .neverFetched
+        }
+    }
+
+    /// Narrows (state, buffer, appearance, scale, signal) to PillInputs.
+    private static func inputs(state: PollState, burnBuffer: BurnBuffer, appearance: NSAppearance, signal: ModelBudgetSignal?, scale: CGFloat) -> PillInputs {
+        PillInputs(
+            amountText: amountText(for: state),
+            usedPercent: budgetFields(for: state).usedPercent,
+            limitEnabled: budgetFields(for: state).limitEnabled,
+            sparkline: burnBuffer.normalized(),
+            capAlert: (signal?.isAlarming == true) ? signal : nil,
+            sizeWidth: 0,   // filled by caller via effectivePillSize below
+            appearanceName: appearance.bestMatch(from: [.aqua, .darkAqua]).map { $0.rawValue } ?? "unknown",
+            scale: scale,
+            isFresh: {
+                if case .fresh = state { return true }
+                return false
+            }()
+        )
+    }
+
+    /// Model-cap signal straight from the committed response (no PollState
+    /// round-trip). nil response = no signal.
+    private static func modelBudgetSignal(forResponse response: UsageResponse?) -> ModelBudgetSignal? {
+        guard let response else { return nil }
+        return Self.modelBudgetSignal(for: .fresh(response), now: Date())
+    }
+
     private static func accessibilityLabel(for signal: ModelBudgetSignal?) -> String {
         guard let signal, signal.isAlarming else { return "AI Hub spend" }
         let modelName = ModelBudgetSignal.displayName(for: signal.model)
@@ -238,16 +305,14 @@ public final class StatusItemController: NSObject {
     }
 
     @objc private func copyTodaysSpend() {
-        guard let state = lastState else { return }
-        let text: String
-        switch state {
-        case .neverFetched:
-            text = "AI Hub — no data yet"
-        case .fresh(let usage), .stale(let usage, _):
-            let budget = usage.dailyBudget
-            text = String(format: "AI Hub — today $%.2f of $%.0f (%d%%)",
-                          budget.spentUSD, budget.limitUSD, Int(budget.usedPercent.rounded()))
+        guard let inputs = lastInputs else { return }
+        guard inputs.amountText != "—" else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString("AI Hub — no data yet", forType: .string)
+            return
         }
+        let percent = Int(inputs.usedPercent.rounded())
+        let text = String(format: "AI Hub — today %@ (%d%% of limit)", inputs.amountText, percent)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -266,8 +331,8 @@ public final class StatusItemController: NSObject {
         guard let raw = sender.representedObject as? Int, let level = CalmLevel(rawValue: raw) else { return }
         calmLevel = level
         statusItem?.length = effectivePillSize.width
-        guard let button = statusItem?.button, let state = lastState, let buffer = lastBurnBuffer else { return }
-        button.image = bakedImage(state: state, burnBuffer: buffer, appearance: button.effectiveAppearance)
+        // Size change always re-renders the baked bitmap at the new width.
+        render(connection: .live, burnBuffer: BurnBuffer(), response: nil, forceAppearanceRefresh: true)
     }
 
     // MARK: - Rendering

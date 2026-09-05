@@ -96,6 +96,60 @@ public final class PopoverView: NSView {
     /// made a Today-total ↔ Month switch resize the card again.
     private static let modelRowSlotHeight: CGFloat = 32
 
+    // MARK: - WP-06 application path (06.2)
+
+    /// The last state this view applied; an identical application is a
+    /// no-op, so an unchanged poll cannot rebuild a single subview.
+    private var lastApplied: SummaryDisplayState?
+    /// The period selected in the UI, mirrored here so the presenter's
+    /// row fold is applied consistently.
+    var selectedPeriodName: String = "today"
+
+    /// Applies committed display state. This is the 06.2 entry: the view
+    /// is rebuilt ONLY when the display state actually differs — same
+    /// numbers, same rows, same freshness → zero work, and an open
+    /// update card / chart focus survives the poll untouched.
+    /// Loading→live and auth→live arrive as DIFFERENT states, so the
+    /// transitions stay explicit.
+    public func apply(
+        displayState: SummaryDisplayState?,
+        connection: ConnectionState,
+        response: UsageResponse?,
+        receivedAt: Date?
+    ) {
+        if let state = displayState {
+            if state == lastApplied { return }
+            lastApplied = state
+        } else {
+            lastApplied = nil
+        }
+        // Bridge to the v1 renderer: WP-07 owns the visual conversion;
+        // until then the full-fidelity path renders from the committed
+        // response + state. The bridge NEVER fabricates freshness — a
+        // non-live connection renders stale even with a response present.
+        let pollState: PollState
+        switch connection {
+        case .live:
+            pollState = response.map { .fresh($0) } ?? .neverFetched
+        case .stale, .retrying, .authenticationRequired, .invalidResponse, .keychainBlocked, .noCredential, .connecting:
+            pollState = response.map { .stale($0, consecutiveFailures: 1) } ?? .neverFetched
+        }
+        if let response {
+            update(state: pollState, history: historyForRender, exhaustedAt: nil, lastSuccessAt: receivedAt, now: Date())
+        }
+    }
+
+    /// The HistoryStore the v1 curve/day-strip render from, injected at
+    /// popover open (coordinator data is in the display state; the curve
+    /// still reads the legacy store until WP-07 converts it).
+    var historyForRender: HistoryStore = HistoryStore(directory: FileManager.default.temporaryDirectory)
+
+    /// Loading state without a HistoryStore argument (WP-06 wiring): the
+    /// cold-open rehydration is driven by the injected historyForRender.
+    func renderLoadingState(now: Date) {
+        renderLoadingState(history: historyForRender, now: now)
+    }
+
     @MainActor
     public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date) {
         // Clear all subviews and rebuild from scratch on each update.
