@@ -156,4 +156,51 @@ struct MarkerFlowTests {
         NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
         #expect(field.stringValue.count == 80)
     }
+
+    // MARK: - coordinator gate fixes
+
+    @Test("marker start anchors on the SELECTED day, not the scope's newest day")
+    func startAnchorsSelectedDay() async throws {
+        let repository = HistoryRepository(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("VelaMarkerFlowTests-\(UUID().uuidString)"))
+        // Two days: the user selects the OLDER day; the scope's newest
+        // observation lives on 08-02 and must NOT become the baseline.
+        await repository.append(Self.observation(at: "2026-08-01T10:00:00Z", amount: 10))
+        await repository.append(Observation(
+            id: UUID(), scope: Self.scopeA,
+            gatewayDay: GatewayDay(spendDate: "2026-08-02")!,
+            receivedAt: ISODate.parse("2026-08-02T10:00:00Z")!,
+            cumulativeAmount: 77, limitEnabled: true, limitUSD: 400,
+            precision: .exactReceipt
+        ))
+
+        let controller = HistoryWindowController(repository: repository)
+        await controller.handleMarkerActionForTesting(.start(
+            scope: Self.scopeA, day: GatewayDay(spendDate: "2026-08-01")!, name: nil))
+        let pendingList = await repository.pendingMarkersList
+        #expect(pendingList.count == 1)
+        #expect(pendingList.first?.startObservation.cumulativeAmount == 10,
+                "baseline must come from the selected day (10), not the newest day (77)")
+        #expect(pendingList.first?.startObservation.gatewayDay.key == "2026-08-01")
+    }
+
+    @Test("marker start persists immediately — a fresh repository sees the pending marker")
+    func startPersistsImmediately() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("VelaMarkerFlowTests-\(UUID().uuidString)")
+        let repository = HistoryRepository(directory: directory)
+        await repository.append(Self.observation(at: "2026-08-01T10:00:00Z", amount: 10))
+
+        let controller = HistoryWindowController(repository: repository)
+        await controller.handleMarkerActionForTesting(.start(
+            scope: Self.scopeA, day: GatewayDay(spendDate: "2026-08-01")!, name: "persist"))
+
+        // A brand-new repository over the SAME directory simulates relaunch:
+        // the pending marker must be on disk, not only in memory.
+        let reloaded = HistoryRepository(directory: directory)
+        _ = await reloaded.load()
+        let pendingList = await reloaded.pendingMarkersList
+        #expect(pendingList.count == 1, "start must persist immediately (crash safety)")
+        #expect(pendingList.first?.name == "persist")
+    }
 }

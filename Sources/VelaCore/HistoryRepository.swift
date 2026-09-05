@@ -527,6 +527,9 @@ public actor HistoryRepository {
         revision = 0
         lastWrittenRevision = 0
         dirty = false
+        // Markers load with the history: a relaunch without loadMarkers()
+        // would forget pending markers/receipts even though they persisted.
+        loadMarkers()
 
         cleanupOrphanedTempFiles()
 
@@ -808,6 +811,13 @@ public actor HistoryRepository {
         guard let newestDay = scopeDays.keys.sorted().last,
               let list = scopeDays[newestDay] else { return nil }
         return list.last
+    }
+
+    /// The latest observation of ONE selected day for a scope (the marker
+    /// start baseline must anchor the day the user is looking at, not the
+    /// scope's newest day). Nil for unknown scope/day.
+    public func latestObservation(scope: UsageScope, day: GatewayDay) -> Observation? {
+        days[scope.opaqueID.uuidString]?[day.key]?.last
     }
 
     /// Deletes ALL history data for one scope (data control, 09.3). The
