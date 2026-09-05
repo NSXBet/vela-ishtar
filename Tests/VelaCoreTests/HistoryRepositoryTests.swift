@@ -242,14 +242,14 @@ struct HistoryRepositoryTests {
         try await repository.save() // no new revision → no-op
         let data = try Data(contentsOf: URL(fileURLWithPath: await repository.directory.path)
             .appendingPathComponent("history.json"))
-        let onDisk = try JSONDecoder().decode(HistoryEnvelope.self, from: data)
+        let onDisk = try HistoryEnvelope.decodedFromPersistence(data, using: JSONDecoder())
         #expect(onDisk.revision == 1)
 
         await repository.append(Self.makeObservation(at: "2026-08-01T10:10:00Z", amount: 20))
         try await repository.save()
         let data2 = try Data(contentsOf: URL(fileURLWithPath: await repository.directory.path)
             .appendingPathComponent("history.json"))
-        let onDisk2 = try JSONDecoder().decode(HistoryEnvelope.self, from: data2)
+        let onDisk2 = try HistoryEnvelope.decodedFromPersistence(data2, using: JSONDecoder())
         #expect(onDisk2.revision == 2)
         // Revisions only move forward.
         #expect(onDisk2.revision > onDisk.revision)
@@ -267,7 +267,7 @@ struct HistoryRepositoryTests {
         #expect(envelope.revision == 5)
         let data = try Data(contentsOf: URL(fileURLWithPath: await repository.directory.path)
             .appendingPathComponent("history.json"))
-        let onDisk = try JSONDecoder().decode(HistoryEnvelope.self, from: data)
+        let onDisk = try HistoryEnvelope.decodedFromPersistence(data, using: JSONDecoder())
         // Five appends, one save: the file carries the final envelope.
         #expect(onDisk == envelope)
     }
@@ -297,7 +297,7 @@ struct HistoryRepositoryTests {
         filesystem.failWrites = false
         try await repository.save()
         let data = try Data(contentsOf: directory.appendingPathComponent("history.json"))
-        let onDisk = try JSONDecoder().decode(HistoryEnvelope.self, from: data)
+        let onDisk = try HistoryEnvelope.decodedFromPersistence(data, using: JSONDecoder())
         #expect(onDisk.days[Self.scopeA.opaqueID.uuidString]?["2026-08-01"]?.count == 1)
     }
 
