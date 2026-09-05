@@ -148,6 +148,18 @@ public struct ModelBudgetSignal: Equatable, Sendable {
             .first
     }
 
+    /// Maps one gateway cap DTO into this module's narrow input. The single
+    /// shared conversion so BudgetOverview and the popover's own rendering
+    /// never drift on `relaxed_until` parsing.
+    public static func input(from budget: ModelBudget) -> ModelBudgetInput {
+        ModelBudgetInput(
+            model: budget.model,
+            spentUSD: budget.spentUSD,
+            limitUSD: budget.limitUSD,
+            relaxedUntil: budget.cooldown?.relaxedUntil.flatMap(ISODate.parse)
+        )
+    }
+
     /// Human copy for gateway route identifiers, never a kebab-cased slug.
     public static func displayName(for routeID: String) -> String {
         guard let finalSegment = routeID

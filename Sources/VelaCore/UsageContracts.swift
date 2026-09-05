@@ -155,63 +155,12 @@ public enum ModelBreakdownState: Equatable, Sendable {
 
 // MARK: - BudgetOverview
 
-/// The complete, presentation-ready budget picture.
-///
-/// §7.2: "Global policy, deterministically sorted model signals,
-/// per-model budget headroom, reset description, freshness; no unsupported
-/// availability promise" — anything not known is stated as unavailable,
-/// never defaulted.
-public struct BudgetOverview: Equatable, Sendable {
-    /// One model's cap position at the overview's instant.
-    public struct ModelSignal: Equatable, Sendable {
-        public let model: String
-        public let spentUSD: Double
-        public let limitUSD: Double?
-        /// Spend headroom under the model's own cap, nil when uncapped.
-        public let headroomUSD: Double?
-        /// Active cooldown bypass of the MODEL cap only, if any.
-        public let relaxedUntil: Date?
-
-        public init(model: String, spentUSD: Double, limitUSD: Double?, headroomUSD: Double?, relaxedUntil: Date?) {
-            self.model = model
-            self.spentUSD = spentUSD
-            self.limitUSD = limitUSD
-            self.headroomUSD = headroomUSD
-            self.relaxedUntil = relaxedUntil
-        }
-    }
-
-    /// Global daily budget: enabled state and value. A disabled global
-    /// limit is UNLIMITED; a model cap of zero is BLOCKED — these are
-    /// different semantics and both survive here untouched.
-    public let globalLimitEnabled: Bool
-    public let globalLimitUSD: Double
-    public let globalSpentUSD: Double
-    /// Model signals, deterministically sorted (spend descending, then
-    /// model name ascending) so equal inputs always render identically.
-    public let modelSignals: [ModelSignal]
-    /// Human-readable description of when the current window resets
-    /// ("resets at UTC midnight" / "no daily limit"), never an invented date.
-    public let resetDescription: String
-    /// Freshness of the numbers this overview was derived from.
-    public let freshness: Freshness
-
-    public init(
-        globalLimitEnabled: Bool,
-        globalLimitUSD: Double,
-        globalSpentUSD: Double,
-        modelSignals: [ModelSignal],
-        resetDescription: String,
-        freshness: Freshness
-    ) {
-        self.globalLimitEnabled = globalLimitEnabled
-        self.globalLimitUSD = globalLimitUSD
-        self.globalSpentUSD = globalSpentUSD
-        self.modelSignals = modelSignals
-        self.resetDescription = resetDescription
-        self.freshness = freshness
-    }
-}
+// BudgetOverview moved to its producer file in WP-08:
+// Sources/VelaCore/BudgetOverview.swift. Names, fields, and semantics are
+// identical to the frozen §7.2 declaration; WP-08 added the derived policy
+// state and the derive(from:freshness:now:calendar:) entry point. This file
+// keeps the remaining coordination contracts; the moved type is
+// intentionally NOT duplicated here.
 
 // MARK: - MarkerReceipt
 
