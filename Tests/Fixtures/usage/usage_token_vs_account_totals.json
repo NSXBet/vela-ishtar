@@ -1,0 +1,31 @@
+{
+  "token_id": "11111111-2222-4333-8444-555555555555",
+  "daily_budget": {
+    "limit_usd": 400.0,
+    "spent_usd": 20.0,
+    "remaining_usd": 380.0,
+    "used_percent": 5.0,
+    "limit_enabled": true,
+    "spend_date": "2026-09-01"
+  },
+  "current_month": {
+    "period_start": "2026-09-01T00:00:00-03:00",
+    "period_end": "2026-09-01T10:00:00-03:00",
+    "total_cost_usd": 60.0,
+    "total_tokens": 15000000,
+    "requests": 200
+  },
+  "top_models": [
+    {"model": "example/alpha-model", "total_cost_usd": 45.0, "total_tokens": 10000000, "requests": 120},
+    {"model": "example/beta-model", "total_cost_usd": 15.0, "total_tokens": 5000000, "requests": 80}
+  ],
+  "today": {
+    "total_cost_usd": 20.0,
+    "total_tokens": 3000000,
+    "requests": 50
+  },
+  "today_models": [
+    {"model": "example/alpha-model", "total_cost_usd": 15.0, "total_tokens": 2000000, "requests": 30},
+    {"model": "example/beta-model", "total_cost_usd": 5.0, "total_tokens": 1000000, "requests": 20}
+  ]
+}

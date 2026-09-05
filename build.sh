@@ -20,7 +20,7 @@ echo "Compiling Vela Ishtar (arm64, macOS 14+)…"
 # if a teammate is on Intel. -parse-as-library keeps top-level statements
 # allowed only in main.swift (the app entry), which is the only file with
 # top-level code.
-swiftc -O -target arm64-apple-macos14.0 \
+swiftc -O -swift-version 5 -target arm64-apple-macos14.0 \
   Sources/VelaCore/*.swift Sources/App/*.swift \
   -o "$BIN" \
   -framework Cocoa -framework ServiceManagement -framework Security -framework QuartzCore
