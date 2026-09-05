@@ -22,7 +22,7 @@ public final class UpdateBellView: NSView {
     /// The bell's explicit update state (WP-11 11.1). Every visual and every
     /// word of copy derives from this — the bell can no longer render
     /// "up to date" from a bare nil, because nil was five different truths.
-    private let updateState: ReleaseChecker.UpdateState
+    private var updateState: ReleaseChecker.UpdateState
     /// The version this build is running — shown in the current-state card,
     /// so "you're current" comes with the evidence.
     private let runningVersion: String
@@ -124,6 +124,26 @@ public final class UpdateBellView: NSView {
 
     public required init?(coder: NSCoder) {
         fatalError("UpdateBellView does not support NSCoder-based initialization")
+    }
+
+    // MARK: - In-place state application (WP-07: chrome persists across polls)
+
+    /// Re-applies a new update state WITHOUT rebuilding: re-tints the bell,
+    /// swaps the symbol, restarts/stops the attention shake, and refreshes
+    /// accessibility. The bell view itself is built once; a poll or a
+    /// checker change never recreates it (B10: polls must not close the
+    /// update card or replay attention motion).
+    public func apply(state newState: ReleaseChecker.UpdateState, runningVersion: String) {
+        guard newState != updateState else { return }
+        updateState = newState
+        bellImageView?.image = NSImage(
+            systemSymbolName: hasUpdate ? "bell.badge.fill" : "bell",
+            accessibilityDescription: Self.accessibilityLabel(for: newState)
+        )
+        bellImageView?.contentTintColor = hasUpdate ? .systemYellow : NSColor.labelColor.withAlphaComponent(0.35)
+        setAccessibilityLabel(Self.accessibilityLabel(for: newState))
+        setAccessibilityHelp(Self.accessibilityHelp(for: newState, runningVersion: runningVersion))
+        if window != nil { startShakeIfNeeded() }
     }
 
     /// The shake (re)starts in viewDidMoveToWindow, NOT init: a layer added
@@ -505,8 +525,10 @@ public final class UpdateBellView: NSView {
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 card.animator().alphaValue = 0
             }, completionHandler: {
-                card.parent?.removeChildWindow(card)
-                card.orderOut(nil)
+                MainActor.assumeIsolated {
+                    card.parent?.removeChildWindow(card)
+                    card.orderOut(nil)
+                }
             })
         }
         // Card closed → the attention shake may resume (unless hovered).

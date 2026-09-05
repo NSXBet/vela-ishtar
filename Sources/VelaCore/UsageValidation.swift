@@ -131,16 +131,28 @@ public enum UsageValidation {
             scope: scope,
             receivedAt: receivedAt,
             gatewayDay: gatewayDay,
-            modelData: modelAvailability(of: response),
+            modelData: modelAvailability(of: response, scope: scope),
             schemaWarnings: warnings
         )
     }
 
     /// Which parts of the model breakdown the payload really carried.
-    public static func modelAvailability(of response: UsageResponse) -> UsageSnapshot.ModelDataAvailability {
+    public static func modelAvailability(of response: UsageResponse, scope: UsageScope? = nil) -> UsageSnapshot.ModelDataAvailability {
         switch (response.todayModelsPresent, response.todayPresent) {
         case (true, _):
-            return response.todayModels.isEmpty ? .empty : .available
+            guard !response.todayModels.isEmpty else { return .empty }
+            // Reconcile against the day total (B07): rows that sum past the
+            // authoritative total are INCONSISTENT — the UI renders
+            // total-only, never $150-of-$100. Requires a scope for the
+            // available case; without one (legacy callers) rows still pass
+            // through reconciliation with a placeholder-free day-total check.
+            guard let scope else { return .available }
+            switch breakdown(models: response.todayModels, dayTotal: response.dailyBudget.spentUSD, scope: scope) {
+            case .available: return .available
+            case .empty: return .empty
+            case .inconsistent(let reason): return .inconsistent(reason: reason)
+            case .unavailable(let reason): return .inconsistent(reason: reason)
+            }
         case (false, _):
             return .unavailable
         }

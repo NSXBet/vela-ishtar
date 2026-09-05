@@ -20,7 +20,7 @@ import Cocoa
 public final class DayStripView: NSView {
     /// 10pt cell + 9pt letter strip + 1pt hairline between them. Read by
     /// PopoverView for layout, so the strip's growth stays a one-file change.
-    public static let height: CGFloat = 20
+    public static let height: CGFloat = 22
 
     private let week: [DayStrip.Day]
 
@@ -48,7 +48,7 @@ public final class DayStripView: NSView {
 
     private static let cellSize: CGFloat = 10
     private static let cellRadius: CGFloat = 2
-    private static let letterHeight: CGFloat = 9
+    private static let letterHeight: CGFloat = 11
 
     /// The 5-step grey ramp, dark-first (the user lives in dark mode):
     /// level 0 is a hair above the popover background, level 4 nearly solid.
@@ -57,7 +57,7 @@ public final class DayStripView: NSView {
     /// steps together on a .popover material.
     private static let levels: [CGFloat] = [0.07, 0.20, 0.38, 0.58, 0.85]
 
-    private let letterFont = NSFont.systemFont(ofSize: 7, weight: .medium)
+    private let letterFont = NSFont.systemFont(ofSize: 9, weight: .medium)
     private let letterColor = NSColor.secondaryLabelColor.withAlphaComponent(0.6)
 
     public override func draw(_ dirtyRect: NSRect) {
