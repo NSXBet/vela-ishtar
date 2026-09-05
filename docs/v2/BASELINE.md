@@ -73,6 +73,7 @@ default runs still refresh README assets safely.
 | WP-03 | **accepted** (coordinator-reviewed, integrated, 10 coordinator-hardening fixes) | lifecycle worker (WP03Lifecycle) | `82d2664` | 03.1–03.4 | `CredentialController` (stable token_id→UUID scope mapping — wired in controller unit scope; live-path wiring = WP-06 gate below; CredentialStatus incl. validationInProgress/invalid), `PollCoordinator` (generation+request-ID ownership, one-shot backoff ladder 60/120/240/300, Retry-After unwrap + header parse, 30s bounded timeout race, receivedAt-at-receipt, UsageValidation seam → PollOutcome carries UsageSnapshot), Swift-6 deliver() isolation fix (B16 blocker #1 closed) | 443 tests / 39 suites on `v2.0` @ merge (incl. stop→restart ownership, Retry-After-120, stepped-clock receipt, commit-serialization, scope-mapping stability); strict build exit 0 | — | `PollCoordinator`/`CredentialController` instantiated NOWHERE in `Sources/App` — live path still `UsagePoller → PollStateMachine` with placeholder `pollScope`. Wiring is WP-06's FIRST deliverable (gate below) | WP-06, WP-10 |
 | WP-04 | **accepted** (coordinator-reviewed, integrated, burn-baseline hardening) | analytics worker (WP04Analytics) | `82d2664` | 04.1–04.4 | `Freshness` (90s ceiling, derive/invalidation), `ObservationCoverage` (§7.4 gates: 10min/6 readings/150s gap/30min correction-free, 14-calendar-day medians), timestamped `BurnBuffer` (identity-rebase on scope/day change) | 402→443 tests incl. cross-identity rebase regressions (higher-cumulative + equal-timestamp scope/day changes never fabricate burn) | — | DayStrip left as-is (already §7.4-honest); week hover wording deferred to WP-06/07 | WP-06, WP-09 |
 | WP-11 | **accepted** (coordinator-reviewed, integrated) | release worker (WP11Updates) | `82d2664` | 11.1–11.4 | `ReleaseChecker.UpdateState` (neverChecked/checking/current/available/skipped/failed + lastSuccess), `FetchResult`, `isCheckDue` (future-reference rollback guard), `VersionCheck.isTrustedReleaseURL` (HTTPS github.com path-pinned), `WhatsNew.cleanSummary` | +28 tests (offline/404/429/skipped never claim current; unrelated polls never dismiss); live unauthenticated release-metadata check: HTTP 200, PUBLIC — no hosting decision needed | — | PopoverView bell call-site rewire (state: instead of release:) is coordinator-owned, WP-07 wires | WP-07, WP-12 |
+| WP-06 | **accepted** (coordinator-reviewed, integrated, scope-wiring gate satisfied) | shell worker (WP06Shell) | `39c2a9c` | 06.1–06.5 | `AppCoordinator` (live wiring: CredentialController+PollCoordinator in main.swift), `SummaryPresenter` (single freshness derivation, DESIGN.md copy), `SummaryDisplayState` (moved to own file), `PerformanceSignposts`; `UsagePoller.swift` deleted (clean cutover) | 453 tests / 41 suites on `v2.0` @ `eebf126` (incl. scope-gate restart regression, presenter clock-determinism, render-invalidation idempotence); strict build exit 0, PopoverPanel:324 warning FIXED, 0 new warnings | signposts registered; full census attachment deferred to WP-12 | period-switch live rewire + full visual conversion = WP-07; PopoverView bell rewire = WP-07 | WP-07, WP-08, WP-09, WP-10 |
 
 ## Wave-2 integration state (2026-09-05)
 
@@ -83,33 +84,33 @@ UpdateBell/VersionBullet (WP-06 owns); PopoverView bell call-site rewire
 (WP-07); B02/B05/B06/B04/B09/B15/B12/B17 fixes now IN (surfacing through UI
 in wave 4). Wave 3 (WP-06) may dispatch from this revision.
 
-## Mandatory WP-06 acceptance gate (coordinator, wave-2 review)
+## WP-06 acceptance gate — SATISFIED (2026-09-05)
 
-**Scope wiring — the mapping is NOT live.** Verified by grep: `PollCoordinator`
-and `CredentialController` have ZERO instantiation sites in `Sources/App`;
-`main.swift` boots `UsagePoller → PollStateMachine` (placeholder `pollScope`)
-→ legacy `HistoryStore`. The persisted token_id→scope mapping is therefore
-unit-scoped only. WP-06's `AppCoordinator` rewiring MUST:
-1. Route `burnBuffer.record` and `HistoryRepository.append` from
-   `credentials.scope` (the persisted mapping) — never the placeholder.
-2. Include a regression test asserting the commit path uses the mapped
-   scope across a simulated restart (same token_id → same scope UUID).
-WP-06's diff will be checked against these two points before acceptance;
-without them the acceptance record for wave 3 is void.
+The scope-wiring gate was WP-06's first deliverable and is verified CLOSED:
+1. `AppCoordinator.handle(outcome:)` builds the Observation from
+   `snapshot.scope` (== `credentials.scope` by construction —
+   `PollCoordinator.accept` refuses to commit without it) and routes it to
+   BOTH `burnBuffer.record` and `repository.append`. The placeholder
+   `pollScope` has zero live call sites (legacy `PollStateMachine.ingest`
+   survives only for tests).
+2. Regression test `PresentationLifecycleTests.
+   commitPathUsesPersistedScopeAcrossRestart` proves the persisted
+   token_id→UUID mapping is stable across a simulated restart and that
+   session-2 appends land in session-1's history partition.
+Post-merge evidence on `v2.0` @ `eebf126`: **453 tests / 41 suites pass,
+EXIT=0**; strict build exit 0 with 10 pre-existing warnings, none in
+WP-06-touched files (PopoverPanel.swift:324 actor-isolation warning FIXED).
+SummaryPresenter derives freshness exactly once per state build and carries
+DESIGN.md copy ("Latest observation · HH:mm …"; stale Today renders the
+§5.3 explanatory row, not a blank).
 
 ## Integration blockers (for the coordinator)
 
-1. **Pre-existing Swift-6-mode error, `Sources/App/AIHubClient.swift:75`** —
-   `sending 'completion' risks causing data races` in `deliver()` under
-   Swift 6 language mode (strict-concurrency warnings in Swift 5 mode).
-   Fix requires touching `AIHubClient.swift`, which is OUTSIDE the WP-00
-   allowed file list (not `PopoverView.swift`/`main.swift`, but not in the
-   WP-00 list either), so the fix was DEFERRED, not applied. This is why
-   the pinned mode is `-swift-version 5` (with strict-concurrency
-   diagnostics available opt-in). WP-03 (credential lifecycle/polling)
-   should take this file and fix the isolation boundary.
-2. **Swift-5-mode strict-concurrency warnings** in `PopoverPanel.swift`,
-   `UpdateBellView.swift`, `VersionBulletView.swift` (main-actor-isolated
+1. **RESOLVED by WP-03**: the Swift-6-mode `deliver()` data-race error in
+   `AIHubClient.swift` was fixed during WP-03 (Sendable boxing at the
+   isolation boundary). `-swift-version 5` remains pinned for the app build.
+2. **Swift-5-mode strict-concurrency warnings** in `UpdateBellView.swift`,
+   `VersionBulletView.swift` (main-actor-isolated
    calls/properties from `@Sendable` closures — dispatch-based animation
    completion handlers). Warnings only; build exits 0. Fixes require
    touching those App files (outside WP-00 list) — deferred; natural
