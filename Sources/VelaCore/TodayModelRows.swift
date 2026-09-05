@@ -45,9 +45,39 @@ public enum TodayModelRows {
     /// used, kept for continuity of the displayed numbers.
     private static let displayEpsilon = 0.005
 
+    /// Reconciliation tolerance: a named sum within one cent of the day
+    /// total is rounding; beyond it the rows contradict the total (B07).
+    public static let reconciliationTolerance = 0.01
+
     /// 4 named rows + 1 pinned Other = 5 total, matching the gateway's cap
     /// and the app's existing 5-slot display block.
     public static let maxNamedRows = 4
+
+    /// Validated fold: runs the display fold only when the rows actually
+    /// reconcile against the day total. B07's $80+$70 vs $100 case (named
+    /// sum exceeds total by > $0.01) returns nil — the caller must show
+    /// total-only, never rows summing past the authoritative figure.
+    /// Negative/non-finite costs and duplicate names are also rejected.
+    /// Within tolerance, factual rows are kept as-is (no rescaling).
+    public static func validatedRows(
+        from models: [ModelUsage],
+        dayTotal: Double
+    ) -> [TodayModelRow]? {
+        guard let total = UsageValidation.money(dayTotal) else { return nil }
+
+        for model in models {
+            guard UsageValidation.money(model.totalCostUSD) != nil,
+                  UsageValidation.count(model.totalTokens) != nil else { return nil }
+        }
+        let names = models.map(\.model)
+        if Set(names).count != names.count { return nil }
+
+        let namedSum = models.reduce(0.0) { $0 + $1.totalCostUSD }
+        if namedSum > total + reconciliationTolerance { return nil }
+
+        return rows(from: models, dayTotal: total)
+    }
+
 
     public static func rows(from models: [ModelUsage], dayTotal: Double) -> [TodayModelRow] {
         // Nothing spent today: no rows, regardless of what `models` says.
@@ -68,7 +98,10 @@ public enum TodayModelRows {
         // multi-token gap between this token's named sum and the whole
         // user's day total. A non-positive or dust-sized remainder is never
         // shown — floating-point noise or a data anomaly must not render a
-        // negative or all-but-empty reconciliation row.
+        // negative or all-but-empty reconciliation row. This residual is the
+        // omitted-model/multi-token tail only; other-credential or
+        // unattributed spend is a different bucket and must not be labeled
+        // as a model here.
         guard other > displayEpsilon else { return named }
 
         return named + [TodayModelRow(name: "Other", costUSD: other, tokens: 0, isOther: true)]

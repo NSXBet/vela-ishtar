@@ -22,12 +22,19 @@ public enum ModelShare {
     /// too: anything past ~9.2e16 percent exceeds Int64.max, so the clamp to
     /// 0...100 happens on the Double BEFORE the Int conversion, not after.
     public static func percent(cost: Double, total: Double) -> Int {
-        guard total > 0 else { return 0 }
-        guard cost > 0 else { return 0 }
+        // 50/inf = a finite 0 ratio, NOT the infinity trap: an unbounded
+        // total with a real cost is a real (if tiny) share — presence stays
+        // visible (pinned by ModelShareTests.infiniteTotal). Only a
+        // non-finite COST or non-finite/huge ratio is unsafe.
+        guard total > 0 || total == .infinity else { return 0 }
+        guard cost > 0, cost.isFinite else { return 0 }
         let raw = (cost / total) * 100
         guard raw.isFinite else { return 0 }
+        // The 0...100 clamp happens on the Double BEFORE the Int
+        // conversion (B03), so no Int(inf)/Int(huge) trap ever happens.
         let clamped = min(100.0, max(0.0, raw))
-        let rounded = Int(clamped.rounded())
-        return max(1, rounded)
+        // Presence rule: a nonzero cost floors at 1 so a small-but-real
+        // share doesn't vanish; a zero cost is exactly 0.
+        return max(1, Int(clamped.rounded()))
     }
 }

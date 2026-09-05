@@ -99,3 +99,82 @@ struct TodayModelRowsTests {
         #expect(rows.contains { $0.isOther } == false)
     }
 }
+
+// MARK: - WP-01 validated fold (B07 and friends)
+
+struct TodayModelRowsValidationTests {
+    private func model(_ name: String, _ cost: Double, _ tokens: Int = 1_000_000) -> ModelUsage {
+        ModelUsage(model: name, totalCostUSD: cost, totalTokens: tokens, requests: 1)
+    }
+
+    @Test("B07: $80+$70 rows against a $100 day total are rejected, never rendered")
+    func rowsExceedingDayTotalRejected() {
+        let rows = TodayModelRows.validatedRows(
+            from: [model("a", 80), model("b", 70)],
+            dayTotal: 100
+        )
+        #expect(rows == nil)
+    }
+
+    @Test("rows within tolerance of the day total fold normally with a residual Other")
+    func rowsWithinToleranceFoldNormally() {
+        let rows = TodayModelRows.validatedRows(
+            from: [model("a", 30), model("b", 20)],
+            dayTotal: 100
+        )
+        #expect(rows?.count == 3)
+        #expect(rows?.last?.isOther == true)
+        #expect(rows?.last?.costUSD == 50)
+    }
+
+    @Test("duplicate model names are rejected by the validated fold")
+    func duplicatesRejected() {
+        let rows = TodayModelRows.validatedRows(
+            from: [model("same", 10), model("same", 20)],
+            dayTotal: 100
+        )
+        #expect(rows == nil)
+    }
+
+    @Test("negative or non-finite row costs are rejected")
+    func negativeCostsRejected() {
+        #expect(TodayModelRows.validatedRows(from: [model("a", -5)], dayTotal: 100) == nil)
+        #expect(TodayModelRows.validatedRows(from: [model("a", .nan)], dayTotal: 100) == nil)
+    }
+
+    @Test("a negative day total is rejected outright")
+    func negativeDayTotalRejected() {
+        #expect(TodayModelRows.validatedRows(from: [model("a", 5)], dayTotal: -10) == nil)
+    }
+
+    @Test("sub-cent residual after folding stays hidden (dust guard preserved)")
+    func subCentResidualHidden() {
+        // Named sum $99.999 vs $100 total → residual $0.001 < epsilon.
+        let rows = TodayModelRows.validatedRows(
+            from: [model("a", 99.999)],
+            dayTotal: 100
+        )
+        #expect(rows?.count == 1)
+        #expect(rows?.last?.isOther == false)
+    }
+
+    @Test("unknown model IDs pass through as factual rows")
+    func unknownModelIDsPassThrough() {
+        let rows = TodayModelRows.validatedRows(
+            from: [model("obscure/unknown-model-42", 5)],
+            dayTotal: 10
+        )
+        #expect(rows?.first?.name == "obscure/unknown-model-42")
+    }
+
+    @Test("more than maxNamedRows models still fold the tail into Other after validation")
+    func tailFoldPreserved() {
+        let rows = TodayModelRows.validatedRows(
+            from: (1...6).map { model("m\($0)", 10) },
+            dayTotal: 70
+        )
+        #expect(rows?.count == 5)
+        #expect(rows?.last?.name == "Other")
+        #expect(rows?.last?.costUSD == 30)
+    }
+}
