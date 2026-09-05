@@ -55,6 +55,10 @@ public final class FirstRunView: NSView {
         let tokenField = NSSecureTextField(frame: NSRect(x: 18, y: 156 - 56, width: 284, height: 26))
         tokenField.placeholderString = "gt_…"
         tokenField.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        // WP-10 10.2: the secure field announces its purpose and never
+        // echoes the typed/pasted secret.
+        tokenField.setAccessibilityLabel("AI Hub token")
+        tokenField.setAccessibilityHelp("Paste your AI Hub token. It is stored in your Keychain and never displayed.")
         addSubview(tokenField)
         field = tokenField
 
@@ -70,6 +74,7 @@ public final class FirstRunView: NSView {
         save.keyEquivalent = "\r"   // Return saves — the whole flow is two keystrokes.
         save.target = self
         save.action = #selector(saveTapped)
+        save.setAccessibilityLabel("Save token")
         addSubview(save)
 
         let cancel = FirstMouseButton(frame: NSRect(x: 94, y: 156 - 94, width: 68, height: 26))
@@ -105,6 +110,16 @@ public final class FirstRunView: NSView {
 
     public required init?(coder: NSCoder) {
         fatalError("FirstRunView does not support NSCoder-based initialization")
+    }
+
+    /// Test support (WP-10): expose the secure field so the accessibility
+    /// suite can verify the secret is never spoken. Not used by production
+    /// flows — they go through focusField()/clearSecretEntry().
+    var tokenFieldForTesting: NSSecureTextField? { field }
+
+    /// Test support: focus without a live keyboard flow.
+    func focusFieldForTesting() {
+        window?.makeFirstResponder(field)
     }
 
     /// Focus the token field — called by the panel right after show().

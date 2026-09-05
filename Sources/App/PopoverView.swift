@@ -417,9 +417,55 @@ public final class PopoverView: NSView {
         case .connectionDetail:
             return simpleInfoCard(title: "Connection", line: lastAppliedState?.freshnessText ?? "Waiting for the first reading")
         case .settings:
-            return simpleInfoCard(title: "Settings", line: "Full settings arrive with WP-10.")
+            let settings = SettingsView(
+                pillSize: StatusItemController.sharedPillSize,
+                login: Self.loginServiceState(),
+                credentialLine: SettingsView.credentialLine(for: credentialStatus),
+                exportAvailable: false,
+                version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?",
+                updateLine: Self.settingsUpdateLine(updateChecker?.state ?? .neverChecked)
+            )
+            settings.onSelectPillSize = { level in
+                StatusItemController.shared?.applyPillSize(level)
+            }
+            settings.onOpenHistory = {
+                NSWorkspace.shared.open(HistoryStore.defaultDirectory)
+            }
+            return settings
         case .updateInfo:
             return simpleInfoCard(title: "Updates", line: "Check for updates from the bell in the top-right corner.")
+        }
+    }
+
+
+    // MARK: - Settings inputs (WP-10 10.3)
+
+    /// The pill's current size level (0=automatic … 3=minimal), read live
+    /// from StatusItemController's persisted setting so the checkmark
+    /// matches what the pill actually is.
+    var currentPillSize: Int { StatusItemController.sharedPillSize }
+
+    /// The observed credential status, injected by main.swift at boot.
+    /// Read-only: SettingsView renders it; nothing here mutates
+    /// CredentialController.
+    var credentialStatus: CredentialStatus = .missing
+
+    /// ServiceManagement status → honest LoginServiceState. Errors are NOT
+    /// swallowed: a not-found service carries its explanation.
+    static func loginServiceState() -> LoginServiceState {
+        LoginServiceState.from(SMAppService.mainApp.status)
+    }
+
+    /// The update line Settings renders — explicit state wording, same
+    /// truths the bell's card shows (never "up to date" from unknown).
+    static func settingsUpdateLine(_ state: ReleaseChecker.UpdateState) -> String {
+        switch state {
+        case .available(let release): return "Update available: v\(release.tag)."
+        case .skipped(let release): return "Update v\(release.tag) available but skipped."
+        case .checkedCurrent: return "Up to date."
+        case .neverChecked: return "Updates not checked yet."
+        case .checking: return "Checking for updates…"
+        case .failed: return "Last update check failed."
         }
     }
 

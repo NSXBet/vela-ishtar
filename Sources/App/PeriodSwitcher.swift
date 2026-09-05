@@ -71,13 +71,15 @@ public final class PeriodSwitcher: NSView {
             // through the button's own action. Focus-band painting and full
             // tab order are WP-10's surface; the mechanics land here so a
             // keyboard route EXISTS now (B14 first slice).
+            // Focusable hit target: a focused tab responds to Space/Return
+            // through the button's own action. WP-10: the focus band paints
+            // on real keyboard focus (not hover), per DESIGN.md §3.
             button.refusesFirstResponder = false
             button.setAccessibilityElement(true)
             hitButtons.append(button)
             addSubview(button)
         }
         addSubview(indicator)
-
         // Accessibility: the group reads as a tab control, each tab a radio.
         setAccessibilityRole(.tabGroup)
         setAccessibilityLabel("Models period")
@@ -87,6 +89,27 @@ public final class PeriodSwitcher: NSView {
         }
         applySelectionColors()
     }
+
+
+    /// Tracks which hit button holds keyboard focus (WP-10 10.1). Observed
+    /// via the button's own focus ring state on draw.
+    private var focusedTabIndex: Int? {
+        hitButtons.firstIndex { $0.focusRingType != .none && $0.window?.firstResponder === $0 }
+    }
+
+    /// The focus band under a keyboard-focused tab (DESIGN.md §3: the same
+    /// band hover paints; keyboard answers never hover-only). Resolved per
+    /// draw — tokens are computed properties, never cached cgColors (10.4).
+    public override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let index = focusedTabIndex, index < hitButtons.count else { return }
+        let bandFrame = hitButtons[index].frame
+        let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        VelaDesign.Color.focusBand(contrast: contrast).setFill()
+        let bandPath = NSBezierPath(roundedRect: bandFrame, xRadius: 4, yRadius: 4)
+        bandPath.fill()
+    }
+
 
     /// Lay out labels left-to-right with a fixed gap, sized to fit their
     /// text, RIGHT-PACKED inside our bounds, and position the indicator under

@@ -126,6 +126,18 @@ public final class CurveView: NSView {
             }
         }
         needsDisplay = true
+        // WP-10 10.2: the chart is one accessibility element whose value is
+        // a text summary of the observed data — hover is never the only way
+        // to read it. The whole-day summary refreshes with the data; no
+        // announcement is posted (a silent poll stays silent).
+        setAccessibilityElement(true)
+        setAccessibilityRole(.image)
+        setAccessibilityLabel("Today's observations curve")
+        if let summary = AccessibilitySummary.curveSummary(hourly: hourly, nowHourUTC: nowHourUTC) {
+            setAccessibilityValue(summary)
+        } else {
+            setAccessibilityValue("No observations yet today.")
+        }
     }
 
     public override func draw(_ dirtyRect: NSRect) {

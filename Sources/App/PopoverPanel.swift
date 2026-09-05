@@ -127,6 +127,9 @@ public final class PopoverPanel: NSPanel {
     /// field itself. We forward to the responder chain exactly like the
     /// Edit menu would.
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // WP-10 10.1 local commands first: ⌘R refresh, ⌘⇧C copy spend,
+        // ⌘⇧H open history — every mouse action gets a keyboard route.
+        if let handled = handleLocalCommands(in: event) { return handled }
         // Compare only the modifier bits we MEAN: deviceIndependentFlagsMask
         // also includes Caps Lock and fn, so an exact-mask comparison would
         // silently reject ⌘V whenever the user has Caps Lock on.
@@ -153,6 +156,76 @@ public final class PopoverPanel: NSPanel {
         if NSApp.sendAction(action, to: nil, from: self) { return true }
         return super.performKeyEquivalent(with: event)
     }
+
+    /// Merges the three local WP-10 commands into the SAME override the
+    /// edit equivalents use (Swift forbids two overrides; both switch on
+    /// the same event, ours first).
+    private func handleLocalCommands(in event: NSEvent) -> Bool? {
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let chars = event.charactersIgnoringModifiers?.lowercased()
+        if mods == .command, chars == "r", let onRefresh {
+            onRefresh()
+            return true
+        }
+        if mods == [.command, .shift], chars == "c", let onCopySpend {
+            onCopySpend()
+            return true
+        }
+        if mods == [.command, .shift], chars == "h", let onOpenHistory {
+            onOpenHistory()
+            return true
+        }
+        return nil
+    }
+
+    // MARK: - Keyboard surface (WP-10 10.1)
+
+    /// Local app commands, handled at the window level beside the edit
+    /// equivalents (NO global monitor — this panel only receives keys while
+    /// it is key, i.e. keyboard-open/token flows).
+    public var onRefresh: (() -> Void)?
+    public var onCopySpend: (() -> Void)?
+    public var onOpenHistory: (() -> Void)?
+
+    /// Escape closes the panel: keyDown catches the raw key, cancelOperation
+    /// catches the responder-chain path. Both land in dismiss(), which
+    /// already removes the click monitors, closes child windows, and hands
+    /// activation back after keyboard-owning shows.
+    public override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {   // kVK_Escape
+            dismiss()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    public override func cancelOperation(_ sender: Any?) {
+        dismiss()
+    }
+    /// The content view that held first-responder status when the panel
+    /// last dismissed, restored on the next keyboard-owning show (focus
+    /// survives the close/reopen round trip).
+    private weak var savedFirstResponder: NSView?
+
+    /// Saves the current first responder (if it is a view in our content
+    /// tree) so the next show can restore keyboard focus to it.
+    private func saveFocus() {
+        if let responder = firstResponder as? NSView, let content = contentView, responder.isDescendant(of: content) {
+            savedFirstResponder = responder
+        } else {
+            savedFirstResponder = nil
+        }
+    }
+
+    /// Restores focus saved by saveFocus(). Returns true when a responder
+    /// was restored.
+    @discardableResult
+    private func restoreFocus() -> Bool {
+        guard let target = savedFirstResponder, target.window === self else { return false }
+        makeFirstResponder(target)
+        return true
+    }
+
 
     // MARK: - Show
 
@@ -208,9 +281,6 @@ public final class PopoverPanel: NSPanel {
 
     /// Shows the panel as a KEYBOARD-OWNING window: activates the app and
     /// makes the panel key, so a text field inside gets typed input AND
-    /// key equivalents. Used only by the token-entry flow -- a menu bar
-    /// app must never steal activation just to show numbers, but asking
-    /// for a credential is exactly the moment the user expects to type.
     public func showForKeyboardInput(relativeTo button: NSStatusBarButton?) {
         // Activation must commit BEFORE the window orders front (see
         // activateThen) or the first click on a button is eaten by
@@ -218,6 +288,13 @@ public final class PopoverPanel: NSPanel {
         activateThen {
             self.show(relativeTo: button)
             self.makeKey()
+            // Focus restoration (WP-10 10.1): a reopened panel returns
+            // keyboard focus to the control that had it before dismissal.
+            // When nothing was saved (fresh open) this is a no-op and the
+            // content view's own initial responder (the token field) wins.
+            if !self.restoreFocus(), let target = self.initialFirstResponder {
+                self.makeFirstResponder(target)
+            }
         }
     }
 
@@ -336,6 +413,9 @@ public final class PopoverPanel: NSPanel {
         // activation back. A normal popover that never became key must
         // not deactivate an app it never activated.
         let wasKey = isKeyWindow
+        // WP-10 10.1: stash the focused view so the next keyboard-owning
+        // show can restore focus to the same control.
+        saveFocus()
         removeClickMonitors()
         // Child windows (the update bell's card, the version bullet's tip)
         // live ABOVE us at statusBar+1 — ordering out without closing them
