@@ -36,6 +36,15 @@ public struct GatewayDay: Equatable, Sendable {
         String(key.prefix(7))
     }
 
+    /// The UTC midnight instant that starts this calendar day. This is the
+    /// only honest anchor a legacy hour-precision sample has: history
+    /// migration stamps `.legacyHour` observations at slot start rather than
+    /// fabricating an exact receipt time (B15). Nil only if the key were not
+    /// a real calendar day — impossible for a constructed GatewayDay.
+    public var startOfDayUTC: Date? {
+        Self.midnightUTC(for: key)
+    }
+
     // MARK: - internals
 
     private static func isWellFormed(_ key: String) -> Bool {
