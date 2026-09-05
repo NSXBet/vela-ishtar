@@ -420,10 +420,57 @@ private func renderAll(to directory: URL) async throws {
     }
 
     // -- 05.3 state fixtures: every §5.3 state, light + dark. ---------------
+    // TWO passes per state: (a) static SummaryFixtureView (design reference,
+    // kept), (b) LIVE PopoverView through SummaryPresenter + apply — the
+    // converted UI must render every state honestly (WP-07 acceptance).
     let states = ["loading", "cache", "stale", "auth", "error",
                   "unlimited", "missing-data", "no-spend", "invalid-response"]
+    let repository = HistoryRepository(directory: FileManager.default.temporaryDirectory
+        .appendingPathComponent("vela-fixture-repo-states"))
+    let presenter = await SummaryPresenter()
+    // Connection per state: loading→connecting, cache/stale→stale,
+    // auth→authenticationRequired, error/invalid→invalidResponse, rest→live.
+    let connections: [String: ConnectionState] = [
+        "loading": .connecting, "cache": .stale, "stale": .stale,
+        "auth": .authenticationRequired, "error": .invalidResponse,
+        "invalid-response": .invalidResponse,
+        "unlimited": .live, "missing-data": .live, "no-spend": .live,
+    ]
+    func liveResponse(state: String) -> UsageResponse {
+        var response = comparisonResponse(now: now)
+        switch state {
+        case "unlimited":
+            response = UsageResponse(
+                tokenId: response.tokenId,
+                dailyBudget: DailyBudget(limitUSD: 0, spentUSD: 12.88, remainingUSD: 0,
+                                         usedPercent: 0, limitEnabled: false,
+                                         spendDate: dayKey(now), modelBudgets: []),
+                currentMonth: response.currentMonth, topModels: response.topModels,
+                today: response.today, todayModels: response.todayModels,
+                todayPresent: true, todayModelsPresent: true)
+        case "no-spend":
+            response = UsageResponse(
+                tokenId: response.tokenId,
+                dailyBudget: DailyBudget(limitUSD: 400, spentUSD: 0, remainingUSD: 400,
+                                         usedPercent: 0, limitEnabled: true,
+                                         spendDate: dayKey(now), modelBudgets: []),
+                currentMonth: response.currentMonth, topModels: response.topModels,
+                today: MonthStats(totalCostUSD: 0, totalTokens: 0, requests: 0),
+                todayModels: [], todayPresent: true, todayModelsPresent: true)
+        case "missing-data":
+            response = UsageResponse(
+                tokenId: response.tokenId,
+                dailyBudget: response.dailyBudget,
+                currentMonth: response.currentMonth, topModels: response.topModels,
+                today: response.today, todayModels: [],
+                todayPresent: true, todayModelsPresent: false)
+        default: break
+        }
+        return response
+    }
     for (appearanceName, appearance) in appearances {
         for state in states {
+            // (a) static design reference (kept)
             let (budget, breakdown) = stateFixture(state)
             let view = SummaryFixtureView(width: VelaDesign.Layout.summaryWidth,
                                           budget: budget, breakdown: breakdown,
@@ -433,6 +480,31 @@ private func renderAll(to directory: URL) async throws {
             let url = directory.appendingPathComponent("state-\(state)-\(appearanceName).png")
             try renderPNG(view, appearance: appearance).write(to: url)
             print("wrote \(url.path) (\(Int(view.bounds.width))×\(Int(view.bounds.height))pt)")
+
+            // (b) LIVE converted PopoverView through the real presenter.
+            let connection = connections[state] ?? .live
+            let wire = liveResponse(state: state)
+            // Receipt per state: fresh states get now, stale/cache get an
+            // aged receipt so the presenter derives the honest verdict.
+            let receipt: Date
+            switch state {
+            case "cache": receipt = now.addingTimeInterval(-3_400)
+            case "stale": receipt = now.addingTimeInterval(-1_920)
+            default: receipt = now
+            }
+            let snapshot = UsageValidation.snapshot(
+                from: wire, scope: fixtureScope(), receivedAt: receipt)
+            let context = SummaryPresenter.Context(
+                snapshot: connection == .connecting ? nil : snapshot,
+                connection: connection, repository: repository)
+            let liveState = await presenter.displayState(
+                from: context, selectedPeriod: "today", now: now)
+            let liveView = PopoverView()
+            liveView.apply(displayState: liveState, connection: connection,
+                           response: wire, receivedAt: receipt)
+            let liveURL = directory.appendingPathComponent("live-state-\(state)-\(appearanceName).png")
+            try renderPNG(liveView, appearance: appearance).write(to: liveURL)
+            print("wrote \(liveURL.path) (LIVE)")
         }
 
         // -- §5.4 accessibility variants on the live fixture. ---------------
