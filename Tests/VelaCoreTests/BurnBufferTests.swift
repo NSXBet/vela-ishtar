@@ -217,4 +217,55 @@ struct BurnBufferTests {
         buffer.record(spentToday: 20, at: t0.addingTimeInterval(60), scope: scope, gatewayDay: day, limitEnabled: false, limitUSD: 0)
         #expect(buffer.slots.map(\.burn) == [10.0])
     }
+
+    @Test("a gateway-day change with a higher cumulative establishes a new baseline, never a cross-day burn interval")
+    func dayChangeRebaselines() {
+        var buffer = BurnBuffer()
+        let nextDay = GatewayDay(spendDate: "2026-08-02")!
+        let t0 = ISODate.parse("2026-08-01T23:50:00Z")!
+        var current = BurnBuffer()
+        current.record(spentToday: 120, at: t0, scope: scope, gatewayDay: day)
+        current.record(spentToday: 160, at: t0.addingTimeInterval(600), scope: scope, gatewayDay: day)
+        #expect(current.slots.map(\.burn) == [40.0])
+        // New gateway day: cumulative restarts low on the wire, but even a
+        // HIGHER value must not emit a burn interval across the boundary.
+        current.record(spentToday: 500, at: t0.addingTimeInterval(1200), scope: scope, gatewayDay: nextDay)
+        #expect(current.slots.isEmpty)
+        // The new day baselines from here: subsequent growth burns normally.
+        current.record(spentToday: 530, at: t0.addingTimeInterval(1260), scope: scope, gatewayDay: nextDay)
+        #expect(current.slots.map(\.burn) == [30.0])
+    }
+
+    @Test("a scope change with a higher cumulative establishes a new baseline, never a cross-scope interval")
+    func scopeChangeRebaselines() {
+        var buffer = BurnBuffer()
+        let otherScope = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://test")
+        let t0 = ISODate.parse("2026-08-01T12:00:00Z")!
+        buffer.record(spentToday: 100, at: t0, scope: scope, gatewayDay: day)
+        buffer.record(spentToday: 110, at: t0.addingTimeInterval(600), scope: scope, gatewayDay: day)
+        #expect(buffer.slots.map(\.burn) == [10.0])
+        // Token B replaces A: B's higher cumulative must not read as burn.
+        buffer.record(spentToday: 200, at: t0.addingTimeInterval(1200), scope: otherScope, gatewayDay: day)
+        #expect(buffer.slots.isEmpty)
+        // B's own growth records normally from its new baseline.
+        buffer.record(spentToday: 215, at: t0.addingTimeInterval(1260), scope: otherScope, gatewayDay: day)
+        #expect(buffer.slots.map(\.burn) == [15.0])
+    }
+
+    @Test("an equal-timestamp reading from a NEW scope still re-baselines (identity check precedes receipt-order check)")
+    func equalTimestampIdentityChangeRebaselines() {
+        var buffer = BurnBuffer()
+        let otherScope = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://test")
+        let t0 = ISODate.parse("2026-08-01T12:00:00Z")!
+        buffer.record(spentToday: 100, at: t0, scope: scope, gatewayDay: day)
+        buffer.record(spentToday: 110, at: t0.addingTimeInterval(60), scope: scope, gatewayDay: day)
+        #expect(buffer.slots.map(\.burn) == [10.0])
+        // Token B's first reading arrives with the SAME timestamp as A's
+        // last: old slots must NOT survive the identity change.
+        buffer.record(spentToday: 25, at: t0.addingTimeInterval(60), scope: otherScope, gatewayDay: day)
+        #expect(buffer.slots.isEmpty)
+        // B's own growth records normally from the re-baselined buffer.
+        buffer.record(spentToday: 30, at: t0.addingTimeInterval(120), scope: otherScope, gatewayDay: day)
+        #expect(buffer.slots.map(\.burn) == [5.0])
+    }
 }
