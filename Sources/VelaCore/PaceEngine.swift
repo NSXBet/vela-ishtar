@@ -19,6 +19,12 @@ public enum PaceVerdict: Equatable, Sendable {
     case pace(eta: Date)
     /// The account has no daily limit configured.
     case cruisingNoLimit
+    /// §7.4: the evidence does not support a projection — insufficient
+    /// recent coverage, a correction, a day/scope mismatch, idle data, or
+    /// a projection that would land past the billing reset. `remaining`
+    /// is the FACTUAL room under the limit when the limit is enabled (nil
+    /// when no limit) — shown instead of any invented ETA (B04).
+    case insufficientEvidence(remaining: Double?, observedBurn: Double)
 }
 
 public enum PaceEngine {
@@ -138,6 +144,71 @@ public enum PaceEngine {
             } else {
                 return "On pace to stay under budget today."
             }
+        case .insufficientEvidence(let remaining, let observedBurn):
+            // §7.4 / B04: no fabricated ETA and NEVER a false "safe pace"
+            // fallback — say what the evidence cannot support, then show
+            // the factual remaining room when a limit is enabled.
+            if let remaining {
+                return String(format: "Projected burn: $%.0f — $%.0f left today.", observedBurn, remaining)
+            }
+            return String(format: "Projected burn: $%.0f today.", observedBurn)
+        }
+    }
+
+    // MARK: - §7.4 confidence-aware forecast (WP-04, 04.3)
+
+    /// The recent-pace projection, gated by §7.4. The eligible verdict and
+    /// rate come from ObservationCoverage (same scope/day, fresh, ≥10min
+    /// continuous coverage AND ≥6 readings, no gap >150s, no correction in
+    /// the 30-minute window); the rate is computed over the ACTUAL elapsed
+    /// interval and the sentence explicitly qualifies it "At the recent
+    /// pace". Suppressed — as named `insufficientEvidence` with factual
+    /// remaining room, never a fake midnight ETA (B04) — when: the window
+    /// doesn't qualify; the estimate would exceed the billing reset; the
+    /// account is idle; or there is no limit.
+    ///
+    /// `recent` = HistoryRepository.recentReadings for the displayed scope.
+    public static func forecast(
+        recent: [Observation],
+        scope: UsageScope,
+        day: GatewayDay,
+        spent: Double,
+        limit: Double,
+        limitEnabled: Bool,
+        now: Date
+    ) -> PaceVerdict {
+        guard limitEnabled else { return .cruisingNoLimit }
+        guard spent < limit else {
+            return .exhausted(reachedAt: now)
+        }
+
+        switch ObservationCoverage.paceVerdict(recent: recent, scope: scope, day: day, now: now) {
+        case .insufficientEvidence(let reason):
+            // Idle is its own truthful verdict; everything else reports
+            // factual remaining room instead of a projection.
+            if case .idle = reason {
+                return .idle
+            }
+            return .insufficientEvidence(
+                remaining: limit - spent,
+                observedBurn: recent.isEmpty ? 0 : recent.last!.cumulativeAmount
+            )
+        case .qualified:
+            guard let rate = ObservationCoverage.observedRate(recent: recent, now: now),
+                  rate > 0 else {
+                return .insufficientEvidence(remaining: limit - spent, observedBurn: 0)
+            }
+            let secondsToLimit = (limit - spent) / rate
+            let eta = now.addingTimeInterval(secondsToLimit)
+            // Suppressed when the estimate would exceed the billing reset:
+            // show factual remaining room, not a guarantee of safety (§7.4).
+            guard eta < nextMidnightUTC(after: now) else {
+                return .insufficientEvidence(
+                    remaining: limit - spent,
+                    observedBurn: recent.last!.cumulativeAmount
+                )
+            }
+            return .pace(eta: eta)
         }
     }
 

@@ -131,7 +131,15 @@ public struct PollStateMachine: Sendable {
             consecutiveFailures = 0
             lastGood = usage
             lastSuccessAt = date
-            burnBuffer.record(spentToday: usage.dailyBudget.spentUSD, at: date)
+            burnBuffer.record(
+                spentToday: usage.dailyBudget.spentUSD,
+                at: date,
+                scope: UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: ""),
+                gatewayDay: (GatewayDay(spendDate: usage.dailyBudget.spendDate)
+                    ?? GatewayDay(spendDate: ISODate.dayKey(usage.dailyBudget.spendDate))
+                    ?? GatewayDay(spendDate: "1970-01-01")!),
+                limitUSD: usage.dailyBudget.limitUSD
+            )
             history.record(spentToday: usage.dailyBudget.spentUSD, limit: usage.dailyBudget.limitUSD, limitEnabled: usage.dailyBudget.limitEnabled, at: date, spendDate: usage.dailyBudget.spendDate)
             // exhaustedAt must come from the GATEWAY's day, not the local
             // clock's -- the two disagree around the UTC-midnight seam (the
