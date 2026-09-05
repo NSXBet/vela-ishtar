@@ -67,6 +67,16 @@ default runs still refresh README assets safely.
 | Package | State | Owner | Accepted base | Task IDs complete | Produced contracts | Test evidence | Metric evidence | Known risks | Next dependency |
 |---|---|---|---|---|---|---|---|---|---|
 | WP-00 | **accepted** (coordinator-reviewed, integrated) | platform worker (WP00Worker) | `6a765c2` | 00.1 (partial — launch/idle measurements blocked), 00.2, 00.3, 00.4 | `UsageScope`, `UsageSnapshot`, `ModelBreakdownState`, `Observation`, `HistoryEnvelope`, `ConnectionState`, `Freshness`, `BudgetOverview`, `SummaryDisplayState`, `MarkerReceipt`, `UsageTransport`, `RefreshReason` | 255/18 suites pass on `v2.0` @ `77234a1`; strict build exit 0 (2 pre-existing warnings, see blockers) | core-path timings recorded; app-level measurements blocked | see integration blockers | WP-01, WP-02, WP-05 may start from this revision |
+| WP-01 | **accepted** (coordinator-reviewed, integrated) | domain worker (WP01Validation) | `71d7229` | 01.1–01.4 | `ValidatedBudget`, `UsageValidation`, `MoneyFormat`; `UsageResponse` wire-presence flags (`todayPresent`/`todayModelsPresent`) | 293 tests @ WP-01 merge `1ae1ac9` (38 new incl. all §9 regression cases); strict build exit 0 | — | B03/B07/B08/B11 UI surfaces in PopoverView/StatusItemController/CurveView not yet wired (WP-07 owns) | WP-03, WP-04, WP-07, WP-08 |
+| WP-02 | **accepted** (coordinator-reviewed, integrated, coordinator-hardened) | storage worker (WP02History) | `71d7229` | 02.1–02.4 | `Observation`, `HistoryEnvelope` (+normalized schema-2 DTO), `HistoryMigration`, `HistoryRepository` actor, `HistoryRetention` | 328 tests @ `6cb2c16` (incl. §12.1 ascending-seam regression, backup-failure abort, cross-process pinned IDs, quarantine dedup, quarantine-only completion); strict build exit 0 | — | Repository not yet wired into app (WP-06); marker-boundary pinning noted for WP-09 | WP-03, WP-04, WP-06, WP-09 |
+| WP-05 | **accepted** (coordinator-reviewed, integrated) | design worker (WP05Design) | `71d7229` | 05.1–05.3 | `Sources/App/DesignTokens.swift` (frozen tokens), `docs/v2/DESIGN.md` (state/copy matrix), `Tools/design_fixture_main.swift` (28 fixtures) | fixture tool builds + runs headless (exit 0, writes only `build/v2-design/`); default snapshot behavior byte-identical; suite untouched | measured: hero 151pt worst-case, money 78pt column, row stride 32pt, control min 24pt, status slot 34pt | cgColor-on-dynamic-color caching pattern documented for WP-06 | WP-06, WP-07 |
+
+## Wave-1 integration state (2026-09-05)
+
+`v2.0` HEAD after wave-1 integration: **328 tests in 25 suites pass**, strict
+§12.3 app build exits 0 (2 pre-existing strict-concurrency warnings, see
+blockers — owners WP-03/WP-06). Wave 2 (WP-03, WP-04, WP-11) may dispatch
+from this revision.
 
 ## Integration blockers (for the coordinator)
 
