@@ -6,7 +6,13 @@
 // NSStatusItem popover, even though we're not using NSPopover itself
 // (NSPopover forces activation on show, which steals focus from
 // whatever app the user was in; a raw NSPanel does not).
-// RELEVANT FILES: Sources/App/StatusItemController.swift, Sources/App/PopoverView.swift, Sources/App/main.swift
+// RELEVANT FILES: Sources/App/StatusItemController.swift, Sources/App/PopoverView.swift, Sources/App/main.swift, Sources/App/PerformanceSignposts.swift
+//
+// Window lifecycle hardening (WP-06 06.4): on a hosting-screen change the
+// panel re-clamps into the new screen's visible frame; on dismissal all
+// animations are invalidated via the dismissGeneration guard and the
+// outside-click monitors are removed (removeClickMonitors in dismiss()).
+// Counters feed WP-12's window/monitor budget checks (PerformanceSignposts).
 
 import Cocoa
 import QuartzCore
@@ -164,35 +170,36 @@ public final class PopoverPanel: NSPanel {
         dismissGeneration += 1   // invalidate any in-flight fade-out
         anchorButton = button
         let targetFrame = anchoredFrame(relativeTo: button)
-
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            // Reduce Motion: no scale/fade, just appear in place.
+            // Reduce Motion: no animation, just appear in place.
             setFrame(targetFrame, display: false)
             alphaValue = 1
             orderFrontRegardless()
         } else {
-            // Start 4pt above the target (so the panel "settles" downward)
-            // and at 96% scale, anchored at the same top-center point.
-            let anchor = CGPoint(x: targetFrame.midX, y: targetFrame.maxY + 4)
-            let startSize = NSSize(width: targetFrame.width * 0.96, height: targetFrame.height * 0.96)
-            let startFrame = NSRect(
-                x: anchor.x - startSize.width / 2,
-                y: anchor.y - startSize.height,
-                width: startSize.width,
-                height: startSize.height
-            )
-
+            // Settle = opacity fade + a 4pt translate on the CONTENT layer,
+            // not a window-frame resize. Animating the frame scaled the
+            // window 0.96x→1.0x, which rescaled every baked bitmap and
+            // re-ran layout mid-flight (window-frame scaling, B16-adjacent);
+            // a layer transform moves the same pixels for free.
             alphaValue = 0
-            setFrame(startFrame, display: false)
+            setFrame(targetFrame, display: false)
             orderFrontRegardless()
-
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                self.animator().alphaValue = 1
-                // NSWindow's animator proxy supports setFrame(_:display:)
-                // directly -- this is what makes the "settle" part work.
-                self.animator().setFrame(targetFrame, display: true)
+            if let contentLayer = contentView?.layer {
+                let down = CATransform3DMakeTranslation(0, 4, 0)
+                contentLayer.transform = down
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.15
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    self.animator().alphaValue = 1
+                }
+                DispatchQueue.main.async {
+                    CATransaction.begin()
+                    CATransaction.setAnimationDuration(0.15)
+                    contentLayer.transform = CATransform3DIdentity
+                    CATransaction.commit()
+                }
+            } else {
+                alphaValue = 1
             }
         }
 
@@ -237,6 +244,35 @@ public final class PopoverPanel: NSPanel {
         // without it the first click on Cancel is eaten by window activation.
         activateThen { self.makeKeyAndOrderFront(nil) }
         installClickMonitors()
+    }
+
+    // Hosting-screen changes (display sleep, mirroring toggle, monitor
+    // unplug): a visible panel re-clamps into whatever screen it ended up
+    // on instead of sitting half off-screen until closed.
+    private var screenChangeObserver: Any?
+
+    private func installScreenChangeObserver() {
+        guard screenChangeObserver == nil else { return }
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.isVisible else { return }
+                let screen = self.screen ?? NSScreen.main
+                if let visible = screen?.visibleFrame {
+                    let clamped = self.clamp(self.frame, to: screen)
+                    _ = visible
+                    self.setFrame(clamped, display: true)
+                }
+            }
+        }
+    }
+
+    private func removeScreenChangeObserver() {
+        if let observer = screenChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            screenChangeObserver = nil
+        }
     }
 
     /// Anchor frame is computed fresh on every show() from
@@ -317,14 +353,17 @@ public final class PopoverPanel: NSPanel {
             // during the fade (rapid pill double-click).
             dismissGeneration += 1
             let gen = dismissGeneration
+            let panel = self
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.08
-                self.animator().alphaValue = 0
-            }, completionHandler: { [weak self] in
-                guard let self, self.dismissGeneration == gen else { return }
-                self.orderOut(nil)
-                // Restore alpha for the next show() — orderOut preserves it.
-                self.alphaValue = 1
+                panel.animator().alphaValue = 0
+            }, completionHandler: { [weak panel] in
+                MainActor.assumeIsolated {
+                    guard let panel, panel.dismissGeneration == gen else { return }
+                    panel.orderOut(nil)
+                    // Restore alpha for the next show() — orderOut preserves it.
+                    panel.alphaValue = 1
+                }
             })
         } else {
             orderOut(nil)
@@ -348,6 +387,7 @@ public final class PopoverPanel: NSPanel {
     /// monitor. Either one firing on a genuine "outside" click dismisses.
     private func installClickMonitors() {
         removeClickMonitors()
+        installScreenChangeObserver()
 
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.dismiss()
@@ -375,6 +415,7 @@ public final class PopoverPanel: NSPanel {
     }
 
     private func removeClickMonitors() {
+        removeScreenChangeObserver()
         if let monitor = globalClickMonitor {
             NSEvent.removeMonitor(monitor)
             globalClickMonitor = nil
