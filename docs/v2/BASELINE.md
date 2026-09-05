@@ -76,13 +76,25 @@ default runs still refresh README assets safely.
 | WP-06 | **accepted** (coordinator-reviewed, integrated, scope-wiring gate satisfied) | shell worker (WP06Shell) | `39c2a9c` | 06.1–06.5 | `AppCoordinator` (live wiring: CredentialController+PollCoordinator in main.swift), `SummaryPresenter` (single freshness derivation, DESIGN.md copy), `SummaryDisplayState` (moved to own file), `PerformanceSignposts`; `UsagePoller.swift` deleted (clean cutover) | 453 tests / 41 suites on `v2.0` @ `eebf126` (incl. scope-gate restart regression, presenter clock-determinism, render-invalidation idempotence); strict build exit 0, PopoverPanel:324 warning FIXED, 0 new warnings | signposts registered; full census attachment deferred to WP-12 | period-switch live rewire + full visual conversion = WP-07; PopoverView bell rewire = WP-07 | WP-07, WP-08, WP-09, WP-10 |
 | WP-07 | **accepted** (coordinator-reviewed, integrated, visual fixture gate passed) | UI worker (WP07SummaryUI) | `469027a` | 07.1–07.4 | Persistent `PopoverView` composition root (sections-once, stable-ID rows), `SummaryHeaderView`/`ModelsSectionView`/`ConnectionStatusView`/`SecondaryPanelCoordinator`, segmented `CurveView` (no invented zero, `limitEnabled:` param), bell rewire to `UpdateBellView(state:)` — bell/version strict-concurrency warnings GONE | 507 tests / 46 suites on `v2.0` @ `6615586` (incl. B07 root fix in `UsageValidation.modelAvailability`, period-switch no-poll, row-ID stability, auth/invalid row-routing); strict build exit 0 | **Visual gate**: harness extended to render the LIVE converted `PopoverView` via `SummaryPresenter.apply` — 18 `live-state-*.png` (9 §5.3 states × light/dark); auth/invalid states verified to REPLACE model rows with DESIGN.md explanatory rows; explanatory rows render full-width in the reserved stride | period-switch rewire complete; coordinator may consolidate `PopoverView.modelBudgetInputs` → `ModelBudgetSignal.input(from:)` | WP-09, WP-10, WP-12 |
 | WP-08 | **accepted** (coordinator-reviewed, integrated) | budget worker (WP08Budget) | `a9ba9f3` | 08.1–08.3 | `BudgetOverview` fleshed out + moved to own file (`GlobalPolicyState`/`ModelSignalState`, `derive`, headroom `max(0, min(global, model))`, relaxed/blocked/invalid states), `BudgetDetailView` (all caps, scroll-bounded), `ModelBudgetSignal.input(from:)` shared conversion | 480 tests / 43 suites at WP-08 merge `469027a` (27 new: all §9 fixtures — global/model bounds, cooldown relaxed, zero-cap blocked, removed cap, failed refresh, no caps) | — | F01 detail surface hosted through WP-07's `SecondaryPanelCoordinator`; live UI integration verified in wave-4 renders | WP-09, WP-10 |
+| WP-10 | **accepted** (coordinator diff-review + suite evidence) | a11y worker (WP10A11y) | `ddf2db0` | 10.1–10.4 | `AccessibilitySummary` (all spoken copy pure, test-pinned), `SettingsView` (SMAppService 4-state mapping + System Settings route, credential recovery lines, data controls), Escape/⌘R/⌘⇧C/⌘⇧H local panel commands (no global monitor), focus save/restore, chart+week single-element summaries, pill stale/unlimited/blocked copy, FirstRun secret-safe a11y, bell/bullet accessibilityPerformPress (B14 closed) | 530 tests / 48 suites on `v2.0` (23 new); strict build exit 0, zero new warnings | — | coordinator visual VoiceOver pass deferred to WP-12 | WP-12 |
 
 ## Wave-4 integration state (2026-09-05)
 
 `v2.0` HEAD after wave-4: **507 tests in 46 suites pass, EXIT=0**
 (`/tmp/v2-final4.log`), strict build exit 0. Visual gate closed: the design
 harness renders the live converted UI (not mocks) across all §5.3 states.
-Wave 5 (WP-09, WP-10) may dispatch from this revision.
+Wave 5 (WP-09, WP-10) dispatched from this revision.
+
+## Wave-5 state (2026-09-05)
+
+WP-10 **accepted** (diff review: AX press actions route through the same
+paths as mouse — real presses, not cosmetic roles; SettingsView maps all
+four SMAppService states incl. requires-approval/unavailable with a working
+System Settings route, no inert checkmark; chart/week are single AX elements
+with text summaries — no hover-only answers, no color-only state; pill copy
+test-pinned). Post-merge suite on `v2.0`: **530 tests / 48 suites, EXIT=0**.
+WP-09 in flight (marker engine + history explorer + export); shell wiring
+proposals route through coordinator.
 
 ## Wave-2 integration state (2026-09-05)
 
