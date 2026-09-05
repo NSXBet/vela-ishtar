@@ -83,7 +83,7 @@ final class SteppedClock: PollClock, @unchecked Sendable {
 /// Transport with a manual completion gate for hang/late-callback tests.
 final class GatedTransport: UsageTransport, @unchecked Sendable {
     private let lock = NSLock()
-    private var pending: [(UsageResponse) -> Void] = []
+    private var waiters: [UUID: (Result<UsageResponse, any Error>) -> Void] = [:]
     private(set) var requestCount = 0
     private(set) var requestedTokens: [String] = []
     private var nextResult: Result<UsageResponse, any Error>?
@@ -119,35 +119,35 @@ final class GatedTransport: UsageTransport, @unchecked Sendable {
         if let scripted, !holdGate {
             return try scripted.get()
         }
-        if let scripted, holdGate {
-            // Deliver the scripted result only on release.
-            return try await withCheckedThrowingContinuation { continuation in
+        // Gated path (holdGate, or no script — the "hanging transport"):
+        // suspend until a test releases the gate. Cancellation-aware: the
+        // waiter is registered under THIS task's ObjectIdentifier, so
+        // cancelling one fetch releases ONLY its own waiter (with
+        // CancellationError) — never another fetch's.
+        let taskID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
                 lock.lock()
                 defer { lock.unlock() }
-                pending.append { _ in
-                    continuation.resume(returning: (try! scripted.get()))
+                // A script may have arrived between check and registration.
+                if let result = nextResult, !holdGate {
+                    continuation.resume(with: result)
+                    return
                 }
+                waiters[taskID] = { continuation.resume(with: $0) }
             }
-        }
-        // Suspend until a test releases it — the "hanging transport".
-        return try await withCheckedThrowingContinuation { continuation in
+        } onCancel: {
             lock.lock()
-            defer { lock.unlock() }
-            // Re-check under the lock: a script may have arrived meanwhile.
-            if let result = nextResult {
-                continuation.resume(returning: try! result.get())
-                return
-            }
-            pending.append { response in
-                continuation.resume(returning: response)
-            }
+            let waiter = waiters.removeValue(forKey: taskID)
+            lock.unlock()
+            waiter?(.failure(CancellationError()))
         }
     }
 
     var pendingCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return pending.count
+        return waiters.count
     }
 
     /// Releases ALL pending fetches with the scripted result. When the
@@ -157,8 +157,8 @@ final class GatedTransport: UsageTransport, @unchecked Sendable {
     /// delivers directly.
     func releaseAll() {
         lock.lock()
-        let waiters = pending
-        pending = []
+        let waiters = self.waiters
+        self.waiters = [:]
         let result = nextResult
         lock.unlock()
         let response: UsageResponse
@@ -172,7 +172,7 @@ final class GatedTransport: UsageTransport, @unchecked Sendable {
                 topModels: []
             )
         }
-        for w in waiters { w(response) }
+        for w in waiters.values { w(.success(response)) }
     }
 }
 
