@@ -82,6 +82,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // An open popover is a live view: apply the new display state
             // in place (no section rebuild for unchanged sections).
             if let panel = self.popover, panel.isShown, let view = self.popoverView {
+                // The settings surface reads the LIVE credential status —
+                // the field defaults to .missing and must be fed on every
+                // update or Settings claims "No token saved yet" while
+                // readings flow.
+                view.credentialStatus = self.coordinator?.credentials.status ?? .missing
                 view.apply(displayState: update.displayState, connection: update.connection,
                            response: update.lastGoodResponse, receivedAt: update.lastGoodReceivedAt)
             }
