@@ -67,6 +67,12 @@ public final class PeriodSwitcher: NSView {
             button.tag = index
             button.target = self
             button.action = #selector(tabClicked(_:))
+            // Focusable hit target: a focused tab responds to Space/Return
+            // through the button's own action. Focus-band painting and full
+            // tab order are WP-10's surface; the mechanics land here so a
+            // keyboard route EXISTS now (B14 first slice).
+            button.refusesFirstResponder = false
+            button.setAccessibilityElement(true)
             hitButtons.append(button)
             addSubview(button)
         }
@@ -159,7 +165,8 @@ public final class PeriodSwitcher: NSView {
         )
         if animated {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.2
+                // DESIGN.md §3 frozen motion budget: 140ms indicator slide.
+                context.duration = VelaDesign.Motion.tabIndicatorSeconds
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 indicator.animator().frame = target
             }

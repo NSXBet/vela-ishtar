@@ -396,12 +396,6 @@ public final class PopoverView: NSView {
 
     // MARK: - Secondary surfaces (07.4)
 
-    private enum SurfaceID {
-        static let connection = SecondaryPanelCoordinator.Surface.connectionDetail
-        static let settings = SecondaryPanelCoordinator.Surface.settings
-        static let updateInfo = SecondaryPanelCoordinator.Surface.updateInfo
-    }
-
     private func openSecondarySurface(_ surface: SecondaryPanelCoordinator.Surface) {
         guard let parent = window else { return }
         secondary.onRequestDismiss = { [weak self] in self?.onRequestDismiss?() }

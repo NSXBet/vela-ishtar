@@ -234,8 +234,10 @@ public final class VersionBulletView: NSView {
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 tip.animator().alphaValue = 0
             }, completionHandler: {
-                tip.parent?.removeChildWindow(tip)
-                tip.orderOut(nil)
+                MainActor.assumeIsolated {
+                    tip.parent?.removeChildWindow(tip)
+                    tip.orderOut(nil)
+                }
             })
         }
     }

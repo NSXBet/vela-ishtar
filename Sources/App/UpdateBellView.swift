@@ -525,8 +525,10 @@ public final class UpdateBellView: NSView {
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 card.animator().alphaValue = 0
             }, completionHandler: {
-                card.parent?.removeChildWindow(card)
-                card.orderOut(nil)
+                MainActor.assumeIsolated {
+                    card.parent?.removeChildWindow(card)
+                    card.orderOut(nil)
+                }
             })
         }
         // Card closed → the attention shake may resume (unless hovered).

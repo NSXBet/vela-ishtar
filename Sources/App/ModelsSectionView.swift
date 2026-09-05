@@ -192,7 +192,7 @@ final class ModelsSectionView: NSView {
 
         cell.container.setAccessibilityLabel(row.title)
         var value = "\(moneyText)"
-        if let fraction = row.fraction { value += ", \(shareText) of the period total" }
+        if !shareText.isEmpty { value += ", \(shareText) of the period total" }
         if let rateText { value += ", observed \(rateText)" }
         cell.container.setAccessibilityValue(value)
     }
