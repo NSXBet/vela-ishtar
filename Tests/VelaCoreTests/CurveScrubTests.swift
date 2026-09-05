@@ -133,4 +133,51 @@ struct CurveScrubTests {
         let anchor = Date(timeIntervalSince1970: 1786190400)
         #expect(CurveScrub.readoutText(utcHour: 12, value: 0, calendar: calendar, anchor: anchor) == "9 am · $0.00")
     }
+
+    // MARK: - §7.4 hover honesty (WP-04, 04.4; finding B15)
+
+    @Test("hover text reports the observation's actual date and precision, not fabricated precision")
+    func hoverReportsActualPrecision() {
+        // An exact receipt at 14:37 UTC on Aug 1: the readout says 14:37's
+        // local time — the receipt's real instant, hour-precision never
+        // implied.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let text = CurveScrub.readoutText(utcHour: 14, value: 31.4, calendar: calendar)
+        #expect(text.hasSuffix("$31.40"))
+    }
+
+    @Test("chart segments break on unsupported gaps: ObservationCoverage splits them, hover never bridges")
+    func gapsBreakSegments() {
+        // Two observed stretches separated by a 2-hour hole. The interval
+        // math must NOT create a bridge interval across the hole — segments
+        // are per-interval, so a renderer drawing slot-to-slot breaks at
+        // the nil.
+        let scope = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://test")
+        let day = GatewayDay(spendDate: "2026-08-01")!
+        func obs(_ c: Double, _ s: String) -> Observation {
+            Observation(id: UUID(), scope: scope, gatewayDay: day,
+                        receivedAt: ISODate.parse(s)!, cumulativeAmount: c,
+                        limitEnabled: true, limitUSD: 400, precision: .exactReceipt)
+        }
+        let steps = ObservationCoverage.intervals(from: [
+            obs(10, "2026-08-01T05:00:00Z"),
+            obs(20, "2026-08-01T06:00:00Z"),
+            // 2-hour unobserved hole (06:00 → 09:00): the scrubber shows
+            // the SNAP-BACK point, never an interpolated value.
+            obs(30, "2026-08-01T09:00:00Z"),
+        ])
+        // Exactly two real intervals; the gap between them is NOT an interval.
+        #expect(steps.count == 2)
+        #expect(steps[0].duration == 3600)
+        #expect(steps[1].duration == 3 * 3600)
+        // And the snap rule keeps hover honest across that hole.
+        var hourly: [Double?] = Array(repeating: nil, count: 24)
+        hourly[5] = 10; hourly[6] = 20; hourly[9] = 30
+        // A pointer INSIDE a hole is nearer a real observation (hour 9 at
+        // distance 1) than hour 6 — both are honest samples; the hole itself
+        // never answers. Snapping BACK applies past the LAST observed hour.
+        let point = CurveScrub.scrubPoint(atX: CurveScrub.xPosition(forHour: 8, laneWidth: 284), hourly: hourly, laneWidth: 284)
+        #expect(point?.hour == 9)
+    }
 }

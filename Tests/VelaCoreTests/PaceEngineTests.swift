@@ -441,4 +441,237 @@ struct PaceEngineTests {
         let lastSuccess = ISODate.parse("2026-08-01T12:00:00Z")!
         #expect(PaceEngine.ageMinutes(now: now, lastSuccessAt: lastSuccess) == 5)
     }
+
+    // MARK: - §7.4 forecast gates (WP-04, 04.3; findings B04/B05)
+
+    let scope = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://test")
+    let day = GatewayDay(spendDate: "2026-08-01")!
+
+    private func obs(_ cumulative: Double, _ date: Date, day dayOverride: GatewayDay? = nil, scope scopeOverride: UsageScope? = nil) -> Observation {
+        Observation(
+            id: UUID(), scope: scopeOverride ?? scope,
+            gatewayDay: dayOverride ?? day,
+            receivedAt: date, cumulativeAmount: cumulative,
+            limitEnabled: true, limitUSD: 400, precision: .exactReceipt
+        )
+    }
+
+    /// A qualifying recent window: 7 readings 100s apart ending 30s before
+    /// `now` (10 minutes of continuous coverage), cumulative base → base+60
+    /// — rate 0.1 $/s over the actual elapsed interval.
+    private func qualifyingRecent(now: Date, base: Double = 100) -> [Observation] {
+        let start = now.addingTimeInterval(-630)
+        return (0..<7).map { i in
+            obs(base + Double(i) * 10, start.addingTimeInterval(Double(i) * 100))
+        }
+    }
+
+    @Test("a qualified window projects at the recent rate over ACTUAL elapsed time")
+    func qualifiedForecast() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let recent = qualifyingRecent(now: now, base: 100)
+        // spent = 160 (last reading), limit 400, rate 0.1 $/s → 240s to limit.
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 160, limit: 400, limitEnabled: true, now: now)
+        guard case .pace(let eta) = verdict else {
+            Issue.record("expected .pace, got \(verdict)")
+            return
+        }
+        #expect(abs(eta.timeIntervalSince(now.addingTimeInterval(2400))) < 0.001)
+    }
+
+    @Test("stale $200/$400 produces NO on-pace-to-stay-under-budget (B04)")
+    func staleUnderLimitIsInsufficientEvidence() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        // A stale reading pair: newest received 10 minutes ago.
+        let recent = (0..<7).map { i in
+            obs(100 + Double(i) * 10, now.addingTimeInterval(-600 - Double(6 - i) * 100))
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 160, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+        // And the sentence must NOT be the false safe-pace line.
+        let sentence = PaceEngine.sentence(for: verdict, now: now)
+        #expect(sentence != "On pace to stay under budget today.")
+    }
+
+    @Test("first 30 seconds of a $399/$400 day produce NO safe-pace claim (B04)")
+    func thirtySecondsAt399IsInsufficientEvidence() {
+        let now = ISODate.parse("2026-08-01T00:00:30Z")!
+        // Six readings crammed into the first 30 seconds: coverage far below
+        // the 10-minute gate — no projection may fire.
+        let recent = (0..<6).map { i in
+            obs(390 + Double(i), now.addingTimeInterval(Double(i)))
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 399, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+        let sentence = PaceEngine.sentence(for: verdict, now: now)
+        #expect(!sentence.contains("On pace to stay under budget"))
+    }
+
+    @Test("the forecast sentence never claims safety without evidence")
+    func insufficientEvidenceSentenceFactual() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let verdict = PaceVerdict.insufficientEvidence(remaining: 240, observedBurn: 160)
+        let sentence = PaceEngine.sentence(for: verdict, now: now)
+        #expect(!sentence.contains("On pace to stay under budget"))
+        #expect(!sentence.contains("Budget reached around"))
+    }
+
+    @Test("forecast after a long unobserved gap is suppressed, no invented within-gap rate")
+    func gapSuppressesForecast() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        // 7 readings but a 10-minute hole in the middle (600s > 150s gate).
+        var recent: [Observation] = []
+        for i in 0..<3 { recent.append(obs(100 + Double(i), now.addingTimeInterval(-900 + Double(i) * 100))) }
+        for i in 0..<4 { recent.append(obs(103 + Double(i) * 10, now.addingTimeInterval(-300 + Double(i) * 100))) }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 107, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence(let reason) = ObservationCoverage.paceVerdict(recent: recent, scope: scope, day: day, now: now) else {
+            Issue.record("expected insufficientEvidence")
+            return
+        }
+        guard case .gapTooLong = reason else {
+            Issue.record("expected gapTooLong, got \(reason)")
+            return
+        }
+        // The PaceEngine verdict also refuses the projection.
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+    }
+
+    @Test("a projection that would exceed the billing reset shows remaining room instead (§7.4)")
+    func projectionPastResetShowsRemainingRoom() {
+        let now = ISODate.parse("2026-08-01T23:00:00Z")!
+        // Very slow rate: 0.1 $/s with $300 left → 3000s = 50min — that's BEFORE midnight.
+        // Use an even slower rate: 1 dollar over 10 minutes → 0.00167 $/s; 300 left → 180000s = 50h → past midnight.
+        var recent: [Observation] = []
+        let start = now.addingTimeInterval(-630)
+        for i in 0..<7 {
+            recent.append(obs(100.0 + Double(i), start.addingTimeInterval(Double(i) * 100)))
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 100, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence(let remaining, _) = verdict else {
+            Issue.record("expected .insufficientEvidence with remaining room, got \(verdict)")
+            return
+        }
+        #expect(remaining == 300)
+    }
+
+    @Test("idle window reports idle, not a pace")
+    func idleWindowReportsIdle() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        // All readings share the same cumulative (no burn in the window) → idle.
+        let recent = (0..<7).map { i in
+            obs(50, now.addingTimeInterval(-630 + Double(i) * 100))
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 50, limit: 400, limitEnabled: true, now: now)
+        #expect(verdict == .idle)
+    }
+
+    @Test("other-scope readings never feed the forecast")
+    func scopeMismatchSuppressesForecast() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let otherScope = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://elsewhere")
+        let recent = qualifyingRecent(now: now).map { o in
+            Observation(id: o.id, scope: otherScope, gatewayDay: o.gatewayDay, receivedAt: o.receivedAt,
+                        cumulativeAmount: o.cumulativeAmount, limitEnabled: o.limitEnabled,
+                        limitUSD: o.limitUSD, precision: o.precision)
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 160, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+    }
+
+    @Test("day mismatch suppresses the forecast")
+    func dayMismatchSuppressesForecast() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let yesterday = GatewayDay(spendDate: "2026-07-31")!
+        let recent = qualifyingRecent(now: now).map { o in
+            Observation(id: o.id, scope: o.scope, gatewayDay: yesterday, receivedAt: o.receivedAt,
+                        cumulativeAmount: o.cumulativeAmount, limitEnabled: o.limitEnabled,
+                        limitUSD: o.limitUSD, precision: o.precision)
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 160, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+    }
+
+    @Test("a downward correction in the 30-minute window suppresses the forecast")
+    func correctionSuppressesForecast() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        var recent = qualifyingRecent(now: now, base: 100)
+        // Insert a corrected (lower) reading 5 minutes ago.
+        recent.append(obs(90, now.addingTimeInterval(-300)))
+        recent.sort { $0.receivedAt < $1.receivedAt }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 160, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+    }
+
+    @Test("a legitimate NEGATIVE correction is stored, never turned into burn")
+    func negativeCorrectionNeverBurn() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let steps = ObservationCoverage.intervals(from: [
+            obs(100, now.addingTimeInterval(-300)),
+            obs(50, now.addingTimeInterval(-240)),   // correction down
+            obs(60, now.addingTimeInterval(-60)),
+        ])
+        #expect(steps.map(\.delta) == [0.0, 10.0])
+    }
+
+    @Test("fewer than 6 readings never project")
+    func tooFewReadingsNeverProject() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let recent = (0..<5).map { i in
+            obs(100 + Double(i) * 10, now.addingTimeInterval(-630 + Double(i) * 100))
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 140, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+    }
+
+    @Test("under 10 minutes of continuous coverage never projects")
+    func shortCoverageNeverProjects() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        // 6 readings but only 5 minutes of coverage (60s apart, ending now-30).
+        let recent = (0..<6).map { i in
+            obs(100 + Double(i) * 10, now.addingTimeInterval(-330 + Double(i) * 60))
+        }
+        let verdict = PaceEngine.forecast(recent: recent, scope: scope, day: day, spent: 150, limit: 400, limitEnabled: true, now: now)
+        guard case .insufficientEvidence = verdict else {
+            Issue.record("expected .insufficientEvidence, got \(verdict)")
+            return
+        }
+    }
+
+    @Test("absent limit (limitEnabled false) is cruisingNoLimit, no forecast machinery")
+    func absentLimitSkipsForecast() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let verdict = PaceEngine.forecast(recent: [], scope: scope, day: day, spent: 100, limit: 400, limitEnabled: false, now: now)
+        #expect(verdict == .cruisingNoLimit)
+    }
+
+    @Test("already-exhausted forecast stays exhausted")
+    func exhaustedShortCircuits() {
+        let now = ISODate.parse("2026-08-01T12:00:00Z")!
+        let verdict = PaceEngine.forecast(recent: qualifyingRecent(now: now), scope: scope, day: day, spent: 450, limit: 400, limitEnabled: true, now: now)
+        guard case .exhausted = verdict else {
+            Issue.record("expected .exhausted, got \(verdict)")
+            return
+        }
+    }
 }

@@ -50,8 +50,8 @@ struct PollStateMachineTests {
         #expect(state == .fresh(usage))
         #expect(machine.state == .fresh(usage))
         // BurnBuffer's first record after init has no baseline, so it
-        // stores a zero delta -- confirms ingest actually called record().
-        #expect(machine.burnBuffer.slots == [0.0])
+        // contributes no interval -- confirms ingest actually called record().
+        #expect(machine.burnBuffer.slots.isEmpty)
     }
 
     @Test("two consecutive failures with a last-good response emit .stale with counter 2")
@@ -113,9 +113,9 @@ struct PollStateMachineTests {
         let afterRollover = t0.addingTimeInterval(120)
         machine.ingest(.success(Self.usage(spentUSD: 1)), at: afterRollover)
 
-        // Prior real deltas (0, 5) survive; the rollover itself clamps to 0
-        // rather than going negative or wiping the buffer.
-        #expect(machine.burnBuffer.slots == [0.0, 5.0, 0.0])
+        // Prior real delta (5) survives; the rollover interval itself
+        // clamps to 0 burn rather than going negative or wiping the buffer.
+        #expect(machine.burnBuffer.slots.map(\.burn) == [5.0, 0.0])
     }
 
     @Test("exhaustedAt surfaces once spent reaches the limit, and holds at the first-crossing instant")

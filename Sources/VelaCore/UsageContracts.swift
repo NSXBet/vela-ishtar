@@ -172,21 +172,12 @@ public enum ConnectionState: Equatable, Sendable {
 
 // MARK: - Freshness
 
-/// Derived trust in the currently displayed numbers.
-///
-/// §7.2: "Derive from receipt age, explicit invalidation, and request
-/// result; fresh for at most 90s, then stale; authentication errors
-/// immediately invalidate current trust." The 90-second window is the
-/// contract maximum; the derivation itself is WP-04.
-public enum Freshness: Equatable, Sendable {
-    /// Within the freshness window of a validated receipt.
-    case fresh(receivedAt: Date, maxAgeSeconds: Double)
-    /// Beyond the window, or explicitly invalidated.
-    case stale(lastReceivedAt: Date?)
-    /// Trust was revoked before it could age out (auth failure, invalid
-    /// response, credential change).
-    case invalidated(reason: String)
-}
+// Freshness moved to its producer file in WP-04:
+// Sources/VelaCore/Freshness.swift. Names, cases, and semantics are
+// identical to the frozen §7.2 declaration; WP-04 added the derivation
+// (receipt age, explicit invalidation, request result). This file keeps
+// the remaining coordination contracts; the moved type is intentionally
+// NOT duplicated here.
 
 // MARK: - BudgetOverview
 

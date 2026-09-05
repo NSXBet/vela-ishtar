@@ -1,60 +1,144 @@
 // Sources/VelaCore/BurnBuffer.swift
-// Rolling buffer of per-poll-minute dollars burned, derived from the API's
-// cumulative "spent today" figure by differencing consecutive reads.
-// Why: the API only reports a running total, not a rate; this buffer turns
-// that into a sparkline-ready series and survives the UTC-midnight reset.
-// RELEVANT FILES: Tests/VelaCoreTests/BurnBufferTests.swift, PaceEngine.swift, Models.swift
+// Time-correct rolling pulse of recent burn (WP-04, 04.2; finding B09),
+// derived from the gateway's cumulative "spent today" by differencing
+// consecutive OBSERVATIONS in receipt order.
+// Why: the old buffer ignored the observation dates entirely — a $10 delta
+// over one minute and over eight hours produced equal slots, and every
+// popover open (which polls) compressed the supposed hour. The buffer now
+// stores timestamped intervals and keeps only those intersecting the last
+// hour of real wall-clock time: irregular opens never rescale the axis and
+// a sleep gap is a gap, not a one-minute spike.
+// RELEVANT FILES: Sources/VelaCore/ObservationCoverage.swift,
+// Sources/VelaCore/Observation.swift, PaceEngine.swift, Models.swift
 
 import Foundation
 
 public struct BurnBuffer: Equatable, Sendable {
-    /// Number of poll-minute slots retained. Older slots are evicted first.
-    public static let capacity = 60
+    /// The analysis window the pulse covers (§7.3 recent window).
+    public static let window: TimeInterval = 3600
 
-    /// Dollars burned per poll, oldest first.
-    public private(set) var slots: [Double] = []
+    /// One pulse sample: the real wall-clock sub-interval it covers and
+    /// the burn apportioned to it. Consecutive samples share endpoints,
+    /// so a sparkline drawn from them is honest about time.
+    public struct Slot: Equatable, Sendable {
+        public let start: Date
+        public let end: Date
+        public let burn: Double
 
-    // Cumulative "spent today" from the previous call to record(), used to
-    // compute this poll's delta. Nil until the first record() call.
-    private var previousSpentToday: Double?
+        public init(start: Date, end: Date, burn: Double) {
+            self.start = start
+            self.end = end
+            self.burn = burn
+        }
+
+        /// Real wall-clock seconds this sample covers.
+        public var duration: TimeInterval { end.timeIntervalSince(start) }
+    }
+
+    /// Observed sub-intervals inside the last hour, oldest first.
+    public private(set) var slots: [Slot] = []
+
+    /// The cumulative reading each slot's END was computed from — the
+    /// baseline for the next record(). Kept as the newest observation.
+    private var latest: Observation?
 
     public init() {}
 
-    /// Records a new cumulative "spent today" reading and appends the delta
-    /// (this poll's burn) to the buffer.
+    /// Records a new observation and re-derives the pulse from ALL
+    /// retained observations, keeping only the parts inside the last
+    /// `window` seconds. B09 fixed: `date` (via Observation.receivedAt)
+    /// actually drives the math — same delta over 1 minute vs 8 hours
+    /// now yields different coverage.
     ///
-    /// The first call after init (or after a reset) has no prior baseline,
-    /// so it stores a delta of 0 rather than guessing — there's no way to
-    /// know how much was spent before this app started watching.
-    ///
-    /// A negative delta means today's cumulative spend went DOWN, which only
-    /// happens when the API's spend counter reset at UTC midnight between
-    /// polls. That reset isn't a real burn of 0 — it's just an artifact of
-    /// the counter rolling over — so it's clamped to 0 for this poll rather
-    /// than treated as a negative burn. The buffer itself is NOT wiped:
-    /// older slots still represent real minutes of spend and stay in the
-    /// sparkline until capacity naturally evicts them.
-    public mutating func record(spentToday: Double, at date: Date) {
-        guard let previous = previousSpentToday else {
-            previousSpentToday = spentToday
-            slots.append(0)
+    /// A downward correction (spend restated below the running peak)
+    /// establishes a NEW baseline: the correction interval itself
+    /// contributes zero burn, and earlier slots remain (real observed
+    /// spend) but the caller re-baselines comparisons across it —
+    /// never a negative burn (§7.3).
+    public mutating func record(_ observation: Observation) {
+        // Same-instant duplicate receipt: the later cumulative wins and
+        // no interval is emitted.
+        if let current = latest, observation.receivedAt <= current.receivedAt {
+            latest = observation
+            rederive()
             return
         }
+        if let current = latest {
+            let raw = observation.cumulativeAmount - current.cumulativeAmount
+            // Append the interval this poll actually covers. The delta is
+            // clamped at 0: a restatement down is a baseline change, not
+            // negative burn.
+            slots.append(Slot(
+                start: current.receivedAt,
+                end: observation.receivedAt,
+                burn: max(0, raw)
+            ))
+        }
+        latest = observation
+        rederive()
+    }
 
-        let delta = spentToday - previous
-        previousSpentToday = spentToday
+    /// Legacy-shape record for call sites still thinking in (cumulative,
+    /// date) pairs; wraps Observation construction.
+    public mutating func record(
+        spentToday: Double,
+        at date: Date,
+        scope: UsageScope,
+        gatewayDay: GatewayDay,
+        limitEnabled: Bool = true,
+        limitUSD: Double = 0
+    ) {
+        record(Observation(
+            id: UUID(),
+            scope: scope,
+            gatewayDay: gatewayDay,
+            receivedAt: date,
+            cumulativeAmount: spentToday,
+            limitEnabled: limitEnabled,
+            limitUSD: limitUSD,
+            precision: .exactReceipt
+        ))
+    }
 
-        let clampedDelta = max(delta, 0)
-        slots.append(clampedDelta)
-        if slots.count > Self.capacity {
-            slots.removeFirst(slots.count - Self.capacity)
+    /// Drops sub-intervals that no longer intersect the last-hour window.
+    /// An interval PARTIALLY outside contributes only its inside part —
+    /// that is the time-correct pulse: the axis is wall-clock, not a
+    /// sample count.
+    private mutating func rederive() {
+        guard let latest else { slots = []; return }
+        let windowStart = latest.receivedAt.addingTimeInterval(-Self.window)
+        slots = slots.compactMap { slot in
+            let s = max(slot.start, windowStart)
+            let e = min(slot.end, latest.receivedAt)
+            guard e > s else { return nil }
+            let full = slot.end.timeIntervalSince(slot.start)
+            guard full > 0 else { return nil }
+            let fraction = e.timeIntervalSince(s) / full
+            return Slot(start: s, end: e, burn: slot.burn * fraction)
         }
     }
 
-    /// Every slot divided by the largest slot, for drawing a 0...1 sparkline.
-    /// Returns nil when every slot is zero (nothing burned yet to normalize).
+    /// Total observed burn in the pulse window.
+    public var totalBurn: Double {
+        slots.reduce(0) { $0 + $1.burn }
+    }
+
+    /// Observed rate (dollars/second) across the pulse, over the ACTUAL
+    /// elapsed time from the first slot's start to the last slot's end.
+    /// nil when no time is covered or nothing burned.
+    public var ratePerSecond: Double? {
+        guard let first = slots.first, let last = slots.last else { return nil }
+        let elapsed = last.end.timeIntervalSince(first.start)
+        guard elapsed > 0 else { return nil }
+        let burn = totalBurn
+        guard burn > 0 else { return nil }
+        return burn / elapsed
+    }
+
+    /// Every slot burn divided by the largest slot burn, for drawing a
+    /// 0...1 sparkline. Nil when every slot is zero (nothing burned).
     public func normalized() -> [Double]? {
-        guard let maxSlot = slots.max(), maxSlot > 0 else { return nil }
-        return slots.map { $0 / maxSlot }
+        guard let maxBurn = slots.map(\.burn).max(), maxBurn > 0 else { return nil }
+        return slots.map { $0.burn / maxBurn }
     }
 }
