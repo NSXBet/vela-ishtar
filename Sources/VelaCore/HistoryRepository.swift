@@ -604,7 +604,13 @@ public actor HistoryRepository {
     /// rapid saves can never regress disk state to an older envelope.
     /// Writes are synchronous inside the actor — strictly serialized.
     public func save() throws {
-        guard dirty, revision > lastWrittenRevision else { return }
+        // A markers-only change (no history revision) must still flush the
+        // marker file here — otherwise startMarker's save() call is a no-op
+        // and the pending marker exists only in memory.
+        guard dirty, revision > lastWrittenRevision else {
+            if markerFileDirty { try saveMarkers() }
+            return
+        }
         do {
             try filesystem.createDirectory(at: directory)
         } catch {
@@ -644,9 +650,10 @@ public actor HistoryRepository {
         lastError = nil
         // Marker store piggybacks on every history flush (WP-09): one
         // persist point, marker file stays fresh without touching app
-        // call sites. Independent dirty flag keeps it a cheap no-op
-        // when no marker changed.
-        try? saveMarkers()
+        // call sites. A marker-store failure must PROPAGATE — swallowing
+        // it would let the caller believe a clear/marker change landed
+        // when the file on disk still holds the old state.
+        try saveMarkers()
     }
 
     // MARK: - Marker store (WP-09)
