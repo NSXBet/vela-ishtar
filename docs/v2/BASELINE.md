@@ -88,7 +88,14 @@ Wave 5 (WP-09, WP-10) dispatched from this revision.
 
 ## Wave-5 state (2026-09-05)
 
-WP-09 **accepted** (diff review: comparable-delta rule refuses scope/day
+WP-09 **accepted with coordinator gate fixes @ `15a2823`** (export scope
+isolation: mixed-scope input filtered, never cross-credential rows; honest
+coverage: exact receipts on partial days export `partial_day`, never
+`complete`; marker start anchors the SELECTED day via
+`latestObservation(scope:day:)`; start/finish/cancel/clear persist
+immediately with surfaced failures; unified `load()` restores markers and
+reports `.empty` for a missing history file — 583 tests / 53 suites EXIT=0).
+Original diff review: comparable-delta rule refuses scope/day
 discontinuity and non-finite figures with explicit reasons — no guessed
 cross-boundary deltas, no project attribution; CSV is RFC 4180 with
 formula-injection guard and zero token material; marker boundaries survive
