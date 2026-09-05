@@ -84,7 +84,7 @@ public final class PopoverView: NSView {
     /// are reused by stable ID (ModelsSectionView.apply).
     private func buildSections() {
         headerView.onSettings = { [weak self] in
-            self?.openSecondarySurface(.connectionDetail)
+            self?.openSecondarySurface(.settings)
         }
         modelsSection.onSelectPeriod = { [weak self] index in
             guard let self else { return }
@@ -403,27 +403,63 @@ public final class PopoverView: NSView {
         secondary.toggle(surface: surface, contentView: content, relativeTo: parent)
     }
 
-    /// Minimal, truthful connection detail. Settings proper is WP-10's
-    /// surface; the seam is here and the content is swappable.
+    /// Secondary content per surface. Budget detail is WP-08's
+    /// BudgetDetailView hosted through this seam (07.4: one consistent
+    /// native treatment); connection detail is minimal-truthful here;
+    /// settings proper is WP-10's surface.
     private func secondaryContent(for surface: SecondaryPanelCoordinator.Surface) -> NSView {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 120))
-        let stack = NSView(frame: container.bounds.insetBy(dx: 16, dy: 12))
-        container.addSubview(stack)
-        let title = NSTextField(labelWithString: surface == .connectionDetail ? "Connection" : "Settings")
-        title.font = VelaDesign.Typography.body
-        addSubviewStatic(title, to: stack, y: 70)
-        let line = NSTextField(labelWithString: lastAppliedState?.freshnessText ?? "Waiting for the first reading")
-        line.font = VelaDesign.Typography.secondary
-        line.textColor = VelaDesign.Color.caption(contrast: false)
-        line.lineBreakMode = .byTruncatingTail
-        addSubviewStatic(line, to: stack, y: 46)
+        switch surface {
+        case .budgetDetail:
+            if let overview = derivedBudgetOverview {
+                return BudgetDetailView(overview: overview)
+            }
+            return simpleInfoCard(title: "Budget", line: "Waiting for the first reading")
+        case .connectionDetail:
+            return simpleInfoCard(title: "Connection", line: lastAppliedState?.freshnessText ?? "Waiting for the first reading")
+        case .settings:
+            return simpleInfoCard(title: "Settings", line: "Full settings arrive with WP-10.")
+        case .updateInfo:
+            return simpleInfoCard(title: "Updates", line: "Check for updates from the bell in the top-right corner.")
+        }
+    }
+
+    private func simpleInfoCard(title: String, line: String) -> NSView {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 110))
+        let title2 = NSTextField(labelWithString: title)
+        title2.font = VelaDesign.Typography.body
+        title2.frame = NSRect(x: 16, y: 70, width: 228, height: 20)
+        container.addSubview(title2)
+        let text = NSTextField(labelWithString: line)
+        text.font = VelaDesign.Typography.secondary
+        text.textColor = VelaDesign.Color.caption(contrast: false)
+        text.lineBreakMode = .byTruncatingTail
+        text.frame = NSRect(x: 16, y: 44, width: 228, height: 16)
+        container.addSubview(text)
         let close = NSButton(title: "Close", target: self, action: #selector(closeSecondary))
         close.isBordered = false
         close.bezelStyle = .inline
-        close.target = self
-        close.action = #selector(closeSecondary)
-        addSubviewStatic(close, to: stack, y: 8)
+        close.frame = NSRect(x: 16, y: 8, width: 80, height: VelaDesign.Rows.controlMinHeight)
+        container.addSubview(close)
         return container
+    }
+
+    /// The derived BudgetOverview for the seam, built from the last
+    /// committed snapshot on demand (pure derivation, no I/O).
+    private var derivedBudgetOverview: BudgetOverview? {
+        guard let snapshot = latestSnapshot else { return nil }
+        return BudgetOverview.derive(
+            from: snapshot,
+            freshness: .derive(receivedAt: snapshot.receivedAt, now: Date()),
+            now: Date(),
+            calendar: .current
+        )
+    }
+    private var latestSnapshot: UsageSnapshot?
+
+    /// The coordinator hands the committed snapshot at apply time so the
+    /// budget-detail seam can derive its overview without new I/O.
+    public func applySnapshot(_ snapshot: UsageSnapshot?) {
+        latestSnapshot = snapshot
     }
 
     private func addSubviewStatic(_ view: NSView, to parent: NSView, y: CGFloat) {
