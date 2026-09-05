@@ -15,6 +15,7 @@ rendered by `Tools/design_fixture_main.swift` into `build/v2-design/`
 swiftc -O -swift-version 5 -target arm64-apple-macos14.0 \
   Sources/VelaCore/*.swift \
   $(ls Sources/App/*.swift | grep -v '/main.swift$') \
+  Tools/FixtureViews/*.swift \
   Tools/design_fixture_main.swift \
   -o /tmp/vela-design-fixture \
   -framework Cocoa -framework ServiceManagement -framework Security -framework QuartzCore \
@@ -68,7 +69,7 @@ What 40pt buys, measured on the fixtures:
 | Week strip (M–S cells) | "Is today a big day?" in 24pt. A gap day renders a visible unfilled cell — an explained empty slot. |
 | `History` / `Start a marker` / `Dashboard ↗` | Secondary navigation, all at 24pt control height; nothing answers only on hover. |
 
-## 2. 05.2 — Frozen tokens (Sources/App/DesignTokens.swift)
+## 3. 05.2 — Frozen tokens (Sources/App/DesignTokens.swift)
 
 Measured with the fixture harness's worst cases (values printed at the end
 of a run):
@@ -98,7 +99,7 @@ cap, strip, and band sets an accessibility label/value carrying the FULL
 route, amounts, share, or state reason. Money always renders fully —
 truncation is for route names only, never figures.
 
-## 3. 05.3 — State / copy matrix
+## 4. 05.3 — State / copy matrix
 
 Every state renders in light AND dark (`state-<name>-<appearance>.png`):
 
@@ -144,7 +145,7 @@ Rules baked into the fixtures (and binding on WP-06+):
 - **Period labels never contradict.** The hero is always TODAY; period
   totals live beside the Today/Month switcher in the models section.
 
-## 4. Known gaps (for the orchestrator's review, not blockers)
+## 5. Known gaps (for the orchestrator's review, not blockers)
 
 - The 360pt card is a fixture view, not the live `PopoverView`; WP-06
   converts the real view to these tokens and `SummaryDisplayState`.
