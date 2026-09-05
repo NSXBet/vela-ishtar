@@ -73,7 +73,12 @@ public enum TodayModelRows {
         if Set(names).count != names.count { return nil }
 
         let namedSum = models.reduce(0.0) { $0 + $1.totalCostUSD }
-        if namedSum > total + reconciliationTolerance { return nil }
+        // Cents-based reconciliation with per-model rounding allowance —
+        // the shared helper in UsageValidation (raw Double comparison
+        // rejects honest gateway rounding like 27.51 vs 27.50).
+        if !UsageValidation.reconciles(namedSum: namedSum, total: total, modelCount: models.count) {
+            return nil
+        }
 
         return rows(from: models, dayTotal: total)
     }

@@ -57,6 +57,19 @@ public enum UsageValidation {
     /// beyond it are inconsistent.
     public static let reconciliationTolerance = 0.01
 
+    /// Reconciliation in ROUNDED CENTS with a per-model rounding allowance:
+    /// the gateway rounds each model's cost to the cent, so N models can
+    /// legitimately drift up to ~0.5¢ each from the (independently rounded)
+    /// total. Raw Double comparison rejects those honest sums; cents are
+    /// the contract unit. Beyond the allowance the rows contradict the
+    /// total and must render total-only.
+    public static func reconciles(namedSum: Double, total: Double, modelCount: Int) -> Bool {
+        let namedCents = Int((namedSum * 100).rounded())
+        let totalCents = Int((total * 100).rounded())
+        let allowanceCents = 1 + max(0, modelCount) // 1¢ base + ~0.5¢ per model
+        return namedCents <= totalCents + allowanceCents
+    }
+
     // MARK: - Money safety (01.2)
 
     /// Rejects negative and non-finite monetary values. Returns nil instead
@@ -233,7 +246,7 @@ public enum UsageValidation {
         }
 
         let namedSum = validated.reduce(0.0) { $0 + $1.totalCostUSD }
-        if namedSum > total + reconciliationTolerance {
+        if !Self.reconciles(namedSum: namedSum, total: total, modelCount: validated.count) {
             return .inconsistent(
                 reason: String(format: "named models sum to %@ but the day total is %@", MoneyFormat.dollars(namedSum), MoneyFormat.dollars(total))
             )
