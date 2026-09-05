@@ -39,6 +39,17 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
     private var liveScopes: [UsageScope] = []
     private var legacyScope: UsageScope?
 
+    /// Persistence-failure presentation seam. The default surfaces an
+    /// NSAlert (a user must know a receipt was not durably recorded);
+    /// tests inject a collector so failure paths assert headlessly.
+    public var presentSaveFailure: (Error) -> Void = { error in
+        let alert = NSAlert()
+        alert.messageText = "Could not save marker data"
+        alert.informativeText = "The change was applied in memory but could not be written to disk: \(error.localizedDescription)"
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
     public init(repository: HistoryRepository) {
         self.repository = repository
         super.init()
@@ -145,9 +156,15 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
         panel.nameFieldStringValue = HistoryExport.suggestedFileName(scope: scope, day: day)
         panel.allowedContentTypes = [.commaSeparatedText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        Task {
+        Task { [weak self] in
             let csv = HistoryExport.csv(scope: scope, day: day, observations: await repository.observations(scope: scope, day: day))
-            try? csv.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try csv.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                // A failed export must be surfaced — the user believes a
+                // file exists on disk otherwise (B13 discipline).
+                self?.presentSaveFailure(error)
+            }
         }
     }
 
@@ -171,7 +188,7 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
             // store — save() persists both. A markers-only save would let
             // the deleted history reappear after relaunch.
             do { try await repository.save() }
-            catch { Self.reportSaveFailure(error) }
+            catch { presentSaveFailure(error) }
             await self.refresh()
         }
     }
@@ -209,7 +226,7 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
                 // Persist immediately: a crash between start and the next
                 // save must not orphan the pending marker.
                 do { try await repository.saveMarkers() }
-                catch { Self.reportSaveFailure(error) }
+                catch { presentSaveFailure(error) }
             }
         case .finish(let pendingID, _):
             // Finish keeps the start's name.
@@ -217,21 +234,12 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
             guard let latest = await repository.latestObservation(scope: pending.scope) else { return }
             _ = await repository.finishMarker(id: pendingID, end: latest)
             do { try await repository.saveMarkers() }
-            catch { Self.reportSaveFailure(error) }
+            catch { presentSaveFailure(error) }
         case .cancel(let pendingID):
             await repository.cancelMarker(id: pendingID)
             do { try await repository.saveMarkers() }
-            catch { Self.reportSaveFailure(error) }
+            catch { presentSaveFailure(error) }
         }
     }
 
-    /// Marker/clear persistence failures are surfaced, not swallowed (B13
-    /// discipline): the user must know a receipt was NOT durably recorded.
-    private static func reportSaveFailure(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "Could not save marker data"
-        alert.informativeText = "The marker change was applied in memory but could not be written to disk: \(error.localizedDescription)"
-        alert.alertStyle = .warning
-        alert.runModal()
-    }
 }

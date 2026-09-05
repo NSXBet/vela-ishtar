@@ -281,4 +281,75 @@ struct HistoryRepositoryMarkerTests {
         #expect(pendingList.count == 1)
         #expect(pendingList.first?.name == "orphan")
     }
+
+    @Test("clear-history persists: observations AND markers stay gone after relaunch")
+    func clearPersistsAcrossRestart() async throws {
+        let directory = Self.freshDirectory()
+        let first = HistoryRepository(directory: directory)
+        await first.append(Self.observation(at: "2026-08-01T10:00:00Z", amount: 10))
+        let pending = SpendMarker.makePending(
+            observation: Self.observation(at: "2026-08-01T10:00:00Z", amount: 10),
+            name: "doomed", startedAt: ISODate.parse("2026-08-01T10:01:00Z")!)!
+        await first.startMarker(pending)
+        try await first.save()
+
+        await first.clearHistory(scope: Self.scopeA)
+        try await first.save()
+
+        // Relaunch: BOTH the observations and the markers must be gone.
+        let second = HistoryRepository(directory: directory)
+        _ = await second.load()
+        // The cleared scope's data must be gone (the file may legitimately
+        // be a valid empty-ish envelope, so the honest assertion is about
+        // the DATA, not the status code).
+        let remaining = await second.observations(
+            scope: Self.scopeA, day: GatewayDay(spendDate: "2026-08-01")!)
+        #expect(remaining.isEmpty,
+                "cleared scope's observations must not reappear after relaunch")
+        let pendingList = await second.pendingMarkersList
+        let receipts = await second.markerReceiptsList
+        #expect(pendingList.isEmpty)
+        #expect(receipts.isEmpty)
+    }
+
+    @Test("save() PROPAGATES a marker-store failure — the caller can know the clear did not land")
+    func savePropagatesMarkerFailure() async throws {
+        final class NoMarkerWrites: HistoryFilesystem, @unchecked Sendable {
+            let base: FileManagerHistoryFilesystem
+            init(base: FileManagerHistoryFilesystem) { self.base = base }
+            func exists(at url: URL) -> Bool { base.exists(at: url) }
+            func read(_ url: URL) throws -> Data { try base.read(url) }
+            func createDirectory(at url: URL) throws { try base.createDirectory(at: url) }
+            func write(_ data: Data, to url: URL) throws {
+                if url.lastPathComponent == HistoryRepository.markerFileName {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try base.write(data, to: url)
+            }
+            func replaceItem(at destination: URL, with source: URL) throws {
+                if destination.lastPathComponent == HistoryRepository.markerFileName {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try base.replaceItem(at: destination, with: source)
+            }
+            func copyItem(at source: URL, to destination: URL) throws { try base.copyItem(at: source, to: destination) }
+            func removeItem(at url: URL) throws { try base.removeItem(at: url) }
+            func contentsOfDirectory(at url: URL) throws -> [String] { try base.contentsOfDirectory(at: url) }
+        }
+
+        let directory = Self.freshDirectory()
+        let repository = HistoryRepository(
+            directory: directory,
+            filesystem: NoMarkerWrites(base: FileManagerHistoryFilesystem()))
+        await repository.append(Self.observation(at: "2026-08-01T10:00:00Z", amount: 10))
+        let pending = SpendMarker.makePending(
+            observation: Self.observation(at: "2026-08-01T10:00:00Z", amount: 10),
+            name: nil, startedAt: ISODate.parse("2026-08-01T10:01:00Z")!)!
+        await repository.startMarker(pending)
+
+        // save() must THROW (not swallow) when the marker file cannot write.
+        await #expect(throws: HistoryRepository.SaveError.self) {
+            try await repository.save()
+        }
+    }
 }
