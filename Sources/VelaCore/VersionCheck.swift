@@ -14,9 +14,26 @@ import Foundation
 public enum VersionCheck {
 
     /// One GitHub release: the bare tag (no leading "v") and its web URL.
-    public struct Release: Equatable {
+    /// Sendable so it can travel inside UpdateState across actors.
+    public struct Release: Equatable, Sendable {
         public let tag: String
         public let url: String
+    }
+
+    /// The intended release destination (WP-11 11.3): this project's GitHub
+    /// releases, over HTTPS. A payload whose html_url points anywhere else
+    /// is not offered to the user — fail closed, same doctrine as parsing.
+    /// The path must match `/releases` at a SEGMENT boundary: `releases` is
+    /// the owner/repo scope, and a sibling path like `…/releases.evil.com`
+    /// is a different destination wearing a prefix.
+    public static func isTrustedReleaseURL(_ urlString: String) -> Bool {
+        guard let url = URL(string: urlString),
+              url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "github.com"
+        else { return false }
+        let path = url.path.lowercased()
+        return path == "/nsxbet/vela-ishtar/releases"
+            || path.hasPrefix("/nsxbet/vela-ishtar/releases/")
     }
 
     /// Is `candidate` a strictly newer version than `current`? Both may carry
@@ -39,6 +56,8 @@ public enum VersionCheck {
               (obj["draft"] as? Bool) == false,
               (obj["prerelease"] as? Bool) == false
         else { return nil }
+        // The URL is user-facing (it opens in a browser): only the intended
+        guard isTrustedReleaseURL(url) else { return nil }
         return Release(tag: stripV(tag), url: url)
     }
 

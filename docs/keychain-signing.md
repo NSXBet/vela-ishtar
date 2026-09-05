@@ -85,12 +85,41 @@ security export -k ~/Library/Keychains/login.keychain-db \
 Restore on a new/rebuilt machine: `security import <backup>.p12 -k
 ~/Library/Keychains/login.keychain-db -P "<password>" -T /usr/bin/codesign`.
 
+
+## Preferred path for broader distribution: Developer ID + notarization (WP-11 11.4)
+
+The self-signed cert above is right for the internal beta. A **broader or
+premium release** must NOT claim a frictionless install while users still
+run `xattr -cr` by hand — that step exists only because macOS can't verify
+who signed the app. The polished distribution gate is:
+
+1. **Developer ID Application certificate** — needs a paid Apple Developer
+   account/identity, owned by the organization. Sign with it instead of (or
+   in preference to) the self-signed cert.
+2. **Notarization** — submit the signed build to Apple (`xcrun notarytool
+   submit` + `xcrun stapler staple`), so Gatekeeper approves the app on any
+   Mac with no quarantine workaround.
+
+Rules until that exists:
+
+- **No implementation without authorized material.** `build.sh` must keep
+  the documented self-signed path; do not wire Developer ID signing into
+  scripts or CI without an org-owned certificate actually being provisioned.
+- **No honest-claim violations:** while the app is signed with the internal
+  cert, README/release notes describe the install exactly as it is
+  (download, `xattr -cr`, open) — never as a "double-click and go" install.
+- Once an org identity is available: sign → notarize → staple → verify with
+  `spctl -a -v "/Applications/Vela Ishtar.app"` (expected: "accepted"), then
+  and only then remove the `xattr` step from user-facing instructions.
+
+---
+
 ## Notes / limits
 
 - This cert is **not** Gatekeeper-trusted (it's self-signed), so the
   `xattr -cr` step in the README install instructions stays. That's unchanged
   from today. Developer ID + notarization (a paid account) is what removes
-  that — tracked separately and out of scope here.
+  that — see the section above.
 - The **first** update shipped under this cert still prompts **once**: the
   existing Keychain item's ACL is keyed to the old ad-hoc cdhashes, so the user
   clicks **Always Allow** one final time while the ACL re-anchors to the

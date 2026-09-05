@@ -1,11 +1,13 @@
 // Sources/App/UpdateBellView.swift
-// The update bell: a small SF-Symbol bell left of the version dot. It has two
-// states. PENDING (a newer, unskipped release exists on GitHub): yellow, rocks
-// for attention, clicking opens a card with the one-line install command, the
-// release notes link, and "Skip this version". UP-TO-DATE (v1.0.0): grey and
-// perfectly still, clicking says so and nothing more — the bell is now a
-// permanent, quiet status light rather than an element that appears from
-// nowhere, so "no news" is something you can actually read off the popover.
+// The update bell: a small SF-Symbol bell left of the version dot, rendered
+// from an EXPLICIT update state (WP-11 11.1) instead of a bare nil-means-
+// current flag. AVAILABLE (a newer, unskipped release exists): yellow, rocks
+// for attention, clicking opens the install card (Homebrew command, direct-
+// download fallback, release notes, skip). SKIPPED: grey and still, but the
+// card says the skipped release still exists — never "up to date". CURRENT:
+// grey and still, "you're running vX". NEVER-CHECKED / CHECKING / FAILED:
+// grey and still, and the card says exactly that instead of pretending — a
+// failed check must never read as "everything is fine".
 // Why a custom card: the popover is a borderless NON-activating NSPanel that
 // never becomes key, so native menus/tooltips don't fire on it — same hard-won
 // lesson as the version bullet (v0.3.2), same pattern: .activeAlways tracking,
@@ -17,14 +19,18 @@ import Cocoa
 @MainActor
 public final class UpdateBellView: NSView {
 
-    /// The release this bell is announcing, or nil when the app is up to date.
-    /// nil is the quiet grey state: no shake, no badge, no card actions.
-    private let pendingRelease: VersionCheck.Release?
-    /// The version this build is running — shown in the up-to-date card, so
-    /// "you're current" comes with the evidence.
+    /// The bell's explicit update state (WP-11 11.1). Every visual and every
+    /// word of copy derives from this — the bell can no longer render
+    /// "up to date" from a bare nil, because nil was five different truths.
+    private let updateState: ReleaseChecker.UpdateState
+    /// The version this build is running — shown in the current-state card,
+    /// so "you're current" comes with the evidence.
     private let runningVersion: String
-    /// True when there's a newer release to announce.
-    private var hasUpdate: Bool { pendingRelease != nil }
+    /// True only when a newer, unskipped release is actually pending.
+    private var hasUpdate: Bool {
+        if case .available = updateState { return true }
+        return false
+    }
 
     /// Fired by "Skip this version" — the checker persists the choice and
     /// re-renders so the bell goes quiet. Never fired in the up-to-date state.
@@ -43,8 +49,9 @@ public final class UpdateBellView: NSView {
     /// quarantine bit Homebrew leaves on the upgraded app.
     public static let installCommand = "brew update && brew upgrade --cask vela-ishtar && xattr -cr \"/Applications/Vela Ishtar.app\""
 
-    public init(release: VersionCheck.Release?, runningVersion: String) {
-        self.pendingRelease = release
+    /// Designated init: the bell renders exactly the state it is handed.
+    public init(state: ReleaseChecker.UpdateState, runningVersion: String) {
+        self.updateState = state
         self.runningVersion = runningVersion
         super.init(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
 
@@ -53,24 +60,65 @@ public final class UpdateBellView: NSView {
         // nothing behind it is exactly the kind of false alarm this app avoids.
         bell.image = NSImage(
             systemSymbolName: hasUpdate ? "bell.badge.fill" : "bell",
-            accessibilityDescription: hasUpdate ? "Update available" : "No updates"
+            accessibilityDescription: Self.accessibilityLabel(for: state)
         )
         bell.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
         // Yellow ONLY while an update is pending — the whole point of that
-        // state is to catch the eye. Up to date is the same quiet grey as the
-        // version dot beside it (0.35 labelColor): present, legible, ignorable.
+        // state is to catch the eye. Every other state (current, skipped,
+        // never checked, checking, failed) is the same quiet grey as the
+        // version dot beside it (0.35 labelColor): present, legible,
+        // ignorable. Skipped is grey on purpose: the user opted out of the
+        // nag, but the card still tells the truth (see showCard).
         bell.contentTintColor = hasUpdate ? .systemYellow : NSColor.labelColor.withAlphaComponent(0.35)
         addSubview(bell)
         bellImageView = bell
 
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
+        setAccessibilityLabel(Self.accessibilityLabel(for: state))
+        setAccessibilityHelp(Self.accessibilityHelp(for: state, runningVersion: runningVersion))
+    }
+
+    /// Compat shim for the pre-WP-07 call site in PopoverView, which only
+    /// has `updateChecker?.pendingRelease` (a Release?) to pass. nil here is
+    /// AMBIGUOUS — it can mean current, skipped, failed, or never checked —
+    /// so the shim refuses to claim "up to date" from it: nil renders as the
+    /// quiet grey bell with the neutral card, never the "is up to date"
+    /// sentence. WP-07/coordinator should rewire to `init(state:...)`.
+    /// ponytail: shim removed when PopoverView passes the real state.
+    public convenience init(release: VersionCheck.Release?, runningVersion: String) {
         if let release {
-            setAccessibilityLabel("Update available")
-            setAccessibilityHelp("Vela Ishtar v\(release.tag) is available. Activate for install instructions.")
+            self.init(state: .available(release), runningVersion: runningVersion)
         } else {
-            setAccessibilityLabel("No updates")
-            setAccessibilityHelp("Vela Ishtar v\(runningVersion) is up to date.")
+            self.init(state: .neverChecked, runningVersion: runningVersion)
+        }
+    }
+
+    private static func accessibilityLabel(for state: ReleaseChecker.UpdateState) -> String {
+        switch state {
+        case .available: return "Update available"
+        case .skipped: return "Update available (skipped)"
+        case .checkedCurrent: return "No updates"
+        case .neverChecked: return "Updates not checked yet"
+        case .checking: return "Checking for updates"
+        case .failed: return "Update check failed"
+        }
+    }
+
+    private static func accessibilityHelp(for state: ReleaseChecker.UpdateState, runningVersion: String) -> String {
+        switch state {
+        case .available(let release):
+            return "Vela Ishtar v\(release.tag) is available. Activate for install instructions."
+        case .skipped(let release):
+            return "Vela Ishtar v\(release.tag) is available but skipped. Activate for options."
+        case .checkedCurrent:
+            return "Vela Ishtar v\(runningVersion) is up to date."
+        case .neverChecked:
+            return "The app has not checked for updates yet."
+        case .checking:
+            return "Checking for updates."
+        case .failed:
+            return "The last update check failed. Activate for how to check manually."
         }
     }
 
@@ -204,28 +252,47 @@ public final class UpdateBellView: NSView {
 
     private func showCard() {
         guard cardWindow == nil, window != nil else { return }
-        // Two very different cards. Up to date: one line, no actions, nothing
-        // to do. Pending: the install card below.
-        guard let release = pendingRelease else { showUpToDateCard(); return }
-        showUpdateCard(for: release)
+        // One card per truth. Only checkedCurrent may say "up to date";
+        // skipped says "available, skipped"; failed/never-checked/checking
+        // say exactly that instead of pretending to know.
+        switch updateState {
+        case .checkedCurrent:
+            showInfoCard(title: "Vela Ishtar is up to date",
+                         body: "You're running v\(runningVersion).")
+        case .skipped(let release):
+            showInfoCard(title: "Vela Ishtar v\(release.tag) is available",
+                         body: "You skipped this version. Newer releases will light the bell again.")
+        case .neverChecked:
+            showInfoCard(title: "Not checked yet",
+                         body: "The app hasn't checked for updates yet. It checks automatically every 6 hours.")
+        case .checking:
+            showInfoCard(title: "Checking for updates…",
+                         body: "Asking GitHub for the latest release.")
+        case .failed:
+            showInfoCard(title: "Update check failed",
+                         body: "The last check didn't go through. Check manually at github.com/NSXBet/vela-ishtar/releases")
+        case .available(let release):
+            showUpdateCard(for: release)
+        }
     }
 
-    /// The quiet card for the up-to-date state: a single sentence naming the
-    /// running version. No buttons — there is genuinely nothing to act on, and
-    /// offering a control that does nothing would be worse than silence. Sized
-    /// to its text rather than the install card's fixed 328pt.
-    private func showUpToDateCard() {
+    /// The quiet card for every non-actionable state: a title, one sentence,
+    /// no buttons — there is genuinely nothing to do, and offering a control
+    /// that does nothing would be worse than silence. Only the copy differs
+    /// per state (see showCard). Sized to its text rather than the install
+    /// card's fixed 328pt.
+    private func showInfoCard(title titleText: String, body bodyText: String) {
         guard let parentWindow = window else { return }
 
         let padding: CGFloat = 12
         let titleFont = NSFont.systemFont(ofSize: 12, weight: .semibold)
         let bodyFont = NSFont.systemFont(ofSize: 11)
 
-        let title = NSTextField(labelWithString: "Vela Ishtar is up to date")
+        let title = NSTextField(labelWithString: titleText)
         title.font = titleFont
         title.textColor = .labelColor
 
-        let body = NSTextField(labelWithString: "You're running v\(runningVersion).")
+        let body = NSTextField(labelWithString: bodyText)
         body.font = bodyFont
         body.textColor = .secondaryLabelColor
 
@@ -275,6 +342,15 @@ public final class UpdateBellView: NSView {
         body.font = bodyFont
         body.textColor = .secondaryLabelColor
 
+        // Both install channels, honestly labeled (WP-11 11.3): Homebrew is
+        // the primary; "View release notes" below also links the ZIP for a
+        // direct download. The ZIP is unsigned/notarization-free, so the
+        // same xattr note applies either way — but the brew path runs it
+        // for the user, which is why it leads.
+        let alt = NSTextField(wrappingLabelWithString: "No Homebrew? View release notes below and download the ZIP instead.")
+        alt.font = bodyFont
+        alt.textColor = .secondaryLabelColor
+
         let command = NSTextField(wrappingLabelWithString: Self.installCommand)
         command.font = commandFont
         command.textColor = .labelColor
@@ -285,11 +361,12 @@ public final class UpdateBellView: NSView {
         // wraps to TWO lines; narrower wraps it to three and clips the tail.
         let titleSize = Self.measure(title.stringValue, font: titleFont, width: width - 2 * padding)
         let bodySize = Self.measure(body.stringValue, font: bodyFont, width: width - 2 * padding)
+        let altSize = Self.measure(alt.stringValue, font: bodyFont, width: width - 2 * padding)
         let commandSize = Self.measure(Self.installCommand, font: commandFont, width: width - 2 * padding - 12)
 
         let buttonHeight: CGFloat = 22
         let gap: CGFloat = 8
-        let contentHeight = padding + titleSize.height + 4 + bodySize.height + gap
+        let contentHeight = padding + titleSize.height + 4 + bodySize.height + 3 + altSize.height + gap
             + commandSize.height + 12 + gap + buttonHeight + gap + buttonHeight + gap + buttonHeight + padding
 
         let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: contentHeight))
@@ -309,6 +386,10 @@ public final class UpdateBellView: NSView {
         y -= 4 + bodySize.height
         body.frame = NSRect(x: padding, y: y, width: width - 2 * padding, height: bodySize.height)
         content.addSubview(body)
+
+        y -= 3 + altSize.height
+        alt.frame = NSRect(x: padding, y: y, width: width - 2 * padding, height: altSize.height)
+        content.addSubview(alt)
 
         // The command sits on a subtle rounded well so it reads as copyable
         // text, not prose.
@@ -446,9 +527,9 @@ public final class UpdateBellView: NSView {
         // context switch away from the menu bar anyway.
         onOpenRelease?()
         // Only reachable from the pending-update card, which is only built
-        // when pendingRelease is non-nil — but read it safely rather than
+        // when the state is .available — but read it safely rather than
         // force-unwrap, so a future card wiring can't crash the app.
-        if let release = pendingRelease, let url = URL(string: release.url) {
+        if case .available(let release) = updateState, let url = URL(string: release.url) {
             NSWorkspace.shared.open(url)
         }
     }

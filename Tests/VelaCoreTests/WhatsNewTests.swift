@@ -4,7 +4,9 @@
 // Why: the file is generated at build time by an awk one-liner, so a malformed
 // line (missing tab, empty note) must degrade gracefully — a bad parse must
 // never crash the popover or show a garbage line, just fall back to fewer
-// entries.
+// entries. WP-11 (B17): the extracted one-liner is sanitized in parse, so
+// a Markdown bullet from the CHANGELOG never ships to the bullet with its
+// markup showing.
 // RELEVANT FILES: Sources/VelaCore/WhatsNew.swift, build.sh
 
 import Testing
@@ -113,5 +115,43 @@ struct WhatsNewTests {
         ]
         let visible = WhatsNew.visibleNotes(running: "0.4.3", notes: notes)
         #expect(visible.map(\.version) == ["0.4.3", "0.4.5", "0.4.4", "0.4.2", "0.4.1"])
+    }
+
+    // MARK: cleanSummary — Markdown never ships to the UI (WP-11 / B17)
+
+    @Test("a changelog Markdown bullet is unwrapped to clean prose")
+    func markdownBulletCleaned() {
+        // The exact shape build.sh can emit when a section has no summary
+        // paragraph: the first Markdown bullet under the header.
+        let raw = "- **Nested per-model daily caps are now visible.** A collapsible row appears."
+        #expect(WhatsNew.cleanSummary(raw)
+            == "Nested per-model daily caps are now visible. A collapsible row appears.")
+    }
+
+    @Test("emphasis, bullets, and backticks are stripped; words are kept")
+    func emphasisStripped() {
+        #expect(WhatsNew.cleanSummary("**bold** text") == "bold text")
+        #expect(WhatsNew.cleanSummary("- *italic* lead") == "italic lead")
+        #expect(WhatsNew.cleanSummary("runs `vela` command") == "runs vela command")
+        #expect(WhatsNew.cleanSummary("__under__ too") == "under too")
+    }
+
+    @Test("an asterisk that is NOT paired emphasis survives")
+    func loneAsteriskSurvives() {
+        #expect(WhatsNew.cleanSummary("3 * 4 is 12") == "3 * 4 is 12")
+    }
+
+    @Test("a line that was only markup cleans to empty and is skipped by parse")
+    func markupOnlyLineDropped() {
+        #expect(WhatsNew.cleanSummary("- **") == "")
+        // parse drops the note-less line rather than shipping a blank row.
+        let notes = WhatsNew.parse("1.0.0\t- **\n1.0.1\treal note")
+        #expect(notes.count == 1)
+        #expect(notes[0].version == "1.0.1")
+    }
+
+    @Test("plain text passes through untouched")
+    func plainTextUnchanged() {
+        #expect(WhatsNew.cleanSummary("a clean human sentence") == "a clean human sentence")
     }
 }

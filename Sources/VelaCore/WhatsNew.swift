@@ -7,7 +7,9 @@
 // The format is one `version<TAB>one-liner` per line. Parsing is defensive —
 // a malformed line is skipped, empty input yields an empty list, and a missing
 // file falls back to whatever the caller supplies. The popover must never
-// crash or render garbage because a build artifact was hand-edited.
+// crash or render garbage because a build artifact was hand-edited. WP-11
+// (B17): the extracted one-liner is sanitized — a Markdown bullet from the
+// changelog never ships to the UI with its markup showing.
 // RELEVANT FILES: Sources/App/PopoverView.swift, build.sh, Tests/VelaCoreTests/WhatsNewTests.swift
 
 import Foundation
@@ -16,14 +18,44 @@ public enum WhatsNew {
     /// Parses `version<TAB>note` lines into ordered (version, note) pairs.
     /// Lines without a tab, with an empty version, or with an empty note are
     /// skipped. Interior tabs are preserved (split on the FIRST tab only).
+    /// The note is run through `cleanSummary` (WP-11 / B17): the build-time
+    /// extractor grabs whatever line follows a `## [x.y.z]` header, which is
+    /// sometimes a Markdown bullet ("- **Something.** …") rather than a
+    /// clean sentence — the bullet never ships to the UI as markup.
     public static func parse(_ text: String) -> [(version: String, note: String)] {
         text.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
             guard let tabIndex = line.firstIndex(of: "\t") else { return nil }
             let version = line[..<tabIndex].trimmingCharacters(in: .whitespaces)
-            let note = line[line.index(after: tabIndex)...].trimmingCharacters(in: .whitespaces)
+            let note = cleanSummary(String(line[line.index(after: tabIndex)...]))
             guard !version.isEmpty, !note.isEmpty else { return nil }
             return (version: version, note: note)
         }
+    }
+
+    /// Strips Markdown dressing from a one-line summary so the bullet shows
+    /// clean human text: leading "- " / "* " bullet markers, "**bold**" and
+    /// "*italic*" emphasis, and surrounding backticks are unwrapped. A line
+    /// that becomes empty (e.g. it was ONLY a heading fragment) parses as
+    /// absent, so the fallback path kicks in downstream.
+    public static func cleanSummary(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespaces)
+        // Leading bullet markers ("- ", "* ", "– ").
+        if s.hasPrefix("- ") || s.hasPrefix("* ") || s.hasPrefix("– ") {
+            s = String(s.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        }
+        // Emphasis and inline code: drop the markers, keep the words.
+        s = s
+            .replacingOccurrences(of: "**", with: "")
+            .replacingOccurrences(of: "__", with: "")
+            .replacingOccurrences(of: "`", with: "")
+        // Single asterisks used as italics: only strip when they pair up,
+        // so an arithmetic "3 * 4" never loses its asterisk mid-sentence.
+        while let start = s.firstIndex(of: "*"),
+              let end = s[s.index(after: start)...].firstIndex(of: "*") {
+            s.remove(at: end)
+            s.remove(at: start)
+        }
+        return s.trimmingCharacters(in: .whitespaces)
     }
 
     /// Loads and parses the bundled whatsnew.txt, returning `fallback` when
