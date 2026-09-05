@@ -167,6 +167,11 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         Task {
             await repository.clearHistory(scope: scope)
+            // clearHistory dirties BOTH the envelope (days) and the marker
+            // store — save() persists both. A markers-only save would let
+            // the deleted history reappear after relaunch.
+            do { try await repository.save() }
+            catch { Self.reportSaveFailure(error) }
             await self.refresh()
         }
     }
@@ -189,10 +194,11 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
     private func markerActionBody(_ action: MarkerAction) async {
         let repository = self.repository
         switch action {
-        case .start(let scope, _, let name):
-            // The marker anchors on the day's LATEST accepted
-            // observation (no extra poll is triggered — §6.2).
-            guard let latest = await repository.latestObservation(scope: scope) else { return }
+        case .start(let scope, let day, let name):
+            // The marker anchors on the SELECTED day's latest accepted
+            // observation (no extra poll — §6.2). Anchoring on the scope's
+            // newest day would baseline a marker the user did not select.
+            guard let latest = await repository.latestObservation(scope: scope, day: day) else { return }
             let marker = SpendMarker.makePending(
                 observation: latest,
                 name: name,
@@ -200,16 +206,32 @@ public final class HistoryWindowController: NSObject, NSWindowDelegate {
             )
             if let marker {
                 await repository.startMarker(marker)
+                // Persist immediately: a crash between start and the next
+                // save must not orphan the pending marker.
+                do { try await repository.saveMarkers() }
+                catch { Self.reportSaveFailure(error) }
             }
         case .finish(let pendingID, _):
             // Finish keeps the start's name.
             guard let pending = await repository.pendingMarkersList.first(where: { $0.id == pendingID }) else { return }
             guard let latest = await repository.latestObservation(scope: pending.scope) else { return }
             _ = await repository.finishMarker(id: pendingID, end: latest)
-            try? await repository.saveMarkers()
+            do { try await repository.saveMarkers() }
+            catch { Self.reportSaveFailure(error) }
         case .cancel(let pendingID):
             await repository.cancelMarker(id: pendingID)
-            try? await repository.saveMarkers()
+            do { try await repository.saveMarkers() }
+            catch { Self.reportSaveFailure(error) }
         }
+    }
+
+    /// Marker/clear persistence failures are surfaced, not swallowed (B13
+    /// discipline): the user must know a receipt was NOT durably recorded.
+    private static func reportSaveFailure(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Could not save marker data"
+        alert.informativeText = "The marker change was applied in memory but could not be written to disk: \(error.localizedDescription)"
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }

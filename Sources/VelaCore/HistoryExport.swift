@@ -22,23 +22,38 @@ public enum HistoryExport {
     /// order. Every value derives from the observation; no token or token
     /// ID can appear — the scope is not a column at all.
     public static func csv(scope: UsageScope, day: GatewayDay, observations: [Observation]) -> String {
+        // Selected-scope isolation (§7.2): a row whose scope disagrees with
+        // the export's scope must NEVER be written — silently exporting
+        // another credential's spend would be a data-integrity breach.
+        let scoped = observations.filter { $0.scope == scope }
+        let complete = Self.dayComplete(day: day, observations: scoped)
         var lines = [header]
-        for observation in observations {
-            lines.append(row(for: observation))
+        for observation in scoped {
+            lines.append(row(for: observation, isCompleteDay: complete))
         }
         return lines.joined(separator: "\r\n") + "\r\n"
     }
 
     /// Assembles a full export for several days (an explicitly selected
-    /// range) in chronological day order.
+    /// range) in chronological day order. Mixed-scope input is filtered to
+    /// the requested scope; per-day completeness comes from the retention
+    /// engine's coverage computation.
     public static func csv(scope: UsageScope, days: [(day: GatewayDay, observations: [Observation])]) -> String {
         var lines = [header]
         for entry in days.sorted(by: { $0.day.key < $1.day.key }) {
-            for observation in entry.observations {
-                lines.append(row(for: observation))
+            let scoped = entry.observations.filter { $0.scope == scope }
+            let complete = Self.dayComplete(day: entry.day, observations: scoped)
+            for observation in scoped {
+                lines.append(row(for: observation, isCompleteDay: complete))
             }
         }
         return lines.joined(separator: "\r\n") + "\r\n"
+    }
+
+    /// Per-day completeness via HistoryRetentionEngine.coverage — the same
+    /// computation the repository uses for its coverage map.
+    private static func dayComplete(day: GatewayDay, observations: [Observation]) -> Bool {
+        HistoryRetentionEngine.coverage(dayKey: day.key, observations: observations).isComplete
     }
 
     /// A suggested, spreadsheet-safe file name for a day export.
@@ -48,12 +63,12 @@ public enum HistoryExport {
 
     // MARK: - Row assembly
 
-    static func row(for observation: Observation) -> String {
+    static func row(for observation: Observation, isCompleteDay: Bool) -> String {
         let day = cell(observation.gatewayDay.key)
         let time = cell(isoSeconds(observation.receivedAt))
         let precision = cell(observation.precision == .exactReceipt ? "exact" : "legacy_hour")
         let amount = cell(decimal(observation.cumulativeAmount))
-        let coverage = cell(coverageLabel(observation))
+        let coverage = cell(coverageLabel(observation, isCompleteDay: isCompleteDay))
         return [day, time, precision, amount, coverage].joined(separator: ",")
     }
 
@@ -74,8 +89,9 @@ public enum HistoryExport {
     /// A legacy-hour reading is "hour_precision"; an exact receipt whose
     /// day the repository later marked incomplete is "partial_day"; a
     /// complete day is "complete". Absent → empty string.
-    static func coverageLabel(_ observation: Observation) -> String {
-        observation.precision == .legacyHour ? "hour_precision" : "complete"
+    static func coverageLabel(_ observation: Observation, isCompleteDay: Bool) -> String {
+        if observation.precision == .legacyHour { return "hour_precision" }
+        return isCompleteDay ? "complete" : "partial_day"
     }
 
     /// RFC 4180 field: quote when needed; a leading =+-@ (or tab/CR) gets

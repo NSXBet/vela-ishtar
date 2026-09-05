@@ -245,4 +245,40 @@ struct HistoryRepositoryMarkerTests {
             scope: Self.scopeB, day: GatewayDay(spendDate: "2026-08-01")!)
         #expect(scopeBObservations.count == 1)
     }
+
+    // MARK: - unified load() (coordinator gate)
+
+    @Test("no history file and no markers file is an empty load, not unreadable")
+    func emptyDirectoryLoadsEmpty() async {
+        let repository = HistoryRepository(directory: Self.freshDirectory())
+        let status = await repository.load()
+        #expect(status == .empty)
+        let pendingList = await repository.pendingMarkersList
+        #expect(pendingList.isEmpty)
+    }
+
+    @Test("markers present with NO history file: markers restored AND load is .empty")
+    func markersLoadWithoutHistoryFile() async throws {
+        let directory = Self.freshDirectory()
+        // A repository whose history.json was never written but whose
+        // markers.json carries a pending marker (start before any save()).
+        let first = HistoryRepository(directory: directory)
+        let pending = SpendMarker.makePending(
+            observation: Self.observation(at: "2026-08-01T10:00:00Z", amount: 10),
+            name: "orphan", startedAt: ISODate.parse("2026-08-01T10:01:00Z")!)!
+        await first.startMarker(pending)
+        try await first.saveMarkers()
+        #expect(!FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("history.json").path),
+            "precondition: no history file was ever written")
+
+        // Relaunch: load() must restore the marker state and still report
+        // .empty history (not .unreadable — a missing file is normal).
+        let second = HistoryRepository(directory: directory)
+        let status = await second.load()
+        #expect(status == .empty)
+        let pendingList = await second.pendingMarkersList
+        #expect(pendingList.count == 1)
+        #expect(pendingList.first?.name == "orphan")
+    }
 }
