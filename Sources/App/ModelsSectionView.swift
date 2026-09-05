@@ -171,6 +171,42 @@ final class ModelsSectionView: NSView {
             shareText = ""
         }
 
+        // Explanatory rows (auth/invalid/stale/inconsistent states) carry
+        // no money figure: they render FULL-WIDTH with wrapping so the
+        // required DESIGN.md copy is never clipped by the money columns.
+        let isExplanatory = row.fraction == nil && !row.detail.isEmpty && !moneyText.hasPrefix("$")
+
+        if isExplanatory {
+            // The reserved 5-stride block is fixed geometry (§5.3), so the
+            // explanatory sentence must fit ONE stride: full width (no
+            // money columns) at caption size, wrapped to 2 lines within
+            // the 24pt stride via a 10pt font + tightened line spacing.
+            let combined = row.detail.isEmpty ? row.title : "\(row.title) — \(row.detail)"
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byWordWrapping
+            paragraph.maximumLineHeight = 11
+            cell.nameLabel.attributedStringValue = NSAttributedString(string: combined, attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                .foregroundColor: NSColor.secondaryLabelColor,
+                .paragraphStyle: paragraph,
+            ])
+            cell.nameLabel.lineBreakMode = .byWordWrapping
+            cell.nameLabel.maximumNumberOfLines = 2
+            cell.nameLabel.cell?.wraps = true
+            cell.costLabel.stringValue = ""
+            cell.shareLabel.stringValue = ""
+            let inset = VelaDesign.Layout.contentInset
+            let width = bounds.width
+            cell.nameLabel.toolTip = nil
+            cell.nameLabel.frame = NSRect(x: inset, y: 0, width: width - 2 * inset, height: VelaDesign.Rows.dataRowHeight)
+            cell.costLabel.frame = NSRect.zero
+            cell.shareLabel.frame = NSRect.zero
+            cell.container.setAccessibilityLabel(row.title)
+            cell.container.setAccessibilityValue(row.detail)
+            return
+        }
+        cell.nameLabel.lineBreakMode = .byTruncatingTail
+        cell.nameLabel.maximumNumberOfLines = 1
         cell.nameLabel.attributedStringValue = NSAttributedString(string: displayName, attributes: [
             .font: VelaDesign.Typography.body,
             .foregroundColor: NSColor.labelColor,

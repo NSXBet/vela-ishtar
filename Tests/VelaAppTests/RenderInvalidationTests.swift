@@ -162,4 +162,36 @@ struct RenderInvalidationTests {
             $0.id == "stale-breakdown" && $0.title == "Per-model breakdown needs a fresh reading"
         }, "stale state must show the DESIGN.md explanatory row; got: \(stale.rows.map(\.title))")
     }
+
+    @Test("auth/invalid connections replace model rows with their explanatory state row (DESIGN.md §5.3)")
+    func authAndInvalidReplaceModelRows() async throws {
+        let presenter = await SummaryPresenter()
+        let repository = HistoryRepository(directory: FileManager.default.temporaryDirectory.appendingPathComponent("rendertest-\(UUID().uuidString)"))
+        let t = ISODate.parse("2026-09-05T10:00:00Z")!
+        let scope = UsageScope(kind: .credential, opaqueID: UUID(uuidString: "11111111-2222-4333-8444-555555555555")!, gatewayOrigin: "https://gateway.test")
+        var usage = Self.usage(spent: 42.42)
+        usage = UsageResponse(
+            tokenId: usage.tokenId,
+            dailyBudget: usage.dailyBudget,
+            currentMonth: usage.currentMonth,
+            topModels: usage.topModels,
+            today: MonthStats(totalCostUSD: 42.42, totalTokens: 500, requests: 5),
+            todayModels: [ModelUsage(model: "openai/gpt-5", totalCostUSD: 30, totalTokens: 300, requests: 3)],
+            todayPresent: true,
+            todayModelsPresent: true
+        )
+        let snapshot = UsageValidation.snapshot(from: usage, scope: scope, receivedAt: t)
+
+        let auth = await presenter.displayState(
+            from: .init(snapshot: snapshot, connection: .authenticationRequired, repository: repository),
+            selectedPeriod: "today", now: t)
+        #expect(auth.rows.contains { $0.id == "auth-breakdown" && $0.title == "Authentication required" })
+        #expect(!auth.rows.contains { $0.id == "model-openai/gpt-5" }, "model spend must NOT render under an auth banner")
+
+        let invalid = await presenter.displayState(
+            from: .init(snapshot: snapshot, connection: .invalidResponse, repository: repository),
+            selectedPeriod: "today", now: t)
+        #expect(invalid.rows.contains { $0.id == "invalid-breakdown" && $0.title == "Gateway sent unreadable data" })
+        #expect(!invalid.rows.contains { $0.id == "model-openai/gpt-5" }, "model spend must NOT render under an invalid-response banner")
+    }
 }

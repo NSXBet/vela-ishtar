@@ -77,13 +77,28 @@ public final class SummaryPresenter {
             fraction: budget.limitEnabled ? min(max(budget.usedPercent / 100, 0), 1) : nil
         )
 
-        // Model rows for the selected period. Today uses the validated
-        // today_models fold; month uses the API's top_models directly.
+        // Model rows for the selected period. Auth/invalid connections
+        // replace the data rows with their DESIGN.md §5.3 explanatory row —
+        // model spend numbers under an auth/invalid banner would contradict
+        // the state matrix (the reading cannot be trusted or attributed).
         let rows: [SummaryDisplayState.Row]
-        if selectedPeriod == "today" {
-            rows = Self.todayRows(snapshot: snapshot, dayTotal: budget.spentUSD, freshness: freshness)
-        } else {
-            rows = Self.monthRows(response: snapshot.response)
+        switch context.connection {
+        case .authenticationRequired:
+            rows = [SummaryDisplayState.Row(
+                id: "auth-breakdown", title: "Authentication required",
+                detail: "paste a valid API key to see per-model spend",
+                fraction: nil)]
+        case .invalidResponse:
+            rows = [SummaryDisplayState.Row(
+                id: "invalid-breakdown", title: "Gateway sent unreadable data",
+                detail: "per-model breakdown unavailable for this reading",
+                fraction: nil)]
+        default:
+            if selectedPeriod == "today" {
+                rows = Self.todayRows(snapshot: snapshot, dayTotal: budget.spentUSD, freshness: freshness)
+            } else {
+                rows = Self.monthRows(response: snapshot.response)
+            }
         }
         let periodTotal = selectedPeriod == "today"
             ? budget.spentUSD
