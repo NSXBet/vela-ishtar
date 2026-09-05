@@ -69,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let historyExplorer = HistoryWindowController(repository: coordinator.repository)
         self.historyExplorer = historyExplorer
         controller.onOpenHistoryExplorer = { [weak historyExplorer] in
-            Task { @MainActor in historyExplorer?.open() }
+            Task { @MainActor in await historyExplorer?.open() }
         }
 
         // The ONE observation point: every committed outcome lands here,
