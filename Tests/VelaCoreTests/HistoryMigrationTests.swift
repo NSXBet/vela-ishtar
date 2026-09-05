@@ -439,6 +439,46 @@ struct HistoryMigrationIntegrityTests {
         #expect(envelopeB == envelopeA)
     }
 
+    @Test("quarantine-only migration completes: every day quarantined yields an empty active scope, not a failed save")
+    func quarantineOnlyMigrationCompletes() async throws {
+        let directory = HistoryMigrationTests.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fixtureBytes = try HistoryMigrationTests.fixtureData("all-quarantined.json")
+        try fixtureBytes.write(to: directory.appendingPathComponent(HistoryRepository.activeFileName))
+
+        let repository = HistoryRepository(directory: directory)
+        let status = await repository.load()
+
+        // Migration completes even though NOTHING usable was migrated.
+        guard case .migratedFromLegacy = status else {
+            Issue.record("expected migratedFromLegacy, got \(status)")
+            return
+        }
+        // Every day record was quarantined with its reason intact.
+        let quarantineFile = directory
+            .appendingPathComponent(HistoryRepository.quarantineDirectoryName)
+            .appendingPathComponent("records.json")
+        let entries = try JSONDecoder().decode([[String: String]].self, from: Data(contentsOf: quarantineFile))
+        #expect(entries.count == 3)
+        #expect(Set(entries.compactMap { $0["originalKey"] }) == ["2026-08-01", "2026-08-02", "2026-08-03"])
+
+        // The schema-2 file was written: no dangling empty scope entry.
+        let raw = try Data(contentsOf: directory.appendingPathComponent(HistoryRepository.activeFileName))
+        let json = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        #expect(json["version"] as? Int == HistoryEnvelope.currentVersion)
+        let scopes = try #require(json["scopes"] as? [String: Any])
+        #expect(scopes.isEmpty)
+        let days = try #require(json["days"] as? [String: Any])
+        #expect(days.isEmpty)
+
+        // And a reload of that file succeeds as current schema.
+        let reloaded = HistoryRepository(directory: directory)
+        guard case .loaded = await reloaded.load() else {
+            Issue.record("expected loaded on reload")
+            return
+        }
+    }
+
 
 /// A seam whose write failure is scoped to the ACTIVE history envelope —
 /// quarantine and backup writes pass through. Simulates the interrupted

@@ -90,8 +90,18 @@ public enum HistoryMigration {
         var decodedDays: [String: DayRecord] = [:]
 
         for (key, value) in dict {
-            let payload = (try? JSONSerialization.data(withJSONObject: value))
-                .flatMap { String(data: $0, encoding: .utf8) } ?? "<unserializable>"
+            // Sorted keys: the payload is part of the quarantine dedup
+            // identity, so it must be byte-stable across processes —
+            // JSONSerialization's default key order is not.
+            // JSONSerialization RAISES (uncaughtable NSException) on a
+            // top-level scalar UNLESS fragments are allowed, so serialize
+            // with .fragmentsAllowed: scalar day values ("2026-08-03": 42)
+            // then quarantine cleanly instead of crashing the process.
+            // .sortedKeys keeps the payload byte-stable — it is part of the
+            // quarantine dedup identity.
+            let payload = (try? JSONSerialization.data(
+                withJSONObject: value, options: [.sortedKeys, .fragmentsAllowed]
+            )).flatMap { String(data: $0, encoding: .utf8) } ?? "<unserializable>"
 
             if duplicateKeys.contains(key) {
                 // The day key appears twice in the raw file; both parsers
@@ -147,7 +157,11 @@ public enum HistoryMigration {
         var coverage: [String: HistoryEnvelope.Coverage] = [:]
         for (dayKey, day) in merged {
             if HistoryStore.isContaminated(day) {
-                let payload = (try? JSONEncoder().encode(day))
+                // Canonical form: sorted keys (same dedup-identity reason
+                // as the JSONSerialization path above).
+                var encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys]
+                let payload = (try? encoder.encode(day))
                     .flatMap { String(data: $0, encoding: .utf8) } ?? "<unserializable>"
                 quarantined.append(QuarantinedRecord(reason: .contaminated, originalKey: dayKey, payload: payload))
                 continue
@@ -158,10 +172,20 @@ public enum HistoryMigration {
             coverage[dayKey] = HistoryRetentionEngine.coverage(dayKey: dayKey, observations: observations)
         }
 
+        // §7.3: quarantine-only migration must still complete. If EVERY
+        // legacy day was quarantined, the unassigned legacy scope has no
+        // days — omit it entirely so the normalized writer never sees an
+        // empty scope entry (it has no scope metadata to derive).
+        let days: [String: [String: [Observation]]] = envelopeDays.isEmpty
+            ? [:]
+            : [legacyScopeID: envelopeDays]
+        let scopeCoverage: [String: [String: HistoryEnvelope.Coverage]] = coverage.isEmpty
+            ? [:]
+            : [legacyScopeID: coverage]
         let envelope = HistoryEnvelope(
             revision: 1,
-            days: [legacyScopeID: envelopeDays],
-            coverage: [legacyScopeID: coverage]
+            days: days,
+            coverage: scopeCoverage
         )
         return .migrateLegacy(envelope: envelope, quarantined: quarantined)
     }
@@ -285,7 +309,9 @@ public enum HistoryMigration {
     }
 
     private static func decodeDayRecord(_ value: Any) -> DayRecord? {
-        guard let data = try? JSONSerialization.data(withJSONObject: value) else { return nil }
+        // .fragmentsAllowed: a scalar day value must return nil (undecodable
+        // as a DayRecord), not crash via NSException.
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]) else { return nil }
         return try? JSONDecoder().decode(DayRecord.self, from: data)
     }
 }

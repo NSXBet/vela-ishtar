@@ -1,0 +1,180 @@
+<title>Vela Ishtar — Model Limit Preview</title>
+<style>
+  :root{
+    --bg:#161617; --panel:#1f1f21; --panel-edge:rgba(255,255,255,.08);
+    --ink:#e8e8ea; --ink-55:rgba(232,232,234,.55); --ink-40:rgba(232,232,234,.40);
+    --ink-14:rgba(232,232,234,.14); --ink-70:rgba(232,232,234,.70);
+    --amber:#ff9f0a; --red:#ff453a; --hairline:rgba(255,255,255,.10);
+    --track:rgba(232,232,234,.12);
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{
+    background:
+      radial-gradient(1200px 600px at 20% -10%, rgba(90,90,110,.14), transparent 60%),
+      radial-gradient(900px 500px at 90% 110%, rgba(80,80,100,.10), transparent 60%),
+      var(--bg);
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column; align-items:center;
+    padding:44px 20px 80px; gap:14px; min-height:100vh;
+  }
+  h1{font-size:15px; font-weight:600; letter-spacing:.2px; color:var(--ink); margin-bottom:2px}
+  .sub{font-size:12.5px; color:var(--ink-55); margin-bottom:22px; max-width:520px; text-align:center; line-height:1.5}
+  .frame{display:flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:8px}
+  .label{font-size:11px; font-weight:600; letter-spacing:.4px; text-transform:uppercase; color:var(--ink-40)}
+  .caption{font-size:11.5px; color:var(--ink-55); max-width:320px; text-align:center; line-height:1.45}
+
+  /* ===== Pill (menu bar) ===== */
+  .menubar{
+    width:300px; height:34px; border-radius:9px;
+    background:rgba(30,30,32,.9); border:1px solid var(--panel-edge);
+    display:flex; align-items:center; justify-content:flex-end; padding:0 12px;
+    gap:10px; backdrop-filter:blur(8px);
+  }
+  .pill{
+    position:relative; height:22px; border-radius:6px;
+    background:var(--panel); border:1px solid rgba(255,255,255,.10);
+    display:flex; align-items:center; padding:0 9px; gap:7px;
+    font-family:var(--mono); font-size:11px; font-weight:500; color:var(--ink);
+  }
+  .spark{display:flex; align-items:flex-end; gap:1.5px; height:12px}
+  .spark i{width:2px; background:var(--ink-55); border-radius:1px; display:block}
+  /* 4pt model-limit dot, top-right of the pill — a crisp dot, no glow, per the
+     base design's restraint (the health dot is the only element allowed a halo) */
+  .pill .cdot{
+    position:absolute; top:1px; right:1px; width:4px; height:4px;
+    border-radius:50%; background:var(--red);
+  }
+  .note{ font-size:10px; color:var(--ink-40); font-family:var(--mono) }
+
+  /* ===== Popover ===== */
+  .popover{
+    width:320px; border-radius:14px; overflow:hidden;
+    background:var(--panel); border:1px solid var(--panel-edge);
+    box-shadow:0 24px 70px rgba(0,0,0,.55), 0 4px 16px rgba(0,0,0,.4);
+    padding:16px 18px 12px; position:relative;
+  }
+  .hero{display:flex; align-items:baseline; gap:6px; margin-bottom:2px}
+  .hero .amt{font-family:var(--mono); font-size:30px; font-weight:600; letter-spacing:-.5px}
+  .hero .of{font-size:13px; color:var(--ink-55)}
+  .pace{font-size:12px; color:var(--ink-55); height:18px; display:flex; align-items:center; margin-bottom:10px}
+  .hairline{height:.5px; background:var(--hairline); margin:10px -18px}
+
+  /* THE NEW ROW — inline geometry: name (truncates) → track (takes remainder)
+     → value (right-aligned), per the FooterLayout allocation */
+  .caprow{margin:2px 0 2px; padding:0}
+  .caprow .line{display:flex; align-items:center; gap:10px}
+  .caprow .name{font-size:13px; font-weight:500; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; min-width:0}
+  .caprow .track{flex:1 1 auto; min-width:60px; height:2px; border-radius:1px; background:var(--track); overflow:hidden; position:relative; top:0}
+  .caprow .fill{height:100%; border-radius:1px; background:var(--ink-70)}
+  .caprow .amt{font-family:var(--mono); font-size:11px; color:var(--ink-40); flex:0 0 auto; text-align:right}
+  .caprow.alarm .fill{background:var(--red)}
+  .caprow.alarm .amt{color:var(--red)}
+  .caprow .fill{transition:none}
+
+  /* curve */
+  .curve{height:92px; position:relative; margin-top:6px}
+  .curve svg{position:absolute; inset:0}
+  .ceiling{position:absolute; left:0; right:0; top:18px; border-top:1px dashed rgba(232,232,234,.16)}
+  .ceiling .lbl{position:absolute; right:0; top:-13px; font-family:var(--mono); font-size:9px; color:var(--ink-35,rgba(232,232,234,.35))}
+  .nowtick{position:absolute; bottom:0; width:1px; background:var(--ink-14); height:76px; left:62%}
+  .nowtick .t{position:absolute; top:80px; left:50%; transform:translateX(-50%); font-size:9px; color:var(--ink-40); font-family:var(--mono)}
+
+  /* models */
+  .sec-label{font-size:10.5px; font-weight:600; letter-spacing:.4px; text-transform:uppercase; color:var(--ink-40); margin:8px 0 6px}
+  .mrow{display:flex; align-items:baseline; gap:8px; font-size:12.5px; padding:3px 0}
+  .mrow .m{color:var(--ink)}
+  .mrow .sh{color:var(--ink-40); font-family:var(--mono); font-size:11px; margin-left:auto}
+  .mrow .c{color:var(--ink-55); font-family:var(--mono); font-size:11.5px; min-width:52px; text-align:right}
+
+  /* week strip */
+  .strip{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-top:10px}
+  .cell{height:22px; border-radius:2px; background:var(--track); position:relative; display:flex; align-items:center; justify-content:center; font-size:8.5px; color:var(--ink-40); font-family:var(--mono)}
+  .cell.d1{background:rgba(232,232,234,.07)} .cell.d2{background:rgba(232,232,234,.20)}
+  .cell.d3{background:rgba(232,232,234,.38)} .cell.d4{background:rgba(232,232,234,.58)}
+  .cell.d5{background:rgba(232,232,234,.20)} .cell.d6{background:rgba(232,232,234,.07)}
+  .cell.today{box-shadow:0 0 0 1px var(--ink-55)}
+
+  .footer{display:flex; gap:12px; align-items:center; margin-top:10px; font-size:11px; color:var(--ink-55)}
+  .footer .dot{width:6px;height:6px;border-radius:50%;background:#30d158;margin-left:auto}
+  .chrome{position:absolute; top:14px; right:14px; display:flex; gap:10px; color:var(--ink-40); font-size:12px}
+  .divider-v{height:2px}
+
+  .compare{display:flex; gap:22px; flex-wrap:wrap; justify-content:center; margin-top:6px}
+  .badge{display:inline-block; font-size:10px; padding:1px 7px; border-radius:8px; background:rgba(255,159,10,.16); color:var(--amber); font-weight:600; letter-spacing:.2px; margin-left:6px}
+</style>
+
+<h1>The Opus limit, in the UI</h1>
+<div class="sub">Two new elements against the existing frame — a row in the popover, and a dot on the pill. Everything else is the current app, unchanged.</div>
+
+<!-- ============ PILL ============ -->
+<div class="frame">
+  <div class="label">Menu bar — pill <span class="badge">the dot is new</span></div>
+  <div class="menubar">
+    <div class="pill">
+      <div class="spark"><i style="height:4px"></i><i style="height:7px"></i><i style="height:5px"></i><i style="height:10px"></i><i style="height:8px"></i><i style="height:12px"></i></div>
+      <span>$140.57</span>
+      <div class="cdot"></div>
+    </div>
+    <span class="note">4pt dot = a model cap is ≥90% or blocked</span>
+  </div>
+  <div class="caption">The border still traces the global budget ($140 of $400 — calm). The dot is the only thing that knows Opus is nearly gone. Suppressed during an active cooldown; VoiceOver reads "Opus 5 limit reached".</div>
+</div>
+
+<div style="height:8px"></div>
+
+<!-- ============ POPOVER ============ -->
+<div class="frame">
+  <div class="label">Popover — open <span class="badge">the row is new</span></div>
+  <div class="popover">
+    <div class="chrome">🔔 ·</div>
+    <div class="hero"><span class="amt">$140.57</span><span class="of">of $400 today</span></div>
+    <div class="pace">Typical day by now: $96 — you're at $141.</div>
+
+    <!-- THE NEW ROW — name → track → value, all on one line -->
+    <div class="caprow alarm">
+      <div class="line">
+        <span class="name">Opus 5</span>
+        <span class="track"><span class="fill" style="width:92%"></span></span>
+        <span class="amt">$18.42 of $20</span>
+      </div>
+    </div>
+
+    <div class="hairline"></div>
+
+    <div class="curve">
+      <div class="ceiling"><span class="lbl">$400</span></div>
+      <svg viewBox="0 0 284 92" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="rgba(232,232,234,.30)"/><stop offset="1" stop-color="rgba(232,232,234,0)"/>
+          </linearGradient>
+        </defs>
+        <path d="M0,92 L0,80 L24,74 L60,70 L110,64 L150,58 L176,52 L176,92 Z" fill="url(#g)"/>
+        <path d="M0,80 L24,74 L60,70 L110,64 L150,58 L176,52" fill="none" stroke="#e8e8ea" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="176" cy="52" r="3" fill="#e8e8ea"/>
+      </svg>
+      <div class="nowtick"><span class="t">now</span></div>
+    </div>
+
+    <div class="hairline"></div>
+
+    <div class="sec-label">Models · Today</div>
+    <div class="mrow"><span class="m">opus-5</span><span class="sh">47%</span><span class="c">$66.10</span></div>
+    <div class="mrow"><span class="m">kimi-k3</span><span class="sh">38%</span><span class="c">$53.42</span></div>
+    <div class="mrow"><span class="m">sonnet-5</span><span class="sh">15%</span><span class="c">$21.05</span></div>
+
+    <div class="strip">
+      <div class="cell d1">M</div><div class="cell d3">T</div><div class="cell d2">W</div>
+      <div class="cell d4">T</div><div class="cell d5">F</div><div class="cell d6">S</div>
+      <div class="cell d1 today">S</div>
+    </div>
+
+    <div class="footer">Dashboard ↗ · API key · Start at login <span class="dot"></span></div>
+  </div>
+  <div class="caption">The row sits between the pace sentence and the curve — nested constraint above global history. Achromatic at rest; it borrows the pill's amber/red only as it nears the wall. At 92% it's red (the ≥0.90 alarm band), while the $400 ceiling and the calm curve tell the global story above it.</div>
+</div>
+
+<div style="height:6px"></div>
+<div class="caption" style="max-width:420px">Two reads at a glance: the global number is calm, the row is not — which is the whole point. And the row collapses to zero height on a server with no cap, so nothing ever shows a blank hole.</div>
