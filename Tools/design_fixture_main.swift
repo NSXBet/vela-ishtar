@@ -331,7 +331,7 @@ private func stateFixture(_ name: String) -> (budget: BudgetOverview, breakdown:
 }
 
 @MainActor
-private func renderAll(to directory: URL) throws {
+private func renderAll(to directory: URL) async throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let now = fixtureNow()
     let appearances: [(String, NSAppearance)] = [
@@ -359,10 +359,31 @@ private func renderAll(to directory: URL) throws {
                        spendDate: dayKey(now))
     }
 
-    // The real 320pt card needs a PollState; fresh is the honest live state.
+    // The LIVE card (post-WP-07) renders from SummaryDisplayState via the
+    // new apply(displayState:...) API. Build the state through the real
+    // SummaryPresenter from the same worst-case fixture data the v2 side
+    // uses — the comparison is now live-conversion vs its own design.
     let v1View = PopoverView()
-    v1View.update(state: .fresh(response), history: history,
-                  exhaustedAt: nil, lastSuccessAt: now, now: now)
+    do {
+        let repository = HistoryRepository(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("vela-fixture-repo"))
+        let snapshot = UsageValidation.snapshot(
+            from: response,
+            scope: fixtureScope(),
+            receivedAt: now
+        )
+        let presenter = await SummaryPresenter()
+        let context = SummaryPresenter.Context(
+            snapshot: snapshot, connection: .live, repository: repository
+        )
+        let liveState = await presenter.displayState(
+            from: context, selectedPeriod: "today", now: now
+        )
+        v1View.apply(
+            displayState: liveState, connection: .live,
+            response: response, receivedAt: now
+        )
+    }
 
     // The proposed 360pt side, from contract values.
     let liveBudget = overview(spent: 54.51, limit: 400,
