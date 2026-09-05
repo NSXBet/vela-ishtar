@@ -28,9 +28,12 @@ private let repositoryLog = Logger(subsystem: "com.nsxbet.velaishtar", category:
 /// (WP-02), described here as contract.
 ///
 /// Moved here verbatim from UsageContracts.swift (WP-02 is the producer);
-/// names, cases, and semantics are unchanged. Codable was added for
-/// persistence.
-public struct HistoryEnvelope: Equatable, Sendable, Codable {
+/// names, cases, and semantics are unchanged. Persistence is NOT synthesized
+/// Codable on this struct: §7.3 requires scope/day/policy metadata to be
+/// stored ONCE and referenced by samples, so encoding/decoding goes through
+/// the normalized `NormalizedEnvelopeDTO` below and rehydrates Observations
+/// from the shared metadata tables.
+public struct HistoryEnvelope: Equatable, Sendable {
     /// On-disk schema version. 2 is the v2.0 envelope.
     public static let currentVersion = 2
 
@@ -70,6 +73,167 @@ public struct HistoryEnvelope: Equatable, Sendable, Codable {
         self.revision = revision
         self.days = days
         self.coverage = coverage
+    }
+}
+
+// MARK: - Normalized schema-2 persistence DTO (§7.3 storage shape)
+
+/// The on-disk shape for schema 2. §7.3: "Store shared scope/day metadata
+/// once, and policy context by reference within a day, rather than
+/// duplicating a large object per sample." Scopes live in one table, each
+/// day gets one policy record, and samples reference them by index/key —
+/// a 320-observation day stores its scope triple and (limitEnabled, limit)
+/// pair once, not 320 times.
+private struct NormalizedEnvelopeDTO: Codable, Equatable {
+    /// Shared scope table: stable scopeID → (kind, gatewayOrigin).
+    struct ScopeRecord: Codable, Equatable {
+        var kind: UsageScope.Kind
+        var gatewayOrigin: String
+    }
+
+    /// Per-day policy context, written once and referenced by samples.
+    struct PolicyRecord: Codable, Equatable, Hashable {
+        var limitEnabled: Bool
+        var limitUSD: Double
+    }
+
+    /// One stored sample: everything unique to the reading, references for
+    /// everything shared.
+    struct SampleDTO: Codable, Equatable {
+        var id: UUID
+        /// Index into the day's policy records (policy context by reference).
+        var policy: Int
+        var receivedAt: Date
+        var cumulativeAmount: Double
+        var precision: Observation.Precision
+    }
+
+    struct DayDTO: Codable, Equatable {
+        var policy: [PolicyRecord]
+        var samples: [SampleDTO]
+    }
+
+    var version: Int
+    var revision: UInt64
+    var scopes: [String: ScopeRecord]
+    /// scopeID → dayKey → day record (policy table + reference samples).
+    var days: [String: [String: DayDTO]]
+    var coverage: [String: [String: HistoryEnvelope.Coverage]]
+}
+
+extension HistoryEnvelope {
+    /// Encodes through the normalized DTO. Throws if any observation's day
+    /// key disagrees with its storage day (a corrupted in-memory map), so a
+    /// bad write can never silently persist.
+    func encodedForPersistence(using encoder: JSONEncoder) throws -> Data {
+        var dto = NormalizedEnvelopeDTO(
+            version: version, revision: revision,
+            scopes: [:], days: [:], coverage: coverage
+        )
+        for (scopeID, scopeDays) in days {
+            guard let scopeRecord = scopeRecord(forScopeID: scopeID, in: scopeDays) else {
+                throw HistoryRepository.SaveError.encodeFailed
+            }
+            dto.scopes[scopeID] = scopeRecord
+            var encodedDays: [String: NormalizedEnvelopeDTO.DayDTO] = [:]
+            for (dayKey, observations) in scopeDays {
+                var policies: [NormalizedEnvelopeDTO.PolicyRecord] = []
+                var policyIndex: [NormalizedEnvelopeDTO.PolicyRecord: Int] = [:]
+                var samples: [NormalizedEnvelopeDTO.SampleDTO] = []
+                for observation in observations {
+                    // A sample must agree with the day it is stored under.
+                    guard observation.gatewayDay.key == dayKey,
+                          observation.scope.opaqueID.uuidString == scopeID else {
+                        throw HistoryRepository.SaveError.encodeFailed
+                    }
+                    let policy = NormalizedEnvelopeDTO.PolicyRecord(
+                        limitEnabled: observation.limitEnabled,
+                        limitUSD: observation.limitUSD
+                    )
+                    let index = policyIndex[policy] ?? {
+                        policies.append(policy)
+                        policyIndex[policy] = policies.count - 1
+                        return policies.count - 1
+                    }()
+                    samples.append(.init(
+                        id: observation.id,
+                        policy: index,
+                        receivedAt: observation.receivedAt,
+                        cumulativeAmount: observation.cumulativeAmount,
+                        precision: observation.precision
+                    ))
+                }
+                encodedDays[dayKey] = .init(policy: policies, samples: samples)
+            }
+            dto.days[scopeID] = encodedDays
+        }
+        return try encoder.encode(dto)
+    }
+
+    /// Every observation in a scope's days must share one UsageScope; take
+    /// it from the first sample and verify no sample disagrees.
+    private func scopeRecord(forScopeID scopeID: String, in scopeDays: [String: [Observation]]) -> NormalizedEnvelopeDTO.ScopeRecord? {
+        var kind: UsageScope.Kind?
+        var origin: String?
+        for observations in scopeDays.values {
+            for observation in observations {
+                guard observation.scope.opaqueID.uuidString == scopeID else { return nil }
+                if let knownKind = kind {
+                    guard observation.scope.kind == knownKind, observation.scope.gatewayOrigin == origin else { return nil }
+                } else {
+                    kind = observation.scope.kind
+                    origin = observation.scope.gatewayOrigin
+                }
+            }
+        }
+        guard let kind, let origin else { return nil }
+        return .init(kind: kind, gatewayOrigin: origin)
+    }
+
+    /// Decodes the normalized DTO back into the in-memory envelope,
+    /// rehydrating each Observation from the shared tables. Throws on any
+    /// dangling reference (bad policy index, unknown scope) — the caller
+    /// treats that as a corrupt file, not a partial load.
+    static func decodedFromPersistence(_ data: Data, using decoder: JSONDecoder) throws -> HistoryEnvelope {
+        let dto = try decoder.decode(NormalizedEnvelopeDTO.self, from: data)
+        var days: [String: [String: [Observation]]] = [:]
+        for (scopeID, scopeDays) in dto.days {
+            guard let scopeRecord = dto.scopes[scopeID],
+                  let opaqueID = UUID(uuidString: scopeID) else {
+                throw HistoryRepository.SaveError.encodeFailed
+            }
+            let scope = UsageScope(kind: scopeRecord.kind, opaqueID: opaqueID, gatewayOrigin: scopeRecord.gatewayOrigin)
+            var decodedDays: [String: [Observation]] = [:]
+            for (dayKey, day) in scopeDays {
+                guard let gatewayDay = GatewayDay(spendDate: dayKey) else {
+                    throw HistoryRepository.SaveError.encodeFailed
+                }
+                let observations = try day.samples.map { sample -> Observation in
+                    guard day.policy.indices.contains(sample.policy) else {
+                        throw HistoryRepository.SaveError.encodeFailed
+                    }
+                    let policy = day.policy[sample.policy]
+                    return Observation(
+                        id: sample.id,
+                        scope: scope,
+                        gatewayDay: gatewayDay,
+                        receivedAt: sample.receivedAt,
+                        cumulativeAmount: sample.cumulativeAmount,
+                        limitEnabled: policy.limitEnabled,
+                        limitUSD: policy.limitUSD,
+                        precision: sample.precision
+                    )
+                }
+                decodedDays[dayKey] = observations
+            }
+            days[scopeID] = decodedDays
+        }
+        return HistoryEnvelope(
+            version: dto.version,
+            revision: dto.revision,
+            days: days,
+            coverage: dto.coverage
+        )
     }
 }
 
@@ -372,13 +536,26 @@ public actor HistoryRepository {
             // Byte-preserving backup BEFORE writing schema 2 (§7.3). At most
             // one backup: an existing backup is never overwritten, so a
             // re-run after interruption cannot churn it.
+            var backupFailed: String?
             if !filesystem.exists(at: backupURL) {
                 do {
                     try filesystem.createDirectory(at: directory)
                     try filesystem.copyItem(at: fileURL, to: backupURL)
                 } catch {
-                    repositoryLog.error("legacy backup failed: \(error.localizedDescription, privacy: .public)")
+                    // §7.3/02.3: the byte-preserving backup is a hard
+                    // precondition for migration. Without it, saving schema 2
+                    // would replace the sole legacy file — refuse to
+                    // migrate and leave everything exactly as it was.
+                    backupFailed = "legacy backup failed: \(error.localizedDescription)"
+                    repositoryLog.error("\(backupFailed ?? "backup failed", privacy: .public)")
                 }
+            }
+            if let backupFailed {
+                lastError = backupFailed
+                // Nothing written, nothing quarantined: the legacy file is
+                // the only good copy and stays untouched. In-memory state
+                // stays empty; the next launch retries the same migration.
+                return .unreadable(reason: backupFailed)
             }
             persistQuarantine(quarantined)
             days = envelope.days
@@ -421,7 +598,7 @@ public actor HistoryRepository {
         encoder.outputFormatting = [.sortedKeys]
         var data: Data
         do {
-            data = try encoder.encode(envelope)
+            data = try envelope.encodedForPersistence(using: encoder)
         } catch {
             lastError = "encode failed: \(error.localizedDescription)"
             throw SaveError.encodeFailed
@@ -431,7 +608,7 @@ public actor HistoryRepository {
         // oldest complete day records, before committing an oversized file.
         if data.count > HistoryRetention.maxEnvelopeBytes {
             shrinkToFitBudget(encoder: encoder)
-            data = (try? encoder.encode(envelope)) ?? data
+            data = (try? envelope.encodedForPersistence(using: encoder)) ?? data
         }
 
         let tempURL = directory.appendingPathComponent("\(Self.tempFilePrefix)\(UUID().uuidString)")
@@ -476,7 +653,7 @@ public actor HistoryRepository {
     /// touches the current gateway day.
     private func shrinkToFitBudget(encoder: JSONEncoder) {
         func encodedSize() -> Int {
-            ((try? encoder.encode(envelope))?.count) ?? Int.max
+            ((try? envelope.encodedForPersistence(using: encoder))?.count) ?? Int.max
         }
         // Pass 1: halve the density of the oldest days (drop every second
         // ordinary observation) until under budget.
@@ -532,7 +709,7 @@ public actor HistoryRepository {
         guard !records.isEmpty else { return }
         let quarantineDir = directory.appendingPathComponent(Self.quarantineDirectoryName)
         let quarantineFile = quarantineDir.appendingPathComponent("records.json")
-        struct Entry: Codable {
+        struct Entry: Codable, Hashable {
             var reason: String
             var originalKey: String
             var payload: String
@@ -542,7 +719,16 @@ public actor HistoryRepository {
            let decoded = try? JSONDecoder().decode([Entry].self, from: existing) {
             entries = decoded
         }
-        entries.append(contentsOf: records.map { Entry(reason: $0.reason.rawValue, originalKey: $0.originalKey, payload: $0.payload) })
+        let new = records.map { Entry(reason: $0.reason.rawValue, originalKey: $0.originalKey, payload: $0.payload) }
+        // Idempotence: a retry after a failed schema-2 write re-runs the
+        // same migration and re-offers the same quarantined records.
+        // Deduplicate by (reason, originalKey, payload) identity, keeping
+        // the FIRST occurrence and sorting deterministically, so the file
+        // holds each distinct record exactly once regardless of retries.
+        var seen = Set<Entry>()
+        entries.append(contentsOf: new)
+        entries = entries.filter { seen.insert($0).inserted }
+            .sorted { ($0.reason, $0.originalKey, $0.payload) < ($1.reason, $1.originalKey, $1.payload) }
         do {
             try filesystem.createDirectory(at: quarantineDir)
             let data = try JSONEncoder().encode(entries)

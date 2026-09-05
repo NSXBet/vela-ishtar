@@ -75,7 +75,7 @@ public enum HistoryMigration {
             return .corrupt(reason: "not a JSON object")
         }
         if let version = dict["version"] as? Int, version == HistoryEnvelope.currentVersion {
-            if let envelope = try? JSONDecoder().decode(HistoryEnvelope.self, from: raw) {
+            if let envelope = try? HistoryEnvelope.decodedFromPersistence(raw, using: JSONDecoder()) {
                 return .alreadyCurrent(envelope)
             }
             return .corrupt(reason: "claims schema 2 but does not decode as a history envelope")
@@ -197,19 +197,32 @@ public enum HistoryMigration {
 
     /// Deterministic UUID for a migrated legacy observation (namespace-style
     /// mixing of scope/day/hour/amount into UUID bytes). Determinism is what
-    /// makes the migration idempotent across interrupted restarts.
+    /// makes the migration idempotent across interrupted restarts — and it
+    /// must hold ACROSS PROCESSES, so this uses FNV-1a over UTF-8 bytes
+    /// (Swift's Hasher is per-process seeded and would mint different IDs
+    /// every launch).
     private static func stableID(scope: String, day: String, hour: Int, amount: Double) -> UUID {
-        var hasher = Hasher()
-        hasher.combine(scope)
-        hasher.combine(day)
-        hasher.combine(hour)
-        hasher.combine(amount.bitPattern)
-        let h1 = hasher.finalize()
-        var hasher2 = Hasher()
-        hasher2.combine(h1)
-        hasher2.combine("vela-legacy-observation")
-        let h2 = hasher2.finalize()
-        var bytes = withUnsafeBytes(of: h1.bigEndian) { Array($0) } + withUnsafeBytes(of: h2.bigEndian) { Array($0) }
+        var digest: UInt64 = 0xcbf29ce484222325 // FNV offset basis
+        let prime: UInt64 = 0x100000001b3       // FNV prime
+
+        func combine(_ input: String) {
+            for byte in input.utf8 {
+                digest = (digest ^ UInt64(byte)) &* prime
+            }
+            // Domain-separate fields so ("day1", "2") ≠ ("day", "12").
+            digest = (digest ^ 0xff) &* prime
+        }
+
+        combine("vela-legacy-observation")
+        combine(scope)
+        combine(day)
+        combine(String(hour))
+        combine(String(amount.bitPattern))
+
+        var bytes = withUnsafeBytes(of: digest.bigEndian) { Array($0) }
+        // Pad 8 digest bytes to 16 with a second round over the first.
+        let second = (digest ^ 0x5a5a5a5a5a5a5a5a) &* prime
+        bytes += withUnsafeBytes(of: second.bigEndian) { Array($0) }
         // Set version 4 / variant bits so the UUID is well-formed.
         bytes[6] = (bytes[6] & 0x0F) | 0x40
         bytes[8] = (bytes[8] & 0x3F) | 0x80

@@ -201,7 +201,7 @@ struct HistoryMigrationTests {
             days: [observation.scope.opaqueID.uuidString: ["2026-08-01": [observation]]],
             coverage: [:]
         )
-        let data = try JSONEncoder().encode(envelope)
+        let data = try envelope.encodedForPersistence(using: JSONEncoder())
         let plan = HistoryMigration.plan(data)
         guard case .alreadyCurrent(let loaded) = plan else {
             Issue.record("expected alreadyCurrent, got \(plan)")
@@ -310,4 +310,203 @@ final class ReadOnlyFilesystem: HistoryFilesystem, @unchecked Sendable {
     func copyItem(at source: URL, to destination: URL) throws { try base.copyItem(at: source, to: destination) }
     func removeItem(at url: URL) throws { try base.removeItem(at: url) }
     func contentsOfDirectory(at url: URL) throws -> [String] { try base.contentsOfDirectory(at: url) }
+}
+
+// MARK: - cross-process ID stability and backup-failure abort (coordinator fixes)
+
+/// A seam whose COPY fails (simulates full disk / permission on the backup
+/// destination). Reads and writes pass through — the migration must refuse
+/// to run before any write happens, so only the copy failure is exercised.
+final class CopyFailingFilesystem: HistoryFilesystem, @unchecked Sendable {
+    let base: FileManagerHistoryFilesystem
+    init(base: FileManagerHistoryFilesystem) { self.base = base }
+
+    func exists(at url: URL) -> Bool { base.exists(at: url) }
+    func read(_ url: URL) throws -> Data { try base.read(url) }
+    func createDirectory(at url: URL) throws { try base.createDirectory(at: url) }
+    func write(_ data: Data, to url: URL) throws {
+        Issue.record("no write may happen when the backup failed")
+        try base.write(data, to: url)
+    }
+    func replaceItem(at destination: URL, with source: URL) throws {
+        Issue.record("no write may happen when the backup failed")
+        try base.replaceItem(at: destination, with: source)
+    }
+    func copyItem(at source: URL, to destination: URL) throws {
+        throw CocoaError(.fileWriteNoPermission)
+    }
+    func removeItem(at url: URL) throws { try base.removeItem(at: url) }
+    func contentsOfDirectory(at url: URL) throws -> [String] { try base.contentsOfDirectory(at: url) }
+}
+
+struct HistoryMigrationIntegrityTests {
+    @Test("a failed legacy backup aborts migration: original bytes unchanged, no schema-2 write, surfaced error")
+    func failedBackupAbortsMigration() async throws {
+        let directory = HistoryMigrationTests.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent(HistoryRepository.activeFileName)
+        let original = try HistoryMigrationTests.fixtureData("valid-schema1.json")
+        try original.write(to: fileURL)
+
+        let repository = HistoryRepository(
+            directory: directory,
+            filesystem: CopyFailingFilesystem(base: FileManagerHistoryFilesystem())
+        )
+        let status = await repository.load()
+
+        // Surface a recoverable status, not a silent success.
+        guard case .unreadable = status else {
+            Issue.record("expected unreadable, got \(status)")
+            return
+        }
+        // The sole good copy is byte-identical on disk.
+        let after = try Data(contentsOf: fileURL)
+        #expect(after == original)
+        // No schema-2 envelope was written anywhere: no backup, no rewrite.
+        #expect(!FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent(HistoryRepository.legacyBackupFileName).path))
+        let onDisk = (try? JSONSerialization.jsonObject(with: after)) as? [String: Any]
+        #expect(onDisk?["version"] as? Int != HistoryEnvelope.currentVersion)
+    }
+
+    @Test("migrated observation IDs are stable across processes (pinned digest value)")
+    func migratedIDsAreCrossProcessStable() throws {
+        // Derived via the public plan() so the pinned constant survives
+        // refactors of stableID internals while still pinning its output.
+        let migrated = HistoryMigration.plan(try HistoryMigrationTests.fixtureData("valid-schema1.json"))
+        guard case .migrateLegacy(let envelope, _) = migrated else {
+            Issue.record("expected migrateLegacy")
+            return
+        }
+        let first = try #require(
+            envelope.days[HistoryMigration.legacyScopeID]?["2026-08-01"]?.first)
+        // Pin the exact UUID: the constant was computed independently of the
+        // production code (fresh-process digest of
+        // namespace/scope/day/hour/amount for hour 9, amount 10.0). Hasher
+        // is per-process seeded; this failing means IDs changed between
+        // processes and migration is no longer idempotent across restarts.
+        #expect(first.id.uuidString == "8D997686-B44F-4C06-B60B-97688E5CEE54")
+    }
+
+    @Test("schema-2 JSON shape is normalized: scope/policy stored once, referenced by samples, round-trips")
+    func persistedJSONIsNormalizedAndRoundTrips() async throws {
+        let repository = HistoryRepository(directory: HistoryMigrationTests.freshDirectory())
+        let scope = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://gw.example.com")
+        let day = try #require(GatewayDay(spendDate: "2026-08-01"))
+        let base = ISODate.parse("2026-08-01T09:00:00Z")!
+        // Many samples, one shared scope and one shared policy context.
+        for i in 0..<50 {
+            await repository.append(Observation(
+                id: UUID(), scope: scope, gatewayDay: day,
+                receivedAt: base.addingTimeInterval(TimeInterval(i * 300)),
+                cumulativeAmount: Double(i), limitEnabled: true, limitUSD: 400,
+                precision: .exactReceipt
+            ))
+        }
+        try await repository.save()
+
+        let raw = try Data(contentsOf: URL(fileURLWithPath: await repository.directory.path)
+            .appendingPathComponent(HistoryRepository.activeFileName))
+        let json = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        let scopeID = scope.opaqueID.uuidString
+
+        // Shape: scope metadata appears ONCE in a scope table, not per sample.
+        let scopes = try #require(json["scopes"] as? [String: Any])
+        #expect(scopes.count == 1)
+        #expect(scopes[scopeID] != nil)
+
+        // Shape: the day's policy context appears ONCE; samples reference it.
+        let days = try #require(json["days"] as? [String: Any])
+        let scopeDays = try #require(days[scopeID] as? [String: Any])
+        let dayDTO = try #require(scopeDays["2026-08-01"] as? [String: Any])
+        let policies = try #require(dayDTO["policy"] as? [[String: Any]])
+        #expect(policies.count == 1)
+        let samples = try #require(dayDTO["samples"] as? [[String: Any]])
+        #expect(samples.count == 50)
+        #expect(samples.allSatisfy { ($0["policy"] as? Int) == 0 })
+        // No sample carries its own scope/origin/day/policy duplication.
+        #expect(samples.allSatisfy { $0["scopeID"] == nil && $0["gatewayOrigin"] == nil && $0["limitUSD"] == nil })
+
+        // Round-trip: decoded envelope equals the in-memory one, sample for sample.
+        let reloaded = HistoryRepository(directory: URL(fileURLWithPath: await repository.directory.path))
+        let status = await reloaded.load()
+        guard case .loaded = status else {
+            Issue.record("expected loaded, got \(status)")
+            return
+        }
+        let envelopeA = await repository.envelope
+        let envelopeB = await reloaded.envelope
+        #expect(envelopeB == envelopeA)
+    }
+
+
+/// A seam whose write failure is scoped to the ACTIVE history envelope —
+/// quarantine and backup writes pass through. Simulates the interrupted
+/// migration: quarantine persisted, schema-2 write failed, retry follows.
+final class EnvelopeWriteFailingFilesystem: HistoryFilesystem, @unchecked Sendable {
+    let base: FileManagerHistoryFilesystem
+    init(base: FileManagerHistoryFilesystem) { self.base = base }
+
+    func exists(at url: URL) -> Bool { base.exists(at: url) }
+    func read(_ url: URL) throws -> Data { try base.read(url) }
+    func createDirectory(at url: URL) throws { try base.createDirectory(at: url) }
+    func write(_ data: Data, to url: URL) throws {
+        if url.lastPathComponent == HistoryRepository.activeFileName {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try base.write(data, to: url)
+    }
+    func replaceItem(at destination: URL, with source: URL) throws {
+        if destination.lastPathComponent == HistoryRepository.activeFileName {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try base.replaceItem(at: destination, with: source)
+    }
+    func copyItem(at source: URL, to destination: URL) throws { try base.copyItem(at: source, to: destination) }
+    func removeItem(at url: URL) throws { try base.removeItem(at: url) }
+    func contentsOfDirectory(at url: URL) throws -> [String] { try base.contentsOfDirectory(at: url) }
+}
+
+    @Test("quarantine survives a failed migration write + retry without duplicating records")
+    func quarantineIsIdempotentAcrossRetries() async throws {
+        let directory = HistoryMigrationTests.freshDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fixtureBytes = try HistoryMigrationTests.fixtureData("malformed-array.json")
+        try fixtureBytes.write(to: directory.appendingPathComponent(HistoryRepository.activeFileName))
+
+        // First attempt: migration runs (quarantining malformed records)
+        // but the schema-2 write FAILS (full disk / read-only destination).
+        let failing = EnvelopeWriteFailingFilesystem(base: FileManagerHistoryFilesystem())
+        let first = HistoryRepository(directory: directory, filesystem: failing)
+        let firstStatus = await first.load()
+        guard case .migratedFromLegacy = firstStatus else {
+            Issue.record("expected migratedFromLegacy (write failure surfaces via lastError), got \(firstStatus)")
+            return
+        }
+
+        // In-memory quarantine file holds each distinct record once.
+        let quarantineFile = directory
+            .appendingPathComponent(HistoryRepository.quarantineDirectoryName)
+            .appendingPathComponent("records.json")
+        func entryCount() throws -> Int {
+            let data = try Data(contentsOf: quarantineFile)
+            return try #require(try JSONDecoder().decode([[String: String]].self, from: data).count)
+        }
+        let afterFirst = try entryCount()
+        #expect(afterFirst > 0)
+
+        // Retry on the SAME in-memory state simulates the failed-save path
+        // where dirty was set: the migration plan is identical, so the same
+        // records are offered again. A second successful repository load
+        // (retry path) must not duplicate them.
+        let second = HistoryRepository(directory: directory)
+        let secondStatus = await second.load()
+        // After the failed write, history.json on disk is still legacy —
+        // the retry re-migrates and must deduplicate the quarantine.
+        guard case .migratedFromLegacy = secondStatus else {
+            Issue.record("expected retry to re-migrate, got \(secondStatus)")
+            return
+        }
+        #expect(try entryCount() == afterFirst)
+    }
 }
