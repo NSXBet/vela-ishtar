@@ -1,6 +1,8 @@
 // Sources/VelaCore/HistoryRepository.swift
 // The schema-2 history container (HistoryEnvelope) plus the serial actor
-// (HistoryRepository) that owns all load/encode/save for it.
+// (HistoryRepository) that owns all load/encode/save for it — including
+// the WP-09 marker store (receipts + pending markers) and the day/scope
+// listing the history explorer navigates.
 // Why: B13 — legacy load/save errors were discarded and file work ran on
 // the main actor; B01/§7.3 — history needs receipt-time ordering, retention
 // bounds, and a revisioned writer so two rapid saves can never regress the
@@ -326,25 +328,32 @@ enum HistoryRetentionEngine {
     }
 
     /// Enforces the per-day cap by dropping the oldest ORDINARY
-    /// observations first; first/last and policy boundaries are preserved
-    /// even when the day stays over cap (§7.3: reduced chart resolution is
-    /// reported via coverage, boundaries are never silently dropped).
-    static func capped(_ day: [Observation]) -> [Observation] {
+    /// observations first; first/last, policy boundaries, and MARKER
+    /// boundaries are preserved even when the day stays over cap (§7.3:
+    /// reduced chart resolution is reported via coverage, boundaries are
+    /// never silently dropped).
+    static func capped(_ day: [Observation], markerIDs: Set<UUID>) -> [Observation] {
         var result = day
         while result.count > HistoryRetention.maxObservationsPerDay {
-            guard let victim = oldestOrdinaryIndex(in: result) else { break }
+            guard let victim = oldestOrdinaryIndex(in: result, markerIDs: markerIDs) else { break }
             result.remove(at: victim)
         }
         return result
     }
 
+    /// Back-compat overload (no marker context).
+    static func capped(_ day: [Observation]) -> [Observation] {
+        capped(day, markerIDs: [])
+    }
+
     /// Index of the oldest droppable observation: not the first, not the
-    /// last, not either side of a policy-change boundary.
-    private static func oldestOrdinaryIndex(in day: [Observation]) -> Int? {
+    /// last, not either side of a policy-change or marker boundary.
+    private static func oldestOrdinaryIndex(in day: [Observation], markerIDs: Set<UUID>) -> Int? {
         guard day.count > 2 else { return nil }
         for i in 1..<(day.count - 1) {
             if isPolicyBoundary(day[i - 1], day[i]) { continue }
             if isPolicyBoundary(day[i], day[i + 1]) { continue }
+            if markerIDs.contains(day[i].id) { continue }
             return i
         }
         return nil
@@ -429,6 +438,12 @@ public actor HistoryRepository {
     private var lastWrittenRevision: UInt64 = 0
     private(set) var dirty = false
     private var recent: [Observation] = []
+    // WP-09 marker store: pending markers and bounded receipts, persisted
+    // to a separate markers.json (see SpendMarker.swift for the decision).
+    // Serial-actor ownership gives the same revision safety as history.
+    private var pendingMarkers: [PendingMarker] = []
+    private var markerReceipts: [MarkerReceipt] = []
+    private var markerFileDirty = false
     /// The last surfaced error, so callers can render a storage status
     /// instead of the error vanishing into a `try?` (B13).
     public private(set) var lastError: String?
@@ -478,7 +493,7 @@ public actor HistoryRepository {
         }
 
         var updated = HistoryRetentionEngine.appending(observation, to: existing)
-        updated = HistoryRetentionEngine.capped(updated)
+        updated = HistoryRetentionEngine.capped(updated, markerIDs: markerBoundaryIDs)
         scopeDays[dayKey] = updated
         days[scopeID] = scopeDays
         pruneScopesToRetentionWindow()
@@ -624,6 +639,186 @@ public actor HistoryRepository {
         lastWrittenRevision = revision
         dirty = false
         lastError = nil
+        // Marker store piggybacks on every history flush (WP-09): one
+        // persist point, marker file stays fresh without touching app
+        // call sites. Independent dirty flag keeps it a cheap no-op
+        // when no marker changed.
+        try? saveMarkers()
+    }
+
+    // MARK: - Marker store (WP-09)
+
+    public static let markerFileName = "markers.json"
+    private static let markerTempPrefix = "markers.json.tmp-"
+    /// §6.1 local-data contract: at most 100 marker receipts.
+    public static let maxMarkerReceipts = 100
+
+    private var markerFileURL: URL {
+        directory.appendingPathComponent(Self.markerFileName)
+    }
+
+    public var pendingMarkersList: [PendingMarker] { pendingMarkers }
+    public var markerReceiptsList: [MarkerReceipt] { markerReceipts }
+    /// Marker boundary observations pinned against coalescing/pruning.
+    public var markerBoundaryIDs: Set<UUID> {
+        var ids = Set<UUID>()
+        for pending in pendingMarkers { ids.insert(pending.startObservation.id) }
+        for receipt in markerReceipts {
+            ids.insert(receipt.startObservation.id)
+            if let end = receipt.endObservation { ids.insert(end.id) }
+        }
+        return ids
+    }
+
+    /// Records a marker start. The marker's start observation is pinned
+    /// against per-day cap/coalescing so the baseline can never silently
+    /// disappear from the day's retained list (WP-02's coalescing note).
+    public func startMarker(_ marker: PendingMarker) {
+        guard !pendingMarkers.contains(where: { $0.id == marker.id }) else { return }
+        // One pending marker at a time per scope: a new start replaces the
+        // previous unfinished one (the receipt list keeps its history).
+        pendingMarkers.removeAll { $0.scope == marker.scope }
+        pendingMarkers.append(marker)
+        markerFileDirty = true
+    }
+
+    /// Finishes a pending marker with an ACCEPTED end observation. The
+    /// engine decides comparability; an invalid end leaves the marker
+    /// pending and returns nil (the caller surfaces why via the engine's
+    /// rules — same scope/day required for a measured delta).
+    @discardableResult
+    public func finishMarker(id: UUID, end: Observation) -> MarkerReceipt? {
+        guard let index = pendingMarkers.firstIndex(where: { $0.id == id }) else { return nil }
+        let pending = pendingMarkers[index]
+        // Intermediates: accepted observations strictly between the start
+        // and the end within the start day — the correction scan series.
+        let dayObservations = observations(
+            scope: pending.scope, day: pending.startObservation.gatewayDay)
+        let intermediates = dayObservations.filter {
+            $0.receivedAt > pending.startObservation.receivedAt && $0.receivedAt < end.receivedAt
+        }
+        guard let receipt = SpendMarker.finishReceipt(
+            pending: pending, end: end, intermediates: intermediates) else { return nil }
+
+        pendingMarkers.remove(at: index)
+        markerReceipts.append(receipt)
+        if markerReceipts.count > Self.maxMarkerReceipts {
+            markerReceipts.removeFirst(markerReceipts.count - Self.maxMarkerReceipts)
+        }
+        markerFileDirty = true
+        return receipt
+    }
+
+    /// Cancels a pending marker without a receipt.
+    public func cancelMarker(id: UUID) {
+        guard let index = pendingMarkers.firstIndex(where: { $0.id == id }) else { return }
+        pendingMarkers.remove(at: index)
+        markerFileDirty = true
+    }
+
+    /// Loads markers.json. Never throws; a structurally unusable file is
+    /// retained in place (renamed .unusable) and the store starts empty —
+    /// the same forensic policy the corrupt-history path follows.
+    public func loadMarkers() {
+        pendingMarkers = []
+        markerReceipts = []
+        markerFileDirty = false
+        guard filesystem.exists(at: markerFileURL) else { return }
+        guard let raw = try? filesystem.read(markerFileURL) else { return }
+        guard let decoded = MarkerStoreDTO.decode(raw) else {
+            let unusable = directory.appendingPathComponent(Self.markerFileName + ".unusable")
+            if !filesystem.exists(at: unusable) {
+                try? filesystem.copyItem(at: markerFileURL, to: unusable)
+            }
+            repositoryLog.error("unusable markers.json retained as .unusable")
+            return
+        }
+        pendingMarkers = decoded.pending
+        markerReceipts = decoded.receipts
+    }
+
+    /// Writes markers.json atomically when dirty. Independent of history
+    /// saves — a marker commit must not force a history revision bump.
+    public func saveMarkers() throws {
+        guard markerFileDirty else { return }
+        do {
+            try filesystem.createDirectory(at: directory)
+        } catch {
+            lastError = "create directory failed: \(error.localizedDescription)"
+            throw SaveError.writeFailed(error.localizedDescription)
+        }
+        let data: Data
+        do {
+            data = try MarkerStoreDTO.encode(pending: pendingMarkers, receipts: markerReceipts)
+        } catch {
+            lastError = "marker encode failed: \(error.localizedDescription)"
+            throw SaveError.encodeFailed
+        }
+        let tempURL = directory.appendingPathComponent("\(Self.markerTempPrefix)\(UUID().uuidString)")
+        do {
+            try filesystem.write(data, to: tempURL)
+            try filesystem.replaceItem(at: markerFileURL, with: tempURL)
+        } catch {
+            try? filesystem.removeItem(at: tempURL)
+            lastError = "marker write failed: \(error.localizedDescription)"
+            throw SaveError.writeFailed(error.localizedDescription)
+        }
+        markerFileDirty = false
+        lastError = nil
+    }
+
+    // MARK: - Explorer listing (WP-09)
+
+    /// All (scopeID, dayKey) pairs currently retained, for the explorer's
+    /// navigation list. Sorted: scope ID, then canonical day key.
+    public struct DayListing: Equatable, Sendable {
+        public let scope: UsageScope
+        public let day: GatewayDay
+        public let observationCount: Int
+        public let coverage: HistoryEnvelope.Coverage
+    }
+
+    public func dayListings() -> [DayListing] {
+        var result: [DayListing] = []
+        for scopeID in days.keys.sorted() {
+            guard let scopeDays = days[scopeID],
+                  let firstObservation = scopeDays.values.flatMap({ $0 }).first else { continue }
+            let scope = firstObservation.scope
+            for dayKey in scopeDays.keys.sorted() {
+                guard let day = GatewayDay(spendDate: dayKey),
+                      let dayObservations = scopeDays[dayKey] else { continue }
+                result.append(DayListing(
+                    scope: scope,
+                    day: day,
+                    observationCount: dayObservations.count,
+                    coverage: scopeDays[dayKey].map {
+                        HistoryRetentionEngine.coverage(dayKey: dayKey, observations: $0)
+                    } ?? HistoryEnvelope.Coverage(
+                        dayKey: dayKey, firstObservationAt: nil, lastObservationAt: nil, isComplete: false)
+                ))
+            }
+        }
+        return result
+    }
+
+    /// The most recent observation per scope (the "latest" the explorer
+    /// opens on). Nil for unknown scopes.
+    public func latestObservation(scope: UsageScope) -> Observation? {
+        let scopeDays = days[scope.opaqueID.uuidString] ?? [:]
+        guard let newestDay = scopeDays.keys.sorted().last,
+              let list = scopeDays[newestDay] else { return nil }
+        return list.last
+    }
+
+    /// Deletes ALL history data for one scope (data control, 09.3). The
+    /// caller owns the explicit confirmation UI; the actor owns the state.
+    public func clearHistory(scope: UsageScope) {
+        days.removeValue(forKey: scope.opaqueID.uuidString)
+        pendingMarkers.removeAll { $0.scope == scope }
+        markerReceipts.removeAll { $0.scope == scope }
+        revision &+= 1
+        dirty = true
+        markerFileDirty = true
     }
 
     // MARK: - internals
@@ -697,7 +892,7 @@ public actor HistoryRepository {
     private func cleanupOrphanedTempFiles() {
         guard filesystem.exists(at: directory),
               let entries = try? filesystem.contentsOfDirectory(at: directory) else { return }
-        for entry in entries where entry.hasPrefix(Self.tempFilePrefix) {
+        for entry in entries where entry.hasPrefix(Self.tempFilePrefix) || entry.hasPrefix(Self.markerTempPrefix) {
             try? filesystem.removeItem(at: directory.appendingPathComponent(entry))
         }
     }
