@@ -64,17 +64,31 @@ func makeModelBudget(
     )
 }
 
-func makeUsage(spent: Double, limit: Double, modelBudgets: [ModelBudget] = []) -> UsageResponse {
+/// WP-05 fixture-data extension: the month/today totals and model rows are
+/// overridable so later fixture passes can render high amounts ($9,999.99),
+/// long routes, one/five/zero model rows, and month tails WITHOUT changing
+/// this call's default behavior — every new parameter defaults to nil, and a
+/// plain makeUsage(spent:limit:) call byte-matches the pre-WP-05 fixture.
+func makeUsage(
+    spent: Double,
+    limit: Double,
+    modelBudgets: [ModelBudget] = [],
+    monthTotal: Double? = nil,
+    todayTotal: Double? = nil,
+    topModels: [ModelUsage]? = nil,
+    todayModelsOverride: [ModelUsage]? = nil,
+    spendDate: String = "2026-08-04T00:00:00Z"
+) -> UsageResponse {
     // Today's models reuse the same two names as topModels, split in roughly
     // the same ratio (kimi-k3 dominates both the day and the month in this
     // fixture) — so the snapshot's Today tab shows a populated breakdown
     // instead of the empty-total fallback.
-    let kimiToday = spent * 0.96
-    let haikuToday = spent - kimiToday
-    let todayModels = [
-        ModelUsage(model: "moonshotai/kimi-k3", totalCostUSD: kimiToday, totalTokens: 3_200_000, requests: 24),
-        ModelUsage(model: "anthropic/claude-haiku-4.5", totalCostUSD: haikuToday, totalTokens: 180_000, requests: 5),
+
+    let todayModels = todayModelsOverride ?? [
+        ModelUsage(model: "moonshotai/kimi-k3", totalCostUSD: spent * 0.96, totalTokens: 3_200_000, requests: 24),
+        ModelUsage(model: "anthropic/claude-haiku-4.5", totalCostUSD: spent * 0.04, totalTokens: 180_000, requests: 5),
     ]
+    let todayStatsTotal = todayTotal ?? spent
     return UsageResponse(
         tokenId: "snapshot",
         dailyBudget: DailyBudget(
@@ -83,19 +97,22 @@ func makeUsage(spent: Double, limit: Double, modelBudgets: [ModelBudget] = []) -
             remainingUSD: max(limit - spent, 0),
             usedPercent: limit > 0 ? spent / limit * 100 : 0,
             limitEnabled: true,
-            spendDate: "2026-08-04T00:00:00Z",
+            spendDate: spendDate,
             modelBudgets: modelBudgets
         ),
-        currentMonth: MonthStats(totalCostUSD: spent, totalTokens: 8_560_000, requests: 73),
-        topModels: [
+        currentMonth: MonthStats(totalCostUSD: monthTotal ?? spent, totalTokens: 8_560_000, requests: 73),
+        topModels: topModels ?? [
             ModelUsage(model: "moonshotai/kimi-k3", totalCostUSD: 52.30, totalTokens: 68_013_553, requests: 426),
             ModelUsage(model: "anthropic/claude-haiku-4.5", totalCostUSD: 2.21, totalTokens: 4_959_265, requests: 99),
         ],
-        today: MonthStats(totalCostUSD: spent, totalTokens: todayModels.reduce(0) { $0 + $1.totalTokens }, requests: todayModels.reduce(0) { $0 + $1.requests }),
+        today: MonthStats(
+            totalCostUSD: todayStatsTotal,
+            totalTokens: todayModels.reduce(0) { $0 + $1.totalTokens },
+            requests: todayModels.reduce(0) { $0 + $1.requests }
+        ),
         todayModels: todayModels
     )
 }
-
 func makeISO8601String(_ date: Date) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
