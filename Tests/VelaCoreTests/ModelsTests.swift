@@ -322,3 +322,41 @@ struct LiveModelBudgetPayloadTests {
         #expect(cap.remainingUSD < 2)
     }
 }
+
+// MARK: - WP-01: wire-presence facts (raw absence survives decoding)
+
+struct UsageResponsePresenceTests {
+    private let budgetJSON = #"{"limit_usd":400,"spent_usd":10,"remaining_usd":390,"used_percent":2.5,"limit_enabled":true,"spend_date":"2026-09-05"}"#
+
+    @Test("missing today/today_models record as absent, not as zeroed facts")
+    func absenceRecordedNotZeroed() throws {
+        let json = #"{"token_id":"t","daily_budget":\#(budgetJSON),"current_month":{"total_cost_usd":0,"total_tokens":0,"requests":0},"top_models":[]}"#
+        let response = try JSONDecoder().decode(UsageResponse.self, from: Data(json.utf8))
+        #expect(!response.todayPresent)
+        #expect(!response.todayModelsPresent)
+        #expect(response.today.totalCostUSD == 0)      // tolerant default still applies
+        #expect(response.todayModels.isEmpty)
+    }
+
+    @Test("present today/today_models mark the flags true, even at zero totals")
+    func presenceAtZero() throws {
+        let json = #"{"token_id":"t","daily_budget":\#(budgetJSON),"current_month":{"total_cost_usd":0,"total_tokens":0,"requests":0},"top_models":[],"today":{"total_cost_usd":0,"total_tokens":0,"requests":0},"today_models":[]}"#
+        let response = try JSONDecoder().decode(UsageResponse.self, from: Data(json.utf8))
+        #expect(response.todayPresent)
+        #expect(response.todayModelsPresent)
+        #expect(response.todayModels.isEmpty)          // explicitly empty ≠ absent
+    }
+
+    @Test("memberwise init infers presence from provided values for convenience")
+    func memberwiseInference() {
+        let present = UsageResponse(
+            tokenId: "t",
+            dailyBudget: DailyBudget(limitUSD: 1, spentUSD: 0, remainingUSD: 1, usedPercent: 0, limitEnabled: true, spendDate: "2026-09-05"),
+            currentMonth: MonthStats(totalCostUSD: 0, totalTokens: 0, requests: 0),
+            topModels: [],
+            today: MonthStats(totalCostUSD: 5, totalTokens: 0, requests: 0),
+            todayModels: [ModelUsage(model: "m", totalCostUSD: 5, totalTokens: 0, requests: 0)]
+        )
+        #expect(present.todayPresent && present.todayModelsPresent)
+    }
+}

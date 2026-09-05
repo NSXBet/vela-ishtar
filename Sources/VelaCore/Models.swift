@@ -31,6 +31,13 @@
 import Foundation
 
 public struct UsageResponse: Codable, Equatable, Sendable {
+    /// True when the wire payload actually carried `today` / `today_models`.
+    /// The tolerant defaults below still apply for convenience, but raw
+    /// field absence must survive decoding (§7.2): an older gateway payload
+    /// is `.unavailable`, never a fabricated empty list. Not wire keys —
+    /// decoded facts about the payload itself.
+    public let todayPresent: Bool
+    public let todayModelsPresent: Bool
     public let tokenId: String
     public let dailyBudget: DailyBudget
     public let currentMonth: MonthStats
@@ -53,7 +60,9 @@ public struct UsageResponse: Codable, Equatable, Sendable {
         currentMonth: MonthStats,
         topModels: [ModelUsage],
         today: MonthStats = MonthStats(totalCostUSD: 0, totalTokens: 0, requests: 0),
-        todayModels: [ModelUsage] = []
+        todayModels: [ModelUsage] = [],
+        todayPresent: Bool? = nil,
+        todayModelsPresent: Bool? = nil
     ) {
         self.tokenId = tokenId
         self.dailyBudget = dailyBudget
@@ -61,6 +70,8 @@ public struct UsageResponse: Codable, Equatable, Sendable {
         self.topModels = topModels
         self.today = today
         self.todayModels = todayModels
+        self.todayPresent = todayPresent ?? (todayModels != [])
+        self.todayModelsPresent = todayModelsPresent ?? (todayModels != [])
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,6 +83,8 @@ public struct UsageResponse: Codable, Equatable, Sendable {
         today = try container.decodeIfPresent(MonthStats.self, forKey: .today)
             ?? MonthStats(totalCostUSD: 0, totalTokens: 0, requests: 0)
         todayModels = try container.decodeIfPresent([ModelUsage].self, forKey: .todayModels) ?? []
+        todayPresent = container.contains(.today)
+        todayModelsPresent = container.contains(.todayModels)
     }
 }
 
