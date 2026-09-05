@@ -10,7 +10,7 @@ VERSION := $(shell /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString"
 .PHONY: test build run release readme-version
 
 test:
-	swift test -Xswiftc -F -Xswiftc "$(FW)" \
+	swift test -Xswiftc -swift-version -Xswiftc 5 -Xswiftc -F -Xswiftc "$(FW)" \
 		-Xlinker -rpath -Xlinker "$(FW)" \
 		-Xlinker -rpath -Xlinker "$(LIB)"
 

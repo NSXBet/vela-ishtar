@@ -1,0 +1,21 @@
+{
+  "token_id": "11111111-2222-4333-8444-555555555555",
+  "daily_budget": {
+    "limit_usd": 400.0,
+    "spent_usd": 12.0,
+    "remaining_usd": 388.0,
+    "used_percent": 3.0,
+    "limit_enabled": true,
+    "spend_date": "2026-09-01"
+  },
+  "current_month": {
+    "period_start": "2026-09-01T00:00:00-03:00",
+    "period_end": "2026-09-01T09:00:00-03:00",
+    "total_cost_usd": 12.0,
+    "total_tokens": 4000000,
+    "requests": 40
+  },
+  "top_models": [
+    {"model": "example/alpha-model", "total_cost_usd": 12.0, "total_tokens": 4000000, "requests": 40}
+  ]
+}

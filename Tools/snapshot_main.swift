@@ -101,18 +101,36 @@ func makeISO8601String(_ date: Date) -> String {
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.string(from: date)
 }
+/// Resolves an output directory from an env var (absolute or ~-relative),
+/// falling back to the default. Empty/whitespace values count as unset.
+private func envDir(_ name: String, fallback: URL) -> URL {
+    let raw = ProcessInfo.processInfo.environment[name] ?? ""
+    let trimmed = raw.trimmingCharacters(in: .whitespaces)
+    guard !trimmed.isEmpty else { return fallback }
+    let expanded = (trimmed as NSString).expandingTildeInPath
+    return URL(fileURLWithPath: expanded)
+}
 
 @MainActor
 func writeSnapshots() throws {
     // Pill assets are COMMITTED (the README embeds them); popover renders are
     // scratch, for eyeballing a layout change.
+    // Output roots are configurable without touching defaults: set
+    // VELA_SNAPSHOT_ASSETS_DIR / VELA_SNAPSHOT_SCRATCH_DIR (or both via
+    // VELA_SNAPSHOT_DIR) before running. Defaults are the committed
+    // docs/assets and /tmp/vela-snapshots — so a plain run still refreshes
+    // the README assets, and WP-00's dedicated measurement/fixture output
+    // goes anywhere else without rewriting README images.
     let repoRoot = URL(fileURLWithPath: #filePath)          // Tools/snapshot_main.swift
         .deletingLastPathComponent()                        // Tools/
         .deletingLastPathComponent()                        // repo root
-    let assetsDir = repoRoot.appendingPathComponent("docs/assets")
-    let scratchDir = URL(fileURLWithPath: "/tmp/vela-snapshots")
+    let assetsDir = envDir("VELA_SNAPSHOT_ASSETS_DIR",
+                           fallback: envDir("VELA_SNAPSHOT_DIR", fallback: repoRoot.appendingPathComponent("docs/assets")))
+    let scratchDir = envDir("VELA_SNAPSHOT_SCRATCH_DIR",
+                            fallback: envDir("VELA_SNAPSHOT_DIR", fallback: URL(fileURLWithPath: "/tmp/vela-snapshots")))
     try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
     try FileManager.default.createDirectory(at: scratchDir, withIntermediateDirectories: true)
+
 
     // Force the FULL pill (calm level 1). See the header note: an uninstalled
     // controller reads as notch-clipped and would render the hairline. The
