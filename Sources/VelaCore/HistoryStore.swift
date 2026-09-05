@@ -14,14 +14,43 @@ private let historyLog = Logger(subsystem: "com.nsxbet.velaishtar", category: "H
 /// today" figure as of UTC hour `h`, or nil if that hour hasn't happened
 /// (or wasn't observed) yet.
 public struct DayRecord: Codable, Equatable, Sendable {
+    /// A reading received after local midnight that still belongs to this
+    /// GATEWAY day (B01). The hourly array is indexed by the local-UTC hour
+    /// of receipt, so a 00:30 reading for yesterday's spend_date has no
+    /// honest slot — writing it into hour 0 both destroys that slot and
+    /// makes the receipt-order series non-monotonic, which load() then
+    /// deletes as contaminated (the §12.1 data-loss sequence). Late readings
+    /// keep their true receipt instant instead.
+    public struct LateReading: Codable, Equatable, Sendable {
+        public var at: Date
+        public var amount: Double
+
+        public init(at: Date, amount: Double) {
+            self.at = at
+            self.amount = amount
+        }
+    }
+
     public var hourly: [Double?]
     public var limit: Double
     public var exhaustedAt: Date?
+    /// Receipt-ordered readings for this gateway day that arrived on a LATER
+    /// local-UTC calendar day. Optional so legacy schema-1 files (which have
+    /// no such key) still decode via synthesized Codable.
+    public var lateReadings: [LateReading]?
 
-    public init(hourly: [Double?], limit: Double, exhaustedAt: Date?) {
+    public init(hourly: [Double?], limit: Double, exhaustedAt: Date?, lateReadings: [LateReading]? = nil) {
         self.hourly = hourly
         self.limit = limit
         self.exhaustedAt = exhaustedAt
+        self.lateReadings = lateReadings
+    }
+
+    /// The most recently observed cumulative amount for the day: the last
+    /// late reading when present, else the highest hour slot with a value.
+    public var lastObservedAmount: Double? {
+        if let late = lateReadings?.last { return late.amount }
+        return hourly.last { $0 != nil } ?? nil
     }
 }
 
@@ -87,6 +116,27 @@ public struct HistoryStore: Sendable {
 
         var day = days[key] ?? DayRecord(hourly: Array(repeating: nil, count: 24), limit: limit, exhaustedAt: nil)
         day.limit = limit
+        // B01: a reading received on a LATER local-UTC calendar day than the
+        // gateway's spend_date continues that gateway day — the gateway's day
+        // boundary lags the local clock. It must NEVER go into hour 0: the
+        // hourly slot index is the local hour of receipt, and hour 0 of the
+        // labeled day is 24h EARLIER in receipt order. Keep it as a
+        // late reading with its true receipt instant; the running-max guard
+        // still rejects downward seam resets (audit #4).
+        if Self.dayKeyFormatter.string(from: date) != key {
+            let runningMax = max(day.hourly.compactMap { $0 }.max() ?? 0, day.lateReadings?.map(\.amount).max() ?? 0)
+            if runningMax > 0, spentToday < runningMax - max(runningMax * 0.01, 0.50) {
+                historyLog.notice("ignored downward seam restatement for \(key, privacy: .public): peak \(runningMax, privacy: .public) -> \(spentToday, privacy: .public)")
+            } else {
+                day.lateReadings = (day.lateReadings ?? []) + [DayRecord.LateReading(at: date, amount: spentToday)]
+                if day.exhaustedAt == nil, limitEnabled, spentToday >= limit {
+                    day.exhaustedAt = date
+                }
+            }
+            days[key] = day
+            pruneToRetentionWindow()
+            return
+        }
         // Monotonic guard: a cumulative "spent today" reading never goes
         // DOWN within a gateway day, so never accept a value that drops
         // below the day's running max by more than the restatement
@@ -103,9 +153,14 @@ public struct HistoryStore: Sendable {
         // 00:30 poll writes a small value into hour 0 of a day that already
         // holds a large hour-23 reading. Tolerance mirrors isContaminated's
         // (max 1% of the running max, or $0.50) so an honest tiny
-        // restatement doesn't wedge the slot at a stale high.
-        let runningMax = day.hourly.compactMap { $0 }.max()
-        if let peak = runningMax {
+        // restatement doesn't wedge the slot at a stale high. Late readings
+        // count toward the peak so a post-midnight continuation is the real
+        // running max, not the last slotted hour.
+        let hourlyMax = day.hourly.compactMap { $0 }.max() ?? 0
+        let lateMax = day.lateReadings?.map(\.amount).max() ?? 0
+        let runningMax = max(hourlyMax, lateMax)
+        if runningMax > 0 {
+            let peak = runningMax
             let tolerance = max(peak * 0.01, 0.50)
             if spentToday < peak - tolerance {
                 historyLog.notice("ignored downward restatement for \(key, privacy: .public) hour \(hour, privacy: .public): peak \(peak, privacy: .public) -> \(spentToday, privacy: .public)")
@@ -195,6 +250,15 @@ public struct HistoryStore: Sendable {
                 }
                 existing.limit = max(existing.limit, isoRecord.limit)
                 if existing.exhaustedAt == nil { existing.exhaustedAt = isoRecord.exhaustedAt }
+                if let isoLate = isoRecord.lateReadings {
+                    // Merge late readings by receipt time, deduping exact
+                    // (instant, amount) pairs.
+                    var merged = existing.lateReadings ?? []
+                    for reading in isoLate where !merged.contains(reading) {
+                        merged.append(reading)
+                    }
+                    existing.lateReadings = merged.sorted { $0.at < $1.at }
+                }
                 decoded[bare] = existing
             } else {
                 decoded[bare] = isoRecord

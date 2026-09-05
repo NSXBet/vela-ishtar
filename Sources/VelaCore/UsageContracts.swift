@@ -133,112 +133,14 @@ public enum ModelBreakdownState: Equatable, Sendable {
     case inconsistent(reason: String)
 }
 
-// MARK: - Observation
+// MARK: - Observation / HistoryEnvelope
 
-/// One accepted reading of the cumulative spend, stored per scope and
-/// gateway day.
-///
-/// §7.2: "Stable ID, scope, gateway day, receivedAt, cumulative amount,
-/// enabled-limit/policy context, precision (`exactReceipt` or
-/// `legacyHour`); receivedAt is observation time, not transaction time."
-public struct Observation: Equatable, Sendable, Identifiable {
-    /// How precisely the reading's time is known.
-    public enum Precision: String, Equatable, Sendable, Codable {
-        /// The reading's receipt time is known exactly (v2 schema).
-        case exactReceipt
-        /// The reading is a legacy hourly value; only hour precision is honest.
-        case legacyHour
-    }
-
-    /// Stable identifier, stable across save/load and revisions.
-    public let id: UUID
-    /// The scope whose credential produced this reading.
-    public let scope: UsageScope
-    /// The gateway billing day the reading was labeled with.
-    public let gatewayDay: GatewayDay
-    /// When the observation was received — NOT when the spend happened.
-    public let receivedAt: Date
-    /// Cumulative amount the gateway reported for the declared day.
-    public let cumulativeAmount: Double
-    /// Whether the global limit was enabled at observation time, plus its
-    /// value — the policy context the observation was made under.
-    public let limitEnabled: Bool
-    public let limitUSD: Double
-    /// Time precision of this observation.
-    public let precision: Precision
-
-    public init(
-        id: UUID,
-        scope: UsageScope,
-        gatewayDay: GatewayDay,
-        receivedAt: Date,
-        cumulativeAmount: Double,
-        limitEnabled: Bool,
-        limitUSD: Double,
-        precision: Precision
-    ) {
-        self.id = id
-        self.scope = scope
-        self.gatewayDay = gatewayDay
-        self.receivedAt = receivedAt
-        self.cumulativeAmount = cumulativeAmount
-        self.limitEnabled = limitEnabled
-        self.limitUSD = limitUSD
-        self.precision = precision
-    }
-}
-
-// MARK: - HistoryEnvelope
-
-/// The versioned on-disk history container (schema 2).
-///
-/// §7.2: "Schema version 2, revision, scoped day records, bounded
-/// observations, coverage metadata; version 1 backup retained during
-/// migration." The 2 MiB active-size budget, per-day observation caps, and
-/// the byte-preserving legacy backup are enforced by the history writer
-/// (WP-02), described here as contract.
-public struct HistoryEnvelope: Equatable, Sendable {
-    /// On-disk schema version. 2 is the v2.0 envelope.
-    public static let currentVersion = 2
-
-    /// Schema version of this envelope (always 2 for fresh writes).
-    public let version: Int
-    /// Monotonic revision, bumped by every committed write; used by the
-    /// serial writer to detect lost updates.
-    public let revision: UInt64
-    /// Day records keyed by scope opaque ID, then gateway day key.
-    public let days: [String: [String: [Observation]]]
-    /// Coverage metadata: which days have enough observations to support
-    /// derived views, per scope.
-    public struct Coverage: Equatable, Sendable {
-        public let dayKey: String
-        public let firstObservationAt: Date?
-        public let lastObservationAt: Date?
-        public let isComplete: Bool
-
-        public init(dayKey: String, firstObservationAt: Date?, lastObservationAt: Date?, isComplete: Bool) {
-            self.dayKey = dayKey
-            self.firstObservationAt = firstObservationAt
-            self.lastObservationAt = lastObservationAt
-            self.isComplete = isComplete
-        }
-    }
-
-    /// Coverage summaries for the days in this envelope.
-    public let coverage: [String: [String: Coverage]]
-
-    public init(
-        version: Int = HistoryEnvelope.currentVersion,
-        revision: UInt64,
-        days: [String: [String: [Observation]]],
-        coverage: [String: [String: Coverage]]
-    ) {
-        self.version = version
-        self.revision = revision
-        self.days = days
-        self.coverage = coverage
-    }
-}
+// `Observation` and `HistoryEnvelope` moved to their producer files in
+// WP-02: Sources/VelaCore/Observation.swift and
+// Sources/VelaCore/HistoryRepository.swift. Names, cases, and semantics are
+// identical to the frozen §7.2 declarations; only Codable conformances were
+// added for persistence. This file keeps the remaining coordination
+// contracts; the moved types are intentionally NOT duplicated here.
 
 // MARK: - ConnectionState
 

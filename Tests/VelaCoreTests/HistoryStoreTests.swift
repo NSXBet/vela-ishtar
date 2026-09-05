@@ -72,11 +72,16 @@ struct HistoryStoreTests {
         // Keying by the local date would file yesterday's total under
         // today — and the next poll (spend_date now Aug 2, spend back to
         // a small number) would make the curve DECREASE within "today".
+        // The reading keeps its true receipt instant as a late reading
+        // (B01): hour 0 of Aug 1 is 24 hours BEFORE it in receipt order,
+        // so it has no honest hourly slot.
         let justAfterMidnight = ISODate.parse("2026-08-02T00:30:00Z")!
         store.record(spentToday: 160.42, limit: 400, at: justAfterMidnight, spendDate: "2026-08-01")
 
         // Filed under the gateway's day (Aug 1), NOT the clock's day (Aug 2).
-        #expect(store.day(spendDate: "2026-08-01")?.hourly[0] == 160.42)
+        let day1 = store.day(spendDate: "2026-08-01")
+        #expect(day1?.lateReadings?.last?.amount == 160.42)
+        #expect(day1?.lateReadings?.last?.at == justAfterMidnight)
         #expect(store.day(spendDate: "2026-08-02") == nil)
 
         // The gateway ticks over; the next poll carries a fresh small total.
@@ -85,7 +90,45 @@ struct HistoryStoreTests {
         store.record(spentToday: 2.74, limit: 400, at: later, spendDate: "2026-08-02")
         #expect(store.day(spendDate: "2026-08-02")?.hourly[1] == 2.74)
         // Yesterday's record is untouched.
-        #expect(store.day(spendDate: "2026-08-01")?.hourly[0] == 160.42)
+        #expect(store.day(spendDate: "2026-08-01")?.lateReadings?.last?.amount == 160.42)
+    }
+
+    // MARK: - B01 regression (§12.1 ascending post-midnight sequence)
+
+    // The reproduced data-loss sequence: the gateway day stays Aug 1 across
+    // local midnight while spend grows 120 → 160 → 165. The old store wrote
+    // 165 into hour 0 (BEFORE hours 22/23 in receipt order); the load-time
+    // contamination filter then saw a decrease in array order and DELETED
+    // the entire day. The day must survive with last observed 165, and the
+    // late value must never land in hour 0.
+    @Test("§12.1: ascending post-midnight readings survive save/load with the day preserved and last observed 165")
+    func b01AscendingSeamSurvivesSaveAndLoad() throws {
+        let directory = Self.freshDirectory()
+        var store = HistoryStore(directory: directory)
+        store.record(spentToday: 120, limit: 400,
+                     at: ISODate.parse("2026-08-01T22:10:00Z")!, spendDate: "2026-08-01")
+        store.record(spentToday: 160, limit: 400,
+                     at: ISODate.parse("2026-08-01T23:50:00Z")!, spendDate: "2026-08-01")
+        store.record(spentToday: 165, limit: 400,
+                     at: ISODate.parse("2026-08-02T00:30:00Z")!, spendDate: "2026-08-01")
+        try store.save()
+
+        var restored = HistoryStore(directory: directory)
+        try restored.load()
+
+        // Required: the day is preserved, with last observed 165.
+        let preserved = restored.day(spendDate: "2026-08-01")
+        #expect(preserved != nil)
+        #expect(preserved?.hourly[22] == 120)
+        #expect(preserved?.hourly[23] == 160)
+        #expect(preserved?.lastObservedAmount == 165)
+        // The late value is NEVER written into the day's earliest hour.
+        #expect(preserved?.hourly[0] == nil)
+        #expect(preserved?.lateReadings?.count == 1)
+        #expect(preserved?.lateReadings?.first?.amount == 165)
+        #expect(preserved?.lateReadings?.first?.at == ISODate.parse("2026-08-02T00:30:00Z")!)
+        // And the day is not flagged contaminated.
+        #expect(HistoryStore.isContaminated(preserved!) == false)
     }
 
     // MARK: - Monotonic guard (v0.2.0)
