@@ -1,10 +1,12 @@
 // Tests/VelaCoreTests/VersionCheckTests.swift
-// Pins the update-bell logic (v0.5.2): the bell only appears when GitHub has a
-// NEWER release than the one running, and never because a tag is malformed or
-// a draft/prerelease leaked in. Why here: comparing versions and deciding
-// "should the bell show" are pure rules — the bell view renders, but the
-// decision to show it must be testable so it never cries wolf (showing "a new
-// version" when you're already current is the one unforgivable state).
+// Pins the update-bell logic (WP-11): the bell only appears when GitHub has
+// a NEWER release than the one running, and never because a tag is malformed
+// or a draft/prerelease leaked in — and the release's html_url must point at
+// the intended destination (this project's GitHub releases over HTTPS) or
+// the payload is rejected outright, since that URL opens in the user's
+// browser. Why here: comparing versions and deciding "should the bell show"
+// are pure rules — the bell view renders, but the decision to show it must
+// be testable so it never cries wolf.
 // RELEVANT FILES: Sources/VelaCore/VersionCheck.swift, Sources/App/UpdateBellView.swift
 
 import Testing
@@ -93,5 +95,33 @@ struct VersionCheckTests {
         #expect(VersionCheck.parseRelease(Data()) == nil)
         // Valid JSON but missing the tag:
         #expect(VersionCheck.parseRelease(Data(#"{"name":"x"}"#.utf8)) == nil)
+    }
+
+    // MARK: Trusted release URL (WP-11 11.3)
+
+    @Test("the intended GitHub release URL is trusted")
+    func intendedURLIsTrusted() {
+        #expect(VersionCheck.isTrustedReleaseURL("https://github.com/NSXBet/vela-ishtar/releases/tag/v1.0.4"))
+        #expect(VersionCheck.isTrustedReleaseURL("https://github.com/NSXBet/vela-ishtar/releases/latest"))
+        #expect(VersionCheck.isTrustedReleaseURL("https://GitHub.com/NSXBet/vela-ishtar/releases/tag/v1.0.4"))
+    }
+
+    @Test("any other destination is untrusted — fail closed")
+    func foreignURLsUntrusted() {
+        #expect(!VersionCheck.isTrustedReleaseURL("https://evil.example.com/vela-ishtar/releases"))
+        #expect(!VersionCheck.isTrustedReleaseURL("http://github.com/NSXBet/vela-ishtar/releases")) // not HTTPS
+        #expect(!VersionCheck.isTrustedReleaseURL("https://github.com/Other/vela-ishtar/releases/tag/v1"))
+        #expect(!VersionCheck.isTrustedReleaseURL("https://github.com/NSXBet/other-repo/releases/tag/v1"))
+        #expect(!VersionCheck.isTrustedReleaseURL("https://github.com/NSXBet/vela-ishtar/releases.evil.com/x"))
+        #expect(!VersionCheck.isTrustedReleaseURL(""))
+        #expect(!VersionCheck.isTrustedReleaseURL("not a url"))
+    }
+
+    @Test("a payload whose html_url points outside the intended destination parses to nil")
+    func foreignReleaseURLIsRejected() {
+        let json = """
+        { "tag_name": "v9.9.9", "html_url": "https://evil.example.com/grab", "draft": false, "prerelease": false }
+        """.data(using: .utf8)!
+        #expect(VersionCheck.parseRelease(json) == nil)
     }
 }

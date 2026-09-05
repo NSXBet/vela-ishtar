@@ -37,7 +37,12 @@ public final class VersionBulletView: NSView {
         // so VoiceOver and the visual tip never diverge (the running version's
         // own line is dropped from both).
         var lines = ["Changelog", "You're running v\(version)", ""]
-        lines += WhatsNew.visibleNotes(running: version, notes: notes).map { "\($0.version) — \($0.note)" }
+        let visible = WhatsNew.visibleNotes(running: version, notes: notes)
+        if visible.isEmpty {
+            lines.append("No release notes in this build.")
+        } else {
+            lines += visible.map { "\($0.version) — \($0.note)" }
+        }
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("Vela Ishtar changelog")
@@ -107,7 +112,11 @@ public final class VersionBulletView: NSView {
         subtitle.textColor = .secondaryLabelColor
 
         let visibleNotes = WhatsNew.visibleNotes(running: version, notes: notes)
-        let noteText = visibleNotes.map { "\($0.version) — \($0.note)" }.joined(separator: "\n")
+        // An empty build artifact must not leave a blank hole under the
+        // subtitle (WP-11): say so instead of rendering nothing.
+        let noteText = visibleNotes.isEmpty
+            ? "No release notes in this build."
+            : visibleNotes.map { "\($0.version) — \($0.note)" }.joined(separator: "\n")
         let notesLabel = NSTextField(wrappingLabelWithString: noteText)
         notesLabel.font = noteFont
         notesLabel.textColor = .secondaryLabelColor
