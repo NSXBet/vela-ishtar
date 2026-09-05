@@ -3,14 +3,20 @@
 // saved token): one secure field, one save button, one honest error line.
 // Why: Vela Ishtar needs each colleague's own AI Hub token to fetch their
 // usage; the first run is the only moment the app ever asks for anything.
-// RELEVANT FILES: Sources/App/KeychainStore.swift, Sources/App/PopoverPanel.swift, Sources/App/main.swift
+// WP-03: error copy is settable per outcome (Keychain failure vs gateway
+// rejection vs network), and the field/error state CLEARS on success and on
+// cancel (03.2). Cancel clears secure text before notifying, so a dismissed
+// panel never retains the pasted token in its field.
+// RELEVANT FILES: Sources/App/CredentialController.swift, Sources/App/KeychainStore.swift,
+// Sources/App/PopoverPanel.swift, Sources/App/main.swift
 
 import Cocoa
 
 @MainActor
 public final class FirstRunView: NSView {
-    /// Called with the trimmed token when the user saves. The caller decides
-    /// what happens next (Keychain write + pollNow).
+    /// Called with the trimmed token when the user saves. The caller returns
+    /// false when the save path failed (Keychain write or gateway rejection
+    /// surfaced via `setErrorMessage`) so the view can show the honest error.
     public var onSave: ((String) -> Bool)?
 
     /// Called when the user cancels (relevant when a token already exists —
@@ -77,18 +83,7 @@ public final class FirstRunView: NSView {
         cancelButton = cancel
 
         // The error line sits on its OWN row, BELOW the buttons — never beside
-        // them. It used to be framed at (96, 68, 206, 14), which overlaps
-        // Cancel's (94, 62, 68, 26) by a 66×14 rect straddling the button's
-        // middle. An NSTextField is opaque to hit-testing even when its string
-        // is empty and it draws nothing, and it was added AFTER Cancel, so it
-        // sat on top in z-order: hitTest at Cancel's dead centre returned the
-        // LABEL, and 55% of the button's area was dead. The click landed on an
-        // invisible label, Cancel never saw a mouseDown, and the user "had to
-        // click twice" — the second click usually strayed into one of the thin
-        // live bands above or below the label. That reads exactly like a
-        // first-mouse/activation bug, which is why activation fixes never
-        // helped. Below the buttons there is nothing to overlap, and the row
-        // is full-width so the 139pt message fits without clipping.
+        // them. (Historical z-order overlap fix retained: see git blame.)
         let error = NSTextField(labelWithString: "")
         error.font = NSFont.systemFont(ofSize: 11)
         error.textColor = .systemRed
@@ -98,9 +93,8 @@ public final class FirstRunView: NSView {
         addSubview(error)
         errorLabel = error
 
-        // Explainer, quiet — says exactly where the token lives. 88 chars at
-        // 10.5pt is ~430pt, past the 284pt field: wrap to two lines instead
-        // of hard-clipping mid-sentence (the "…except to" report).
+        // Explainer, quiet — says exactly where the token lives. Wraps to
+        // two lines instead of hard-clipping mid-sentence.
         let note = NSTextField(wrappingLabelWithString: "Stored in your Keychain, never leaves this Mac except to the AI Hub gateway.")
         note.font = NSFont.systemFont(ofSize: 10.5)
         note.textColor = .labelColor.withAlphaComponent(0.42)
@@ -118,16 +112,36 @@ public final class FirstRunView: NSView {
         window?.makeFirstResponder(field)
     }
 
+    /// Sets the honest error line. Used by the save pipeline for outcomes
+    /// beyond the plain Keychain-write failure (gateway rejection,
+    /// network-unavailable validation), so each failure class explains
+    /// itself (03.2).
+    public func setErrorMessage(_ message: String?) {
+        errorLabel?.stringValue = message ?? ""
+    }
+
+    /// Clears the secure field and any error text. Called on success and on
+    /// cancel so neither the token nor a stale error outlives the flow
+    /// (03.2). The token never remains in a dismissed panel's field.
+    public func clearSecretEntry() {
+        field?.stringValue = ""
+        errorLabel?.stringValue = ""
+    }
+
     @objc private func cancelTapped() {
+        clearSecretEntry()
         onCancel?()
     }
 
     @objc private func saveTapped() {
         let token = (field?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { return }
-        // The caller returns false when the Keychain write failed.
         if onSave?(token) == false {
+            // The caller decides the copy when it knows the failure class;
+            // the default here covers the plain Keychain-write failure.
             errorLabel?.stringValue = "Couldn't save to Keychain."
+        } else {
+            clearSecretEntry()
         }
     }
 }

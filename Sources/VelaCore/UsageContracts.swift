@@ -137,38 +137,12 @@ public enum ModelBreakdownState: Equatable, Sendable {
 
 // `Observation` and `HistoryEnvelope` moved to their producer files in
 // WP-02: Sources/VelaCore/Observation.swift and
-// Sources/VelaCore/HistoryRepository.swift. Names, cases, and semantics are
-// identical to the frozen §7.2 declarations; only Codable conformances were
-// added for persistence. This file keeps the remaining coordination
-// contracts; the moved types are intentionally NOT duplicated here.
-
-// MARK: - ConnectionState
-
-/// The credential/connection lifecycle state.
-///
-/// §7.2: "`noCredential`, `keychainBlocked`, `connecting`, `live`,
-/// `retrying`, `stale`, `authenticationRequired`, `invalidResponse`;
-/// retains last good snapshot separately" — the last good snapshot lives
-/// OUTSIDE this enum, alongside it, so a stale reading still renders.
-public enum ConnectionState: Equatable, Sendable {
-    /// No credential has been provided yet.
-    case noCredential
-    /// The Keychain blocked the read (locked, denied, or unavailable).
-    case keychainBlocked
-    /// A fetch is in flight; no result yet.
-    case connecting
-    /// The latest fetch succeeded; the attached snapshot is current.
-    case live
-    /// Retrying after a transient failure; backoff in progress.
-    case retrying(attempt: Int)
-    /// Trust expired (receipt age beyond the freshness window) without a
-    /// hard error.
-    case stale
-    /// The gateway rejected the credential (401-class).
-    case authenticationRequired
-    /// A response arrived but could not be validated (decode/shape).
-    case invalidResponse
-}
+// Sources/VelaCore/HistoryRepository.swift. WP-03 owns ConnectionState
+// (Sources/VelaCore/PollStateMachine.swift), UsageTransport, and
+// RefreshReason (Sources/VelaCore/AIHubClientProtocol.swift). Names, cases,
+// and semantics are identical to the frozen §7.2 declarations; only
+// ownership moved. This file keeps the remaining coordination contracts;
+// the moved types are intentionally NOT duplicated here.
 
 // MARK: - Freshness
 
@@ -362,29 +336,4 @@ public struct MarkerReceipt: Equatable, Sendable {
         self.endObservation = endObservation
         self.delta = delta
     }
-}
-
-// MARK: - UsageTransport
-
-/// The async transport seam every usage fetch goes through.
-///
-/// §7.2 suggested shape. The live client (WP-03) implements this over
-/// URLSession; tests inject a fake. Token parameters remain in memory
-/// only — no conforming type may log, persist, or embed the token.
-public protocol UsageTransport: Sendable {
-    func fetchUsage(token: String) async throws -> UsageResponse
-}
-
-// MARK: - RefreshReason
-
-/// Why a refresh was requested; drives backoff and scheduling policy.
-///
-/// §7.2 suggested shape.
-public enum RefreshReason: Sendable, Equatable {
-    case launch
-    case scheduled
-    case opened
-    case manual
-    case wake
-    case credentialChanged
 }

@@ -1,14 +1,51 @@
 // Sources/VelaCore/PollStateMachine.swift
-// Pure state machine that turns a stream of fetch Results into a PollState,
-// feeding BurnBuffer and HistoryStore on every success.
-// Why: this is the one piece of poll logic that must be unit-testable without
-// AppKit or a timer, so it lives here (not Sources/App) and stays pure
-// Foundation -- the timer/wiring shell around it is UsagePoller.
-// RELEVANT FILES: Sources/App/UsagePoller.swift, Sources/VelaCore/BurnBuffer.swift, Sources/VelaCore/HistoryStore.swift, Tests/VelaCoreTests/PollStateMachineTests.swift
+// Pure Foundation state machine for the v2 polling pipeline: turns a stream
+// of transport results into a ConnectionState (WP-03, §7.2) plus the last
+// good snapshot, feeding history on every accepted success.
+// Why: the poll transition rules (auth-vs-network classification, once-only
+// auth notification, generation guard, scope partitioning) must be
+// unit-testable without AppKit, timers, Keychain, or the network — this file
+// is the whole decision layer and does no I/O of its own.
+// WP-03: ConnectionState moved here from UsageContracts.swift (producer
+// ownership, identical names/cases/semantics).
+// RELEVANT FILES: Sources/App/PollCoordinator.swift, Sources/App/UsagePoller.swift,
+// Sources/VelaCore/HistoryStore.swift, Sources/VelaCore/HistoryRepository.swift
 
 import Foundation
 
-/// What the UI should show right now, based on the most recent fetch(es).
+// MARK: - ConnectionState
+
+/// The credential/connection lifecycle state.
+///
+/// §7.2: "`noCredential`, `keychainBlocked`, `connecting`, `live`,
+/// `retrying`, `stale`, `authenticationRequired`, `invalidResponse`;
+/// retains last good snapshot separately" — the last good snapshot lives
+/// OUTSIDE this enum, alongside it, so a stale reading still renders.
+public enum ConnectionState: Equatable, Sendable {
+    /// No credential has been provided yet.
+    case noCredential
+    /// The Keychain blocked the read (locked, denied, or unavailable).
+    case keychainBlocked
+    /// A fetch is in flight; no result yet.
+    case connecting
+    /// The latest fetch succeeded; the attached snapshot is current.
+    case live
+    /// Retrying after a transient failure; backoff in progress.
+    case retrying(attempt: Int)
+    /// Trust expired (receipt age beyond the freshness window) without a
+    /// hard error.
+    case stale
+    /// The gateway rejected the credential (401-class).
+    case authenticationRequired
+    /// A response arrived but could not be validated (decode/shape).
+    case invalidResponse
+}
+
+// MARK: - PollState (legacy v1 presentation shape)
+
+/// What the v1 UI shows right now, based on the most recent fetch(es).
+/// Retained verbatim so the current PopoverView/StatusItemController keep
+/// rendering while WP-06 converts them to ConnectionState display states.
 public enum PollState: Equatable, Sendable {
     /// No fetch has ever succeeded.
     case neverFetched
@@ -19,13 +56,12 @@ public enum PollState: Equatable, Sendable {
     case stale(UsageResponse, consecutiveFailures: Int)
 }
 
-/// Turns a stream of `Result<UsageResponse, UsageError>` fetches into a
-/// `PollState`, feeding `BurnBuffer` and `HistoryStore` on every success.
+/// Turns a stream of `Result<UsageResponse, UsageError>` fetches into the
+/// connection lifecycle, feeding the legacy `PollState` view shape and the
+/// v1 history on every success.
 ///
-/// This is a value type with no I/O of its own beyond what `HistoryStore`
-/// does inside `record` (in-memory only -- `load`/`save` are the caller's
-/// responsibility, since they're an app-lifecycle concern, not a
-/// poll-transition concern).
+/// Still a value type with no I/O beyond HistoryStore's in-memory `record`
+/// (load/save remain the caller's responsibility).
 public struct PollStateMachine: Sendable {
     public private(set) var state: PollState = .neverFetched
     public private(set) var burnBuffer = BurnBuffer()
@@ -44,14 +80,11 @@ public struct PollStateMachine: Sendable {
     }
 
     /// The instant today's spend first crossed the limit, or nil if it
-    /// hasn't (or we don't know yet). Mirrors `HistoryStore.DayRecord.exhaustedAt`
-    /// for the day of the most recent successful fetch, so the App layer can
-    /// pass it straight into `PaceEngine.verdict(...)`.
+    /// hasn't (or we don't know yet).
     public private(set) var exhaustedAt: Date?
 
     /// The instant of the most recent successful fetch, regardless of how
-    /// many failures have piled up since. The App layer uses this to show
-    /// "data is N minutes old" while stale.
+    /// many failures have piled up since.
     public private(set) var lastSuccessAt: Date?
 
     // The last successfully-fetched response, kept even while state is
@@ -59,71 +92,40 @@ public struct PollStateMachine: Sendable {
     private var lastGood: UsageResponse?
 
     // Consecutive failures since the last success. Never reset except by a
-    // success (per the brief: "Never resets the counter except on success").
+    // success.
     private var consecutiveFailures = 0
 
     /// `historyDirectory` is injectable so tests can point the internal
-    /// HistoryStore at a throwaway temp directory instead of the app's real
-    /// support directory.
+    /// HistoryStore at a throwaway temp directory.
     public init(historyDirectory: URL = HistoryStore.defaultDirectory) {
         self.history = HistoryStore(directory: historyDirectory)
     }
 
     /// A snapshot of today's last known reading, rehydrated from history for
-    /// the cold-open path. Why: on a cold start the popover's first paint has
-    /// no fetch result yet (state is `.neverFetched`), and the loading branch
-    /// blanks the hero for 0.5–1s until the network lands. If history already
-    /// holds a reading keyed to TODAY's UTC day, we can show it immediately —
-    /// dimmed and labeled "Last reading" — so the user sees a number, not a
-    /// spinner.
-    ///
-    /// The hard invariant: NEVER show yesterday as today. The record's day
-    /// key must BE today's UTC day key, else this returns nil and the spinner
-    /// stays. Around the midnight seam the gateway's `spendDate` lags the
-    /// local clock, so a reading recorded late yesterday carries yesterday's
-    /// key and is correctly refused.
-    ///
-    /// - Returns: `(spentUSD, limitUSD, ageMinutes)` of the most recent
-    ///   observed hour today, or nil when there's no today-keyed record.
+    /// the cold-open path. NEVER shows yesterday as today: the record's day
+    /// key must BE today's UTC day key.
     public func coldOpenSnapshot(now: Date) -> (spentUSD: Double, limitUSD: Double, ageMinutes: Int)? {
         Self.coldOpenSnapshot(in: history, now: now)
     }
 
-    /// The history-only form, for the App layer's loading path which holds a
-    /// `HistoryStore` but shouldn't need a whole machine to ask this.
+    /// The history-only form, for the App layer's loading path.
     public static func coldOpenSnapshot(in history: HistoryStore, now: Date) -> (spentUSD: Double, limitUSD: Double, ageMinutes: Int)? {
         guard let today = history.day(utcDate: now) else { return nil }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let nowHour = calendar.component(.hour, from: now)
 
-        // The freshest reading is the last non-nil slot AT OR BEFORE the
-        // current hour. Normally a future slot can't exist for a today-keyed
-        // record — but a clock correction or a hand-edited history file could
-        // leave one, and the naive last-non-nil search would then read it and
-        // clamp its negative age to "just now". Capping at nowHour refuses
-        // future data: a reading from later "today" is never shown as current.
+        // Capping at nowHour refuses future data: a reading from later
+        // "today" (clock correction, hand-edited file) is never current.
         guard let lastHour = today.hourly.indices.reversed().first(where: { $0 <= nowHour && today.hourly[$0] != nil }),
               let spent = today.hourly[lastHour] else { return nil }
 
-        // Age = whole minutes between the recorded hour-slot START and now.
-        // Slot times are hour-granular, so use the START of each hour; the
-        // cap above guarantees nowHour >= lastHour, so the value is honest.
         let ageMinutes = (nowHour - lastHour) * 60 + calendar.component(.minute, from: now)
         return (spentUSD: spent, limitUSD: today.limit, ageMinutes: ageMinutes)
     }
 
     /// Feeds one fetch result into the machine and returns the resulting
     /// state (also available afterwards as `self.state`).
-    ///
-    /// Success: resets the failure counter, records into burnBuffer and
-    /// history, and emits `.fresh`.
-    ///
-    /// Failure: increments the failure counter. Once the counter reaches 2
-    /// AND we have a last-good response, emits `.stale(lastGood, n)`. Before
-    /// that threshold (or with no last-good response yet), the state is left
-    /// unchanged -- a single blip doesn't flip the UI, and with nothing good
-    /// to fall back on we simply keep counting from `.neverFetched`.
     @discardableResult
     public mutating func ingest(_ result: Result<UsageResponse, UsageError>, at date: Date) -> PollState {
         switch result {
@@ -133,9 +135,6 @@ public struct PollStateMachine: Sendable {
             lastSuccessAt = date
             burnBuffer.record(spentToday: usage.dailyBudget.spentUSD, at: date)
             history.record(spentToday: usage.dailyBudget.spentUSD, limit: usage.dailyBudget.limitUSD, limitEnabled: usage.dailyBudget.limitEnabled, at: date, spendDate: usage.dailyBudget.spendDate)
-            // exhaustedAt must come from the GATEWAY's day, not the local
-            // clock's -- the two disagree around the UTC-midnight seam (the
-            // whole point of the spendDate keying above).
             exhaustedAt = history.day(spendDate: usage.dailyBudget.spendDate)?.exhaustedAt
             state = .fresh(usage)
 
@@ -144,9 +143,6 @@ public struct PollStateMachine: Sendable {
             if consecutiveFailures >= 2, let lastGood {
                 state = .stale(lastGood, consecutiveFailures: consecutiveFailures)
             }
-            // else: no last-good yet, or only 1 failure so far -- leave
-            // state as-is (stays .neverFetched, or holds the existing
-            // .fresh/.stale reading).
         }
         return state
     }
