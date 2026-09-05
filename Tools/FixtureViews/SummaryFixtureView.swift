@@ -13,7 +13,7 @@ import AppKit
 /// the 360pt design before WP-06 builds the live presenter from the same
 /// SummaryDisplayState. No I/O, no timers, no animation — a still frame.
 @MainActor
-final class SummaryFixtureView: NSView {
+final class SummaryFixtureView: NSView, FixtureAppearing {
     let budget: BudgetOverview
     let breakdown: ModelBreakdownState
     let monthTop: [ModelUsage]

@@ -31,6 +31,14 @@ import Cocoa
 
 // MARK: - Output plumbing
 
+/// A fixture view that resolves its wrapped inks through an explicitly
+/// injected appearance (see `resolveBuild`). renderPNG pushes the pass
+/// appearance through this seam; views never need to know about renderPNG.
+@MainActor
+protocol FixtureAppearing: AnyObject {
+    var fixtureAppearance: NSAppearance { get set }
+}
+
 /// Resolves the fixture output root. Only env override; default build/v2-design.
 private func designDir() -> URL {
     let repoRoot = URL(fileURLWithPath: #filePath)
@@ -53,10 +61,9 @@ private func renderPNG(_ view: NSView, appearance: NSAppearance, busy: Bool = fa
     // effectiveAppearance — not the drawing handler — because cacheDisplay
     // re-enters per-subview. Setting it on the root propagates to every child.
     view.appearance = appearance
-    // SummaryFixtureView/BudgetDetailFixtureView resolve wrapped inks through
-    // this stored appearance (see their `resolve` helper).
-    if let fixture = view as? SummaryFixtureView { fixture.fixtureAppearance = appearance }
-    if let fixture = view as? BudgetDetailFixtureView { fixture.fixtureAppearance = appearance }
+    // Fixture views resolve wrapped inks through this stored appearance
+    // (see their `resolve` helper and the FixtureAppearing protocol).
+    if let fixture = view as? FixtureAppearing { fixture.fixtureAppearance = appearance }
     let pointSize = view.bounds.size
     let scale: CGFloat = 2
     let pixelWidth = Int((pointSize.width * scale).rounded())

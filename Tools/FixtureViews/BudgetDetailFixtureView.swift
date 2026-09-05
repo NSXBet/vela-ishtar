@@ -12,7 +12,7 @@ import AppKit
 /// cooldown, blocked), plus one marker receipt block showing a measured delta
 /// and an explicitly-unavailable one — MarkerReceipt (§7.2) rendered.
 @MainActor
-final class BudgetDetailFixtureView: NSView {
+final class BudgetDetailFixtureView: NSView, FixtureAppearing {
     let budget: BudgetOverview
     var fixtureAppearance: NSAppearance = NSAppearance(named: .aqua)!
 
