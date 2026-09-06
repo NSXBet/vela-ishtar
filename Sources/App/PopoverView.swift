@@ -51,16 +51,18 @@ public final class PopoverView: NSView {
     /// pendingRelease no longer collapses four truths into "up to date".
     public var updateChecker: UpdateChecker?
 
-    // MARK: - v1 renderer inputs retained for the curve/strip (WP-09 owns
-    // the timestamp-aware conversion; the legacy HistoryStore stays the
-    // chart's data source).
+    // MARK: - Curve data (WP-06 live path)
 
-    private var latestHistory: HistoryStore?
-    private var latestResponse: UsageResponse?
-    private var lastAppliedState: SummaryDisplayState?
+    // The chart reads the HistoryRepository via CoordinatorUpdate.hourlyCurve
+    // (AppCoordinator.deliverCurve); the legacy HistoryStore path is retired.
     private var lastConnection: ConnectionState = .noCredential
     private var lastReceivedAt: Date?
-
+    /// The limit policy the curve renders against, from the last good
+    /// response (a limit never changes mid-day, so retaining it across
+    /// failures is safe).
+    private var latestResponse: UsageResponse?
+    private var lastAppliedState: SummaryDisplayState?
+    private(set) var appliedHourlyCurve: [Double?]?
     /// The version bullet's what's-new list. Read from the build-generated
     /// Contents/Resources/whatsnew.txt (awk-extracted from CHANGELOG.md by
     /// build.sh), so the bullet can never drift from the shipped release.
@@ -162,41 +164,27 @@ public final class PopoverView: NSView {
             contrast: contrast
         )
 
-        // Curve + strip: still fed from the legacy HistoryStore (WP-09 owns
-        // the Observation-based conversion). configure() is rebuild-safe and
-        // preserves an active scrub.
-        if let history = latestHistory {
-            configureChart(history: history, state: state)
-        }
         relayout()
     }
 
-    /// The HistoryStore the curve/day-strip render from, injected at
-    /// popover open.
-    var historyForRender: HistoryStore = HistoryStore(directory: FileManager.default.temporaryDirectory) {
-        didSet { latestHistory = historyForRender }
-    }
-
-    private func configureChart(history: HistoryStore, state: SummaryDisplayState) {
-        guard let usage = latestResponse else { return }
-        let dayRecord = history.day(spendDate: usage.dailyBudget.spendDate)
-        let hourly = dayRecord?.hourly ?? Array(repeating: nil, count: 24)
+    /// The HistoryRepository-sourced curve (from CoordinatorUpdate.hourlyCurve)
+    /// plus the limit policy from the last good response. configure() is
+    /// rebuild-safe and preserves an active scrub.
+    public func applyCurve(hourly: [Double?]?, limit: Double, limitEnabled: Bool) {
         var utcCalendar = Calendar(identifier: .gregorian)
         utcCalendar.timeZone = TimeZone(identifier: "UTC")!
         let utcHour = utcCalendar.component(.hour, from: Date())
         // B11: no ceiling for a disabled limit (CurveView guards limit > 0,
         // and a disabled limit renders no dotted $X line at all).
-        let ceiling = usage.dailyBudget.limitEnabled ? usage.dailyBudget.limitUSD : 0
-        let isFresh = lastConnection == .live
-        let ghost = PaceEngine.ghostCurve(in: history.allDays, excluding: usage.dailyBudget.spendDate)
         curveView.configure(
-            hourly: hourly,
-            limit: ceiling,
+            hourly: hourly ?? Array(repeating: nil, count: 24),
+            limit: limitEnabled ? limit : 0,
             nowHourUTC: utcHour,
-            ghost: ghost,
-            drawGhostStroke: isFresh,
-            limitEnabled: usage.dailyBudget.limitEnabled
+            ghost: nil,
+            drawGhostStroke: lastConnection == .live,
+            limitEnabled: limitEnabled
         )
+        appliedHourlyCurve = hourly ?? Array(repeating: nil, count: 24)
     }
 
     // MARK: - Layout (named slots; height changes only on content growth)
@@ -561,9 +549,7 @@ public final class PopoverView: NSView {
     /// already built; this shows the neutral connecting line in the reserved
     /// status slot and the honest empty curve lane — no geometry jump when
     /// the first real state lands.
-    func renderLoadingState(history: HistoryStore, now: Date) {
-        historyForRender = history
-        latestHistory = history
+    func renderLoadingState(now: Date) {
         let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
         headerView.apply(
             hero: SummaryDisplayState.Row(id: "hero", title: "$0.00", detail: "", fraction: nil),
@@ -577,13 +563,9 @@ public final class PopoverView: NSView {
             selectedPeriodIndex: 0,
             contrast: contrast
         )
-        curveView.configure(hourly: Array(repeating: nil, count: 24), limit: 0, nowHourUTC: 0, ghost: nil, drawGhostStroke: false, limitEnabled: false)
+        applyCurve(hourly: nil, limit: 0, limitEnabled: false)
         relayout()
         applyChrome()
-    }
-
-    func renderLoadingState(now: Date) {
-        renderLoadingState(history: historyForRender, now: now)
     }
 
     /// Draw-on animation for the curve, run once per popover open (skipped

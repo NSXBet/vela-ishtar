@@ -27,14 +27,19 @@ private let coordinatorLog = Logger(subsystem: "com.nsxbet.velaishtar", category
 public struct CoordinatorUpdate: Sendable {
     public let displayState: SummaryDisplayState?
     public let connection: ConnectionState
-    /// The last good committed snapshot's response, retained across
-    /// failures so a stale reading still renders.
     public let lastGoodResponse: UsageResponse?
     public let lastGoodReceivedAt: Date?
     /// The last committed snapshot this coordinator fed to burn/history.
     public let lastSnapshot: UsageSnapshot?
     /// True the FIRST time this failure episode moved to authenticationRequired.
     public let authJustRequired: Bool
+    /// The 24-slot UTC hourly curve for the snapshot's gateway day, derived
+    /// from the HistoryRepository (the live store — the legacy HistoryStore
+    /// path is dead). Slot h = UTC hour of the observation's receivedAt;
+    /// value = that observation's cumulativeAmount (later same-hour
+    /// observations overwrite earlier); untouched hours are nil. Nil while
+    /// nothing has ever committed.
+    public let hourlyCurve: [Double?]?
 
     public init(
         displayState: SummaryDisplayState?,
@@ -42,7 +47,8 @@ public struct CoordinatorUpdate: Sendable {
         lastGoodResponse: UsageResponse?,
         lastGoodReceivedAt: Date?,
         lastSnapshot: UsageSnapshot?,
-        authJustRequired: Bool = false
+        authJustRequired: Bool = false,
+        hourlyCurve: [Double?]? = nil
     ) {
         self.displayState = displayState
         self.connection = connection
@@ -50,6 +56,7 @@ public struct CoordinatorUpdate: Sendable {
         self.lastGoodReceivedAt = lastGoodReceivedAt
         self.lastSnapshot = lastSnapshot
         self.authJustRequired = authJustRequired
+        self.hourlyCurve = hourlyCurve
     }
 }
 
@@ -81,6 +88,10 @@ public final class AppCoordinator {
     /// Set when the poll coordinator reports authJustRequired; consumed by
     /// the next delivered update, then cleared.
     private var pendingAuthJustRequired = false
+    /// The last hourly curve computed for the live scope/day. Cached so a
+    /// period switch or failure update (no new snapshot) re-delivers the
+    /// same lane instead of going blank.
+    private var lastCurve: [Double?]?
 
     public init(
         transport: any UsageTransport,
@@ -197,7 +208,11 @@ public final class AppCoordinator {
     // MARK: - Delivery
 
     /// Re-derives the display state from committed data and notifies the
-    /// app layer. No I/O: everything here is already in memory.
+    /// app layer. Display state is synchronous; the hourly curve is computed
+    /// from the HistoryRepository (async actor hop) and re-delivered on its
+    /// own once ready — the UI never blocks on the repository, and a curve
+    /// that doesn't change never triggers a second apply (PopoverView
+    /// dedupes identical states).
     private func deliverUpdate() {
         let context = SummaryPresenter.Context(
             snapshot: lastSnapshot,
@@ -218,7 +233,40 @@ public final class AppCoordinator {
             lastGoodResponse: lastGoodResponse,
             lastGoodReceivedAt: lastGoodReceivedAt,
             lastSnapshot: lastSnapshot,
-            authJustRequired: authJust
+            authJustRequired: authJust,
+            hourlyCurve: lastCurve
         ))
+        deliverCurve()
     }
-}
+
+    /// Reads the committed observations for the last snapshot's scope/day
+    /// from the repository and converts them to the 24-slot UTC hourly curve
+    /// CurveView renders: slot h holds the LAST (latest-received) cumulative
+    /// amount for UTC hour h; untouched hours stay nil. No committed
+    /// snapshot yet → nil curve (loading stays an honest empty lane).
+    private func deliverCurve() {
+        guard let snapshot = lastSnapshot else { return }
+        let scope = snapshot.scope
+        let day = snapshot.gatewayDay
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let obs = await self.repository.observations(scope: scope, day: day)
+            var hourly: [Double?] = Array(repeating: nil, count: 24)
+            var utc = Calendar(identifier: .gregorian)
+            utc.timeZone = TimeZone(identifier: "UTC")!
+            for o in obs {
+                hourly[utc.component(.hour, from: o.receivedAt)] = o.cumulativeAmount
+            }
+            self.lastCurve = hourly
+            self.onUpdate?(CoordinatorUpdate(
+                displayState: self.latestDisplayState,
+                connection: self.connection,
+                lastGoodResponse: self.lastGoodResponse,
+                lastGoodReceivedAt: self.lastGoodReceivedAt,
+                lastSnapshot: self.lastSnapshot,
+                authJustRequired: false,
+                hourlyCurve: hourly
+            ))
+        }
+    }
+ }
