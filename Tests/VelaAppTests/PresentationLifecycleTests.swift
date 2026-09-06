@@ -78,7 +78,7 @@ struct PresentationLifecycleTests {
             repository: repository,
             scheduler: ManualScheduler(),
             clock: SystemPollClock(),
-            scopeMappingStore: defaults,
+            scopeMappingDefaults: defaults,
             gatewayOrigin: "https://gateway.test"
         )
         return coordinator
@@ -231,7 +231,65 @@ struct PresentationLifecycleTests {
         }
         coordinator.stop()
     }
-}
+
+    // MARK: - Curve feed (WP-06 fix: chart reads HistoryRepository)
+
+    @MainActor
+    @Test("commit with observations feeds CoordinatorUpdate.hourlyCurve at the right UTC hours")
+    func commitDeliversHourlyCurveAtUTCHours() async throws {
+        let defaults = IsolatedDefaults()
+        let historyDir = TemporaryDirectory()
+        let tokenID = "99999999-6666-4777-8888-999999999999"
+        let coordinator = Self.makeCoordinator(token: "synthetic-curve", tokenID: tokenID, defaults: defaults.defaults, historyDirectory: historyDir.url)
+        await coordinator.start()
+        _ = await coordinator.credentials.replaceToken("synthetic-curve")
+        let scope = try #require(coordinator.credentials.scope)
+
+        // Two observations in DIFFERENT UTC hours (10:00 and 14:00), plus a
+        // later same-hour re-read that must overwrite the earlier one.
+        let day = try #require(GatewayDay(spendDate: "2026-09-05"))
+        _ = await coordinator.repository.append(Observation(
+            id: UUID(), scope: scope, gatewayDay: day,
+            receivedAt: ISODate.parse("2026-09-05T10:00:00Z")!,
+            cumulativeAmount: 10, limitEnabled: true, limitUSD: 400, precision: .exactReceipt))
+        _ = await coordinator.repository.append(Observation(
+            id: UUID(), scope: scope, gatewayDay: day,
+            receivedAt: ISODate.parse("2026-09-05T14:00:00Z")!,
+            cumulativeAmount: 25, limitEnabled: true, limitUSD: 400, precision: .exactReceipt))
+        _ = await coordinator.repository.append(Observation(
+            id: UUID(), scope: scope, gatewayDay: day,
+            receivedAt: ISODate.parse("2026-09-05T14:30:00Z")!,
+            cumulativeAmount: 30, limitEnabled: true, limitUSD: 400, precision: .exactReceipt))
+
+        var curves: [[Double?]?] = []
+        coordinator.onUpdate = { (update: CoordinatorUpdate) in curves.append(update.hourlyCurve) }
+        let snapshot = UsageValidation.snapshot(
+            from: Self.usage(tokenID: tokenID, spent: 30),
+            scope: scope,
+            receivedAt: ISODate.parse("2026-09-05T14:30:00Z")!
+        )
+        coordinator.handleForTesting(snapshot)
+
+        // The synchronous update carries the (nil-first-time) cache; the
+        // async deliverCurve hop carries the fresh repository-derived curve.
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let curve = try #require(curves.compactMap { $0 }.last, "async deliverCurve must deliver a non-nil curve")
+        #expect(curve.count == 24)
+        #expect(curve[10] == 10, "hour-10 slot holds its hour's cumulative amount")
+        #expect(curve[14] == 30, "later same-hour observation overwrites the earlier one")
+        #expect(curve[9] == nil && curve[11] == nil, "untouched hours stay nil")
+        coordinator.stop()
+    }
+
+    @MainActor
+    @Test("PopoverView.applyCurve configures the chart lane with the given data")
+    func applyCurveConfiguresChart() {
+        let view = PopoverView()
+        let hourly: [Double?] = Array(repeating: nil, count: 24)
+        view.applyCurve(hourly: hourly, limit: 400, limitEnabled: true)
+        #expect(view.appliedHourlyCurve?.count == 24, "applyCurve stores the curve state and configures the lane")
+    }
+ }
 
 // MARK: - Test seam
 

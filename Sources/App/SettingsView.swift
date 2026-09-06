@@ -1,15 +1,16 @@
 // Sources/App/SettingsView.swift
-// WP-10 10.3: the settings surface, hosted through
-// SecondaryPanelCoordinator (.settings) in place of WP-07's placeholder
-// card. Consolidates: pill size, start-at-login (ServiceManagement with
-// every honest outcome), credential recovery status (read-only observation
-// of CredentialController — its logic is never modified), data controls
+// The settings surface, hosted through SecondaryPanelCoordinator (.settings).
+// Consolidates: pill size, start-at-login (ServiceManagement with every
+// honest outcome), credential recovery status (read-only observation of
+// CredentialController — its logic is never modified), data controls
 // (open history folder, export entry), and app version/update state.
-// Why a real view, not a checkmark: a login toggle that failed must SAY it
-// failed with the actual system error, and a blocked Keychain must say so —
-// errors never collapse into inert success states.
-// RELEVANT FILES: Sources/App/PopoverView.swift, Sources/App/CredentialController.swift,
-// Sources/App/StatusItemController.swift, V2_IMPLEMENTATION_PLAN.md §9 WP-10
+// Visual language: §5 design tokens only (VelaDesign) — small-caps section
+// headers, 32pt-ish row rhythm, accent-chip pill selector, hairlines between
+// groups, caption state lines. Why the honesty rules matter: a login toggle
+// that failed must SAY it failed with the actual system error, and a
+// blocked Keychain must say so — errors never collapse into inert success.
+// RELEVANT FILES: Sources/App/PopoverView.swift, Sources/App/DesignTokens.swift,
+// Sources/App/BudgetDetailView.swift, docs/v2/DESIGN.md
 
 import Cocoa
 import ServiceManagement
@@ -45,7 +46,6 @@ public enum LoginServiceState: Equatable {
         }
     }
 }
-
 @MainActor
 public final class SettingsView: NSView {
 
@@ -81,8 +81,14 @@ public final class SettingsView: NSView {
     private var credentialStatusLabel: NSTextField!
     private var exportButton: NSButton?
     private var exportNote: NSTextField?
+    /// Hairlines drawn between section groups (not between rows).
+    private var separators: [NSView] = []
 
     private static let pillTitles = ["Automatic", "Full", "Compact", "Minimal"]
+
+    /// Panel content width: the summary column minus the panel's own
+    /// breathing room, so the settings card reads as the popover's sibling.
+    private static let panelWidth = VelaDesign.Layout.summaryWidth - 32
 
     public init(
         pillSize: Int,
@@ -98,7 +104,7 @@ public final class SettingsView: NSView {
             login: login, credentialLine: credentialLine,
             exportAvailable: exportAvailable, version: version, updateLine: updateLine
         )
-        super.init(frame: NSRect(x: 0, y: 0, width: VelaDesign.Layout.contentWidth + 40, height: 10))
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.panelWidth, height: 10))
         build()
         render()
     }
@@ -111,6 +117,7 @@ public final class SettingsView: NSView {
     // MARK: building
 
     private func build() {
+        let inset = VelaDesign.Layout.contentInset
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -119,26 +126,40 @@ public final class SettingsView: NSView {
         addSubview(stack)
         self.stack = stack
 
+        // Title: same 13pt body voice as the popover's section headers, but
+        // full-strength ink — it is the card's one headline.
         addTitle("Settings")
 
-        // Pill size — four mutually exclusive choices, checkmark on active.
+        // Pill size — one horizontal row of four mutually exclusive choices,
+        // the active one carried by the accent focus band + checkmark
+        // (§5 language: selection is color + state, never plain text alone).
         addSectionLabel("Pill size")
+        let pillRow = NSStackView()
+        pillRow.orientation = .horizontal
+        pillRow.spacing = VelaDesign.Layout.space1
+        pillRow.alignment = .centerY
         for (index, title) in Self.pillTitles.enumerated() {
             let button = NSButton(title: title, target: self, action: #selector(pillPicked(_:)))
             button.isBordered = false
             button.bezelStyle = .inline
-            button.font = VelaDesign.Typography.body
+            button.font = VelaDesign.Typography.budgetName
             button.tag = index
+            button.setAccessibilityLabel("Pill size \(title)")
             if !inputs.pillSizeEnabled { button.isEnabled = false }
-            stack.addArrangedSubview(button)
+            // Focus-band chip: padded hit target ≥ Rows.controlMinHeight.
+            button.setAccessibilityElement(true)
+            pillRow.addArrangedSubview(button)
             pillButtons.append(button)
         }
+        stylePillRow(pillRow)
+        stack.addArrangedSubview(pillRow)
 
         addSectionLabel("Start at login")
         let openLogin = NSButton(title: "Open Login Items settings", target: self, action: #selector(openLoginSettings))
         openLogin.isBordered = false
         openLogin.bezelStyle = .inline
         openLogin.font = VelaDesign.Typography.secondaryInteractive
+        openLogin.contentTintColor = .linkColor
         stack.addArrangedSubview(openLogin)
         let loginStatus = NSTextField(labelWithString: "")
         loginStatus.font = VelaDesign.Typography.secondary
@@ -146,6 +167,8 @@ public final class SettingsView: NSView {
         loginStatus.setAccessibilityLabel("Start at login status")
         stack.addArrangedSubview(loginStatus)
         loginStatusLabel = loginStatus
+
+        stack.addArrangedSubview(makeSeparator())
 
         addSectionLabel("Credential")
         let credStatus = NSTextField(labelWithString: "")
@@ -155,17 +178,21 @@ public final class SettingsView: NSView {
         stack.addArrangedSubview(credStatus)
         credentialStatusLabel = credStatus
 
+        stack.addArrangedSubview(makeSeparator())
+
         addSectionLabel("Data")
         let history = NSButton(title: "Open history folder", target: self, action: #selector(historyTapped))
         history.isBordered = false
         history.bezelStyle = .inline
         history.font = VelaDesign.Typography.secondaryInteractive
+        history.contentTintColor = .linkColor
         stack.addArrangedSubview(history)
         if inputs.exportAvailable {
             let export = NSButton(title: "Open export…", target: self, action: #selector(exportTapped))
             export.isBordered = false
             export.bezelStyle = .inline
             export.font = VelaDesign.Typography.secondaryInteractive
+            export.contentTintColor = .linkColor
             stack.addArrangedSubview(export)
             exportButton = export
         } else {
@@ -175,6 +202,8 @@ public final class SettingsView: NSView {
             stack.addArrangedSubview(note)
             exportNote = note
         }
+
+        stack.addArrangedSubview(makeSeparator())
 
         addSectionLabel("About")
         let version = NSTextField(labelWithString: "Vela Ishtar v\(inputs.version)")
@@ -187,11 +216,65 @@ public final class SettingsView: NSView {
         stack.addArrangedSubview(update)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 0),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: 0),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 0),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: 0),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: inset - 4),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -(inset - 4)),
         ])
+
+        applyPillSelection()
+    }
+
+    /// Gives each pill chip a padded 28pt-tall hit target and round-rect
+    /// background; the SELECTED chip additionally gets the accent focus
+    /// band + full ink so one glance picks the active size.
+    private func stylePillRow(_ row: NSStackView) {
+        for button in pillButtons {
+            button.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: VelaDesign.Rows.controlMinHeight
+            ).isActive = true
+            button.widthAnchor.constraint(
+                greaterThanOrEqualToConstant: button.intrinsicContentSize.width + 12
+            ).isActive = true
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 6
+            button.layer?.masksToBounds = true
+        }
+    }
+
+    private func makeSeparator() -> NSView {
+        let line = NSView()
+        line.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+        line.wantsLayer = true
+        separators.append(line)
+        return line
+    }
+
+    /// Re-tints the dynamic surfaces: pill chips (selection band) and the
+    /// hairline separators. Dynamic NSColors resolve to CGColor against the
+    /// CURRENT appearance at call time (§5.1: never cache one resolution);
+    /// viewDidChangeEffectiveAppearance re-runs this on light/dark flips.
+    private func applyPillSelection() {
+        let accent = NSColor.controlAccentColor
+        for (index, button) in pillButtons.enumerated() {
+            let selected = index == inputs.pillSize
+            if selected {
+                button.layer?.backgroundColor = accent.withAlphaComponent(0.16).cgColor
+            } else {
+                button.layer?.backgroundColor = NSColor.labelColor
+                    .withAlphaComponent(0.05).cgColor
+            }
+            button.contentTintColor = selected ? .labelColor : .secondaryLabelColor
+            button.setAccessibilityValue(selected ? "selected" : "not selected")
+        }
+        for line in separators {
+            line.layer?.backgroundColor = VelaDesign.Color.hairline(contrast: false).cgColor
+        }
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyPillSelection()
     }
 
     private func addTitle(_ text: String) {
@@ -205,11 +288,14 @@ public final class SettingsView: NSView {
         stack.addArrangedSubview(spacer)
     }
 
+    /// Small-caps caption section header — the SAME treatment BudgetDetail
+    /// and ModelsSection use for TODAY / MODELS (§5's one section voice).
     private func addSectionLabel(_ text: String) {
-        let label = NSTextField(labelWithString: text)
+        let label = NSTextField(labelWithString: text.uppercased())
         label.font = VelaDesign.Typography.sectionLabel
         label.textColor = VelaDesign.Color.sectionLabel
         stack.addArrangedSubview(label)
+        stack.setCustomSpacing(VelaDesign.Layout.sectionSpacing, after: label)
     }
 
     // MARK: state application
@@ -230,10 +316,7 @@ public final class SettingsView: NSView {
     }
 
     private func render() {
-        for (index, button) in pillButtons.enumerated() {
-            button.state = index == inputs.pillSize ? .on : .off
-            button.setAccessibilityValue(index == inputs.pillSize ? "selected" : "")
-        }
+        applyPillSelection()
         loginStatusLabel.stringValue = inputs.login.userLine
         credentialStatusLabel.stringValue = inputs.credentialLine
         exportButton?.isHidden = !inputs.exportAvailable

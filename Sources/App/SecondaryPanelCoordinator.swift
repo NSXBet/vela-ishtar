@@ -90,11 +90,11 @@ public final class SecondaryPanelCoordinator: NSObject {
         newPanel.setAccessibilityLabel(Self.accessibilityLabel(for: surface))
 
         parent.addChildWindow(newPanel, ordered: .above)
-        // Anchor top-left of the parent, nudged inside — reads as a card
-        // attached to the popover.
+        // Anchor to the RIGHT edge of the popover — secondary surfaces sit
+        // beside the main card, not over it (user preference).
         let frame = newPanel.frame
         newPanel.setFrameOrigin(NSPoint(
-            x: parent.frame.minX + 12,
+            x: parent.frame.maxX + 8,
             y: parent.frame.maxY - frame.height - 12
         ))
         clampToScreen(newPanel)

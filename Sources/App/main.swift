@@ -85,10 +85,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The settings surface reads the LIVE credential status —
                 // the field defaults to .missing and must be fed on every
                 // update or Settings claims "No token saved yet" while
-                // readings flow.
                 view.credentialStatus = self.coordinator?.credentials.status ?? .missing
                 view.apply(displayState: update.displayState, connection: update.connection,
                            response: update.lastGoodResponse, receivedAt: update.lastGoodReceivedAt)
+                // The curve lane reads the LIVE HistoryRepository via the
+                // coordinator (the legacy HistoryStore path is retired).
+                view.applyCurve(hourly: update.hourlyCurve,
+                                limit: update.lastGoodResponse?.dailyBudget.limitUSD ?? 0,
+                                limitEnabled: update.lastGoodResponse?.dailyBudget.limitEnabled ?? false)
             }
             // A rejected token re-opens the token flow with an explanation —
             // once per failure episode (03.3), never every 60s tick.

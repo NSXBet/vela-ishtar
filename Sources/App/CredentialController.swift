@@ -124,7 +124,16 @@ public final class CredentialController {
     /// keyed to a scope's UUID survives restarts. The SECRET token is never
     /// a key here, never stored in the mapping, never persisted by this
     /// type; only the gateway's public token_id string.
-    private let scopeMappingStore: UserDefaults
+    /// Production: the mapping persists as JSON in the history directory —
+    /// NOT UserDefaults: an unbundled debug binary's defaults domain proved
+    /// unreliable here (writes silently lost across launches, splitting
+    /// history across per-launch scope UUIDs). Tests may instead inject a
+    /// UserDefaults suite (scopeMappingDefaults) for isolation. Same public
+    /// token_id keys; the secret token never touches either store.
+    private let scopeMappingURL: URL?
+    private let scopeMappingDefaults: UserDefaults?
+
+    private let scopeMappingLock = NSLock()
 
     /// Bumps on each replacement attempt so a user who types token B while
     /// token A's validation is still in flight gets only B's verdict.
@@ -140,15 +149,52 @@ public final class CredentialController {
         transport: any UsageTransport,
         store: any CredentialStoring,
         gatewayOrigin: String = "https://ai-llm-gateway.fbr.land",
-        scopeMappingStore: UserDefaults = .standard
+        mappingDirectory: URL? = HistoryStore.defaultDirectory,
+        scopeMappingDefaults: UserDefaults? = nil
     ) {
         self.transport = transport
         self.store = store
         self.gatewayOrigin = gatewayOrigin
-        self.scopeMappingStore = scopeMappingStore
+        if let scopeMappingDefaults {
+            self.scopeMappingDefaults = scopeMappingDefaults
+            self.scopeMappingURL = nil
+        } else {
+            self.scopeMappingDefaults = nil
+            if let mappingDirectory {
+                self.scopeMappingURL = mappingDirectory
+                    .appendingPathComponent("scope-mapping.json")
+            } else {
+                self.scopeMappingURL = nil
+            }
+        }
         // Initial status comes from the background read; start pessimistic
         // so no caller ever blocks on Keychain I/O.
         self.status = .missing
+    }
+
+    private static let scopeMappingFileKey = "scopeMapping"
+
+    private func loadMapping() -> [String: String] {
+        if let defaults = scopeMappingDefaults {
+            return defaults.dictionary(forKey: Self.scopeMappingKey) as? [String: String] ?? [:]
+        }
+        guard let url = scopeMappingURL,
+              let data = try? Data(contentsOf: url),
+              let wrapped = try? JSONDecoder().decode([String: [String: String]].self, from: data),
+              let mapping = wrapped[Self.scopeMappingFileKey] else { return [:] }
+        return mapping
+    }
+
+    private func persistMapping(_ mapping: [String: String]) {
+        if let defaults = scopeMappingDefaults {
+            defaults.set(mapping, forKey: Self.scopeMappingKey)
+            return
+        }
+        guard let url = scopeMappingURL else { return }
+        let wrapped = [Self.scopeMappingFileKey: mapping]
+        if let data = try? JSONEncoder().encode(wrapped) {
+            try? data.write(to: url, options: .atomic)
+        }
     }
 
     // MARK: - Stable scope mapping (§7.2)
@@ -160,13 +206,15 @@ public final class CredentialController {
     /// launch. Keys are the gateway's PUBLIC token_id strings — the secret
     /// token never appears in this mapping or in the defaults domain.
     func opaqueID(forTokenID tokenID: String) -> UUID {
-        var mapping = scopeMappingStore.dictionary(forKey: Self.scopeMappingKey) as? [String: String] ?? [:]
+        scopeMappingLock.lock()
+        defer { scopeMappingLock.unlock() }
+        var mapping = loadMapping()
         if let existing = mapping[tokenID], let uuid = UUID(uuidString: existing) {
             return uuid
         }
         let fresh = UUID()
         mapping[tokenID] = fresh.uuidString
-        scopeMappingStore.set(mapping, forKey: Self.scopeMappingKey)
+        persistMapping(mapping)
         return fresh
     }
 
@@ -324,7 +372,7 @@ public final class CredentialController {
 
     /// The mapping UUID for the last validated credential, if known.
     private func adoptOpaqueID() -> UUID {
-        if let last = scopeMappingStore.string(forKey: Self.lastValidatedTokenIDKey) {
+        if let last = loadMapping()[Self.lastValidatedTokenIDKey] {
             return opaqueID(forTokenID: last)
         }
         // Unknown credential: mint a session UUID; replaceToken's validated
@@ -333,6 +381,13 @@ public final class CredentialController {
     }
 
     private func pinValidatedTokenID(_ tokenID: String) {
-        scopeMappingStore.set(tokenID, forKey: Self.lastValidatedTokenIDKey)
+        // The token_id itself is the persisted value inside the mapping
+        // (opaqueID(forTokenID:) writes it); pinning the LAST VALIDATED id
+        // separately lets adopt reuse it before any validation response.
+        scopeMappingLock.lock()
+        defer { scopeMappingLock.unlock() }
+        var mapping = loadMapping()
+        mapping[Self.lastValidatedTokenIDKey] = tokenID
+        persistMapping(mapping)
     }
 }
