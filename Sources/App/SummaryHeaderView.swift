@@ -72,10 +72,14 @@ final class SummaryHeaderView: NSView {
         let width = bounds.width
         var y = bounds.height
 
-        periodLabel.frame = NSRect(x: inset, y: y - Self.headerHeight + 2, width: 60, height: 14)
+        // TODAY and Settings share one horizontal centerline: the button's
+        // 24pt control height defines the row; the label centers in it.
+        let rowHeight = VelaDesign.Rows.controlMinHeight
+        periodLabel.frame = NSRect(x: inset, y: y - Self.headerHeight + (rowHeight - 14) / 2,
+                                   width: 60, height: 14)
         let settingsW: CGFloat = 64
         settingsButton.frame = NSRect(x: width - inset - settingsW, y: y - Self.headerHeight,
-                                      width: settingsW, height: VelaDesign.Rows.controlMinHeight)
+                                      width: settingsW, height: rowHeight)
         y -= Self.headerHeight
 
         heroLabel.frame = NSRect(x: inset, y: y - Self.heroHeight, width: heroLabel.fittingSize.width + 2, height: 30)
