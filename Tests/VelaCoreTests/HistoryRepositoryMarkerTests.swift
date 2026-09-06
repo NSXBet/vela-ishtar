@@ -312,6 +312,43 @@ struct HistoryRepositoryMarkerTests {
         #expect(receipts.isEmpty)
     }
 
+    @Test("adoptOrphanedScopes merges same-origin orphans into the stable scope with receipt-time dedup")
+    func adoptOrphanedScopesMerges() async throws {
+        let directory = Self.freshDirectory()
+        let repository = HistoryRepository(directory: directory)
+        let stable = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://gw.example.com")
+        let orphan = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://gw.example.com")
+        let otherOrigin = UsageScope(kind: .credential, opaqueID: UUID(), gatewayOrigin: "https://other.example.com")
+        let day = GatewayDay(spendDate: "2026-09-06")!
+
+        // Orphan observations (pre-fix split) — including one that EXACTLY
+        // duplicates a stable observation (same poll, recorded twice).
+        await repository.append(Observation(id: UUID(), scope: orphan, gatewayDay: day,
+            receivedAt: ISODate.parse("2026-09-06T11:00:00Z")!, cumulativeAmount: 100,
+            limitEnabled: true, limitUSD: 400, precision: .exactReceipt))
+        await repository.append(Observation(id: UUID(), scope: orphan, gatewayDay: day,
+            receivedAt: ISODate.parse("2026-09-06T12:00:00Z")!, cumulativeAmount: 150,
+            limitEnabled: true, limitUSD: 400, precision: .exactReceipt))
+        await repository.append(Observation(id: UUID(), scope: stable, gatewayDay: day,
+            receivedAt: ISODate.parse("2026-09-06T11:00:00Z")!, cumulativeAmount: 100,
+            limitEnabled: true, limitUSD: 400, precision: .exactReceipt))
+        await repository.append(Observation(id: UUID(), scope: otherOrigin, gatewayDay: day,
+            receivedAt: ISODate.parse("2026-09-06T13:00:00Z")!, cumulativeAmount: 999,
+            limitEnabled: true, limitUSD: 400, precision: .exactReceipt))
+
+        await repository.adoptOrphanedScopes(into: stable)
+        try await repository.save()
+
+        // Relaunch: merged, deduped, other-origin untouched.
+        let second = HistoryRepository(directory: directory)
+        _ = await second.load()
+        let merged = await second.observations(scope: stable, day: day)
+        #expect(merged.count == 2, "11:00 dup collapsed, 12:00 adopted → 2 observations")
+        #expect(merged.map(\.cumulativeAmount) == [100, 150])
+        let foreign = await second.observations(scope: otherOrigin, day: day)
+        #expect(foreign.count == 1, "other-origin data never adopted")
+    }
+
     @Test("save() PROPAGATES a marker-store failure — the caller can know the clear did not land")
     func savePropagatesMarkerFailure() async throws {
         final class NoMarkerWrites: HistoryFilesystem, @unchecked Sendable {

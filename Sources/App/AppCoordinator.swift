@@ -149,6 +149,14 @@ public final class AppCoordinator {
         await credentials.refreshStatus()
         await credentials.adoptStoredCredential()
         await repository.load()
+        // One-time rollout repair: pre-fix launches minted a fresh scope
+        // UUID per run, splitting this credential's history across orphan
+        // scopes. Merge same-origin orphans into the stable scope so the
+        // curve/week/history show the full record.
+        if let scope = credentials.scope {
+            await repository.adoptOrphanedScopes(into: scope)
+            try? await repository.save()
+        }
         polls.start()
     }
 

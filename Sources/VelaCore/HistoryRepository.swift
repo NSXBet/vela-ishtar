@@ -827,6 +827,48 @@ public actor HistoryRepository {
         days[scope.opaqueID.uuidString]?[day.key]?.last
     }
 
+    /// One-time repair (v2.0 live rollout): merges every same-origin scope
+    /// into `target`. Pre-fix launches minted a fresh scope UUID per run,
+    /// splitting one credential's history across identities the user
+    /// confirmed as theirs. Same gateway origin + receipt-time dedup keeps
+    /// overlapping polls honest; emptied orphan scopes are removed. Marks
+    /// the envelope dirty; the caller persists via save().
+    public func adoptOrphanedScopes(into target: UsageScope) {
+        var adopted = 0
+        let targetKey = target.opaqueID.uuidString
+        for (scopeID, scopeDays) in days where scopeID != targetKey {
+            // Adopt only same-origin scopes (other deployments never mix).
+            let orphanOrigin = scopeDays.values.flatMap { $0 }.first?.scope.gatewayOrigin
+            guard orphanOrigin == target.gatewayOrigin else { continue }
+            for (dayKey, observations) in scopeDays {
+                var list = days[targetKey]?[dayKey] ?? []
+                for var obs in observations {
+                    obs = Observation(
+                        id: obs.id, scope: target, gatewayDay: obs.gatewayDay,
+                        receivedAt: obs.receivedAt, cumulativeAmount: obs.cumulativeAmount,
+                        limitEnabled: obs.limitEnabled, limitUSD: obs.limitUSD,
+                        precision: obs.precision)
+                    // Receipt-time dedup: identical (time, amount) = same poll.
+                    if !list.contains(where: { $0.receivedAt == obs.receivedAt && $0.cumulativeAmount == obs.cumulativeAmount }) {
+                        list.append(obs)
+                        adopted += 1
+                    }
+                }
+                list.sort { $0.receivedAt < $1.receivedAt }
+                var targetDays = days[targetKey] ?? [:]
+                targetDays[dayKey] = list
+                days[targetKey] = targetDays
+            }
+            days.removeValue(forKey: scopeID)
+        }
+        if adopted > 0 {
+            revision &+= 1
+            dirty = true
+            markerFileDirty = true
+            repositoryLog.notice("adopted \(adopted, privacy: .public) orphaned observations into the stable scope")
+        }
+    }
+
     /// Deletes ALL history data for one scope (data control, 09.3). The
     /// caller owns the explicit confirmation UI; the actor owns the state.
     public func clearHistory(scope: UsageScope) {
