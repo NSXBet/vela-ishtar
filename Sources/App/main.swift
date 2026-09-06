@@ -93,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 view.applyCurve(hourly: update.hourlyCurve,
                                 limit: update.lastGoodResponse?.dailyBudget.limitUSD ?? 0,
                                 limitEnabled: update.lastGoodResponse?.dailyBudget.limitEnabled ?? false)
+                view.applyWeek(totals: update.weekTotals)
             }
             // A rejected token re-opens the token flow with an explanation —
             // once per failure episode (03.3), never every 60s tick.
@@ -198,6 +199,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             view.onOpenHistoryExplorer = { [weak self] in
                 Task { @MainActor in await self?.historyExplorer?.open() }
+            }
+            // Today/Month switch re-derives display state through the
+            // coordinator (fresh rows, no poll) — reapplyLastState alone
+            // would re-render the PREVIOUS period's rows forever.
+            view.onSelectModelPeriod = { [weak coordinator] period in
+                coordinator?.setSelectedPeriod(period)
             }
             view.renderLoadingState(now: Date())
             let panel = PopoverPanel(contentView: view)
