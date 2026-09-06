@@ -34,9 +34,15 @@ public final class PopoverView: NSView {
     /// enabled; the app layer opens the explorer window (export dialog
     /// lives there, per-day).
     public var onOpenHistoryExplorer: (() -> Void)?
+    /// Fired when the user picks a period in the models section's switcher.
+    /// The coordinator (which owns the derivation) re-derives the display
+    /// state and delivers a fresh update; PopoverView itself never re-derives.
+    public var onSelectModelPeriod: ((String) -> Void)?
     let curveView = CurveView(frame: NSRect(x: 0, y: 0, width: 284, height: 92))   // internal: PopoverPanel/main drive the draw-on animation
-
-    // MARK: - Persistent sections (built once in init)
+    /// The week strip (M T W T F S S). Persistent section: the initial empty
+    /// week renders the stable grid; applyWeek replaces it in place when the
+    /// week's data arrives.
+    private var dayStripView = DayStripView(week: DayStrip.week(in: [:], today: "1970-01-01"), frame: NSRect(x: 0, y: 0, width: VelaDesign.Layout.summaryWidth, height: DayStripView.height))
 
     let headerView = SummaryHeaderView()
     let modelsSection = ModelsSectionView()
@@ -84,9 +90,6 @@ public final class PopoverView: NSView {
     public required init?(coder: NSCoder) {
         fatalError("PopoverView does not support NSCoder-based initialization")
     }
-
-    /// Sections are constructed once and never removed. Rows inside them
-    /// are reused by stable ID (ModelsSectionView.apply).
     private func buildSections() {
         headerView.onSettings = { [weak self] in
             self?.openSecondarySurface(.settings)
@@ -96,12 +99,22 @@ public final class PopoverView: NSView {
             let period = index == 0 ? "today" : "month"
             guard period != self.selectedPeriod else { return }
             self.selectedPeriod = period
-            // Immediate data re-derive from already-committed state; the
-            // indicator's own 140ms slide runs independently (B10).
-            self.reapplyLastState()
+            // The derivation owner (AppCoordinator.setSelectedPeriod)
+            // re-derives the display state from committed data and delivers
+            // a fresh update — reapplyLastState() would only re-render the
+            // OLD period's state (smoke-test report: Month showed today's
+            // rows forever). The indicator's own 140ms slide runs
+            // independently (B10).
+            self.onSelectModelPeriod?(period)
         }
         addSubview(headerView)
         addSubview(modelsSection)
+        // Smoke-test round 3: curveView and dayStripView existed as
+        // properties and relayout() positioned them, but were never added
+        // to the hierarchy — the graph lane rendered blank and the week
+        // strip was missing entirely.
+        addSubview(curveView)
+        addSubview(dayStripView)
     }
 
     // MARK: - WP-06/07 application path
@@ -186,6 +199,49 @@ public final class PopoverView: NSView {
         )
         appliedHourlyCurve = hourly ?? Array(repeating: nil, count: 24)
     }
+    /// The week strip's last-applied state (test hook, like appliedHourlyCurve).
+    private(set) var appliedWeekTotals: [Double?]?
+
+    /// Feeds the week strip from CoordinatorUpdate.weekTotals — Monday-first,
+    /// index-aligned with the strip's fixed M T W T F S S letters. Gap days
+    /// stay nil: the strip's existing empty-cell style (never a $0.00).
+    public func applyWeek(totals: [Double?]?) {
+        guard let totals, totals.count == 7 else {
+            // A wrong-shaped week is an upstream bug, not a render state —
+            // keep the last good week rather than drawing garbage.
+            return
+        }
+        appliedWeekTotals = totals
+        rebuildStrip(from: totals)
+    }
+
+    /// DayStripView holds its week as a let (drawing code untouched by this
+    /// fix), so a data update replaces the view in the same frame slot.
+    private func rebuildStrip(from totals: [Double?]) {
+        let strip = DayStripView(week: Self.stripWeek(from: totals), frame: dayStripView.frame)
+        dayStripView.removeFromSuperview()
+        dayStripView = strip
+        addSubview(strip)
+    }
+
+    /// Maps CoordinatorUpdate.weekTotals onto DayStrip.Day. Keys are unused
+    /// by the strip's drawing/hover labels (letters are static, Monday-first);
+    /// today's ring is carried by isToday, resolved from the real calendar
+    /// week so the ring advances through the stable row.
+    private static func stripWeek(from totals: [Double?]) -> [DayStrip.Day] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let monday = calendar.dateInterval(of: .weekOfYear, for: Date())!.start
+        return totals.enumerated().map { index, total in
+            let day = calendar.date(byAdding: .day, value: index, to: monday)!
+            return DayStrip.Day(
+                key: ISODate.dayKey(day.description),
+                total: total,
+                isToday: calendar.isDateInToday(day),
+                exhausted: false
+            )
+        }
+    }
 
     // MARK: - Layout (named slots; height changes only on content growth)
 
@@ -238,6 +294,9 @@ public final class PopoverView: NSView {
         y -= modelsSection.preferredHeight + Self.sectionSpacing
 
         y -= Self.stripHeight
+        // Week strip: full width, its 6pt breathing room sits below it
+        // (stripHeight = DayStripView.height + 6).
+        dayStripView.frame = NSRect(x: 0, y: y + 6, width: width, height: DayStripView.height)
         y -= Self.sectionSpacing
         // Footer row sits at y.
         footerFrame = NSRect(x: 0, y: y - Self.footerHeight, width: width, height: Self.footerHeight)

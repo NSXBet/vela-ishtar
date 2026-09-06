@@ -289,6 +289,78 @@ struct PresentationLifecycleTests {
         view.applyCurve(hourly: hourly, limit: 400, limitEnabled: true)
         #expect(view.appliedHourlyCurve?.count == 24, "applyCurve stores the curve state and configures the lane")
     }
+
+    @MainActor
+    @Test("commit with observations feeds CoordinatorUpdate.weekTotals (last-observed per day, nil gaps)")
+    func commitDeliversWeekTotals() async throws {
+        let defaults = IsolatedDefaults()
+        let historyDir = TemporaryDirectory()
+        let tokenID = "77777777-1111-4222-8333-444444444444"
+        let coordinator = Self.makeCoordinator(token: "synthetic-week", tokenID: tokenID, defaults: defaults.defaults, historyDirectory: historyDir.url)
+        await coordinator.start()
+        _ = await coordinator.credentials.replaceToken("synthetic-week")
+        let scope = try #require(coordinator.credentials.scope)
+
+        // Same Monday-first arithmetic the coordinator uses, so the fixture
+        // stays correct regardless of which weekday "2026-09-05" falls on.
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")!
+        formatter.dateFormat = "yyyy-MM-dd"
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let day = try #require(GatewayDay(spendDate: "2026-09-05"))
+        let dayDate = try #require(formatter.date(from: day.key))
+        let weekday = calendar.component(.weekday, from: dayDate)
+        let mondayDate = calendar.date(byAdding: .day, value: -((weekday + 5) % 7), to: dayDate)!
+
+        func observation(_ gwDay: GatewayDay, at hoursAfterMidnight: Double, amount: Double) -> Observation {
+            Observation(
+                id: UUID(), scope: scope, gatewayDay: gwDay,
+                receivedAt: gwDay.startOfDayUTC!.addingTimeInterval(hoursAfterMidnight * 3600),
+                cumulativeAmount: amount, limitEnabled: true, limitUSD: 400,
+                precision: .exactReceipt)
+        }
+
+        let monday = try #require(GatewayDay(spendDate: formatter.string(from: mondayDate)))
+        // Monday: two readings — the later one must win (last-observed rule).
+        _ = await coordinator.repository.append(observation(monday, at: 10, amount: 20))
+        _ = await coordinator.repository.append(observation(monday, at: 16, amount: 42))
+        // Wednesday: a single reading.
+        let wednesdayDate = calendar.date(byAdding: .day, value: 2, to: mondayDate)!
+        let wednesday = try #require(GatewayDay(spendDate: formatter.string(from: wednesdayDate)))
+        _ = await coordinator.repository.append(observation(wednesday, at: 12, amount: 7))
+        // Thursday stays a GAP day (no observations) — it must render nil.
+        let snapshot = UsageValidation.snapshot(
+            from: Self.usage(tokenID: tokenID, spent: 30, spendDate: day.key),
+            scope: scope,
+            receivedAt: day.startOfDayUTC!.addingTimeInterval(14 * 3600)
+        )
+        var weeks: [[Double?]?] = []
+        coordinator.onUpdate = { (update: CoordinatorUpdate) in weeks.append(update.weekTotals) }
+        coordinator.handleForTesting(snapshot)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let totals = try #require(weeks.compactMap { $0 }.last, "async deliverCurve must deliver the week window")
+        #expect(totals.count == 7)
+        #expect(totals[0] == 42, "Monday's total is its LAST observed reading")
+        #expect(totals[2] == 7, "Wednesday holds its single reading")
+        #expect(totals[3] == nil, "a gap day stays nil")
+        #expect(totals[5] == 30, "the snapshot's own day carries its committed reading")
+        #expect(totals[6] == nil, "future days stay nil without observations")
+        coordinator.stop()
+    }
+
+    @MainActor
+    @Test("PopoverView.applyWeek stores the strip state")
+    func applyWeekStoresState() {
+        let view = PopoverView()
+        let week: [Double?] = [nil, 5, nil, nil, 13, 30, nil]
+        view.applyWeek(totals: week)
+        #expect(view.appliedWeekTotals == week, "applyWeek stores the 7-slot week state")
+        // A wrong-shaped week is rejected, not rendered.
+        view.applyWeek(totals: [1, 2])
+        #expect(view.appliedWeekTotals == week, "a non-7-slot week never replaces the stored state")
+    }
  }
 
 // MARK: - Test seam
