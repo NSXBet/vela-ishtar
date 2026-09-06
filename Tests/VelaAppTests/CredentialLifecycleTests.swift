@@ -553,5 +553,40 @@ struct ScopeMappingTests {
         let raw = (try? String(contentsOf: mappingDir.appendingPathComponent("scope-mapping.json"), encoding: .utf8)) ?? ""
         #expect(!raw.contains("gt-synth-production"), "the mapping file must not carry the secret token itself")
     }
+
+    @Test("repairScopeIfUnstable migrates a fresh-minted scope to the stable mapping entry")
+    func repairScopeMigratesToStableEntry() {
+        let transport = ScriptedTransport()
+        let keychain = ScriptedKeychain(token: "gt-synth-working")
+        let mappingDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("VelaMappingTests-\(UUID().uuidString)", isDirectory: true)
+        let controller = CredentialController(
+            transport: transport, store: keychain,
+            gatewayOrigin: "https://gateway.test", mappingDirectory: mappingDir)
+
+        // Adopt mints a fresh UUID (no validated token_id yet).
+        controller.adoptStoredCredentialSync()
+        let minted = controller.scope
+        #expect(minted != nil)
+
+        // First poll reveals the gateway's token_id → repair migrates.
+        controller.repairScopeIfUnstable(tokenID: "tok-revealed-1")
+        let repaired = controller.scope
+        #expect(repaired?.opaqueID != minted?.opaqueID,
+                "the unstable scope must migrate to the stable mapping entry")
+
+        // Idempotent: repairing again with the same token_id is a no-op.
+        let stable = repaired
+        controller.repairScopeIfUnstable(tokenID: "tok-revealed-1")
+        #expect(controller.scope?.opaqueID == stable?.opaqueID)
+
+        // A second controller over the same mapping dir gets the SAME
+        // stable scope — the split-history bug is gone.
+        let second = CredentialController(
+            transport: transport, store: keychain,
+            gatewayOrigin: "https://gateway.test", mappingDirectory: mappingDir)
+        let stableScope = second.opaqueID(forTokenID: "tok-revealed-1")
+        #expect(controller.scope?.opaqueID == stableScope)
+    }
 }
 

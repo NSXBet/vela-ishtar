@@ -89,11 +89,13 @@ struct SummaryStateTests {
             todayModelsPresent: true
         )
         let state = Self.presenterState(response)
-        // The validated fold flags inconsistency: no named row may claim a
-        // cost that sums past the hero.
+        // User decision (2026-09-06): model rows ALWAYS render, even when
+        // the named sum briefly exceeds the (lagging) day total — gateway
+        // lag self-corrects on the next poll.
         let namedSum = state.rows.filter { $0.id.hasPrefix("model-") }
             .compactMap { Double($0.detail.dropFirst()) }.reduce(0, +)
-        #expect(namedSum <= 100.01)
+        #expect(namedSum == 150, "both named rows render with their real prices")
+        #expect(!state.rows.contains { $0.id == "inconsistent" })
     }
 
     @Test("reconciled rows keep stable IDs across spend changes")

@@ -245,13 +245,12 @@ public enum UsageValidation {
             return .inconsistent(reason: "duplicate model entries")
         }
 
-        let namedSum = validated.reduce(0.0) { $0 + $1.totalCostUSD }
-        if !Self.reconciles(namedSum: namedSum, total: total, modelCount: validated.count) {
-            return .inconsistent(
-                reason: String(format: "named models sum to %@ but the day total is %@", MoneyFormat.dollars(namedSum), MoneyFormat.dollars(total))
-            )
-        }
-
+        // Gateway lag (user decision 2026-09-06): today_models/top_models
+        // and the window total update at slightly different times, so the
+        // named sum can briefly exceed the total by real cents. Rows show
+        // ALWAYS; only structural defects (duplicates, negatives,
+        // non-finite — rejected above) suppress them. A lagging total is a
+        // display anomaly that self-corrects on the next poll.
         return .available(rows: validated, total: total, scope: scope)
     }
 

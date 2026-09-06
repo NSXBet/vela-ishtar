@@ -107,13 +107,17 @@ struct TodayModelRowsValidationTests {
         ModelUsage(model: name, totalCostUSD: cost, totalTokens: tokens, requests: 1)
     }
 
-    @Test("B07: $80+$70 rows against a $100 day total are rejected, never rendered")
-    func rowsExceedingDayTotalRejected() {
+    @Test("B07 superseded (user decision): named rows ALWAYS render, even summing past the day total")
+    func rowsExceedingDayTotalStillRender() {
+        // Gateway lag: today_models can exceed daily_budget.spent by real
+        // cents (or more) until the next poll. The user decided the models
+        // and their prices display ALWAYS — the total self-corrects.
         let rows = TodayModelRows.validatedRows(
             from: [model("a", 80), model("b", 70)],
             dayTotal: 100
         )
-        #expect(rows == nil)
+        #expect(rows != nil)
+        #expect(rows?.count == 2)
     }
 
     @Test("rows within tolerance of the day total fold normally with a residual Other")

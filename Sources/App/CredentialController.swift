@@ -354,6 +354,20 @@ public final class CredentialController {
         }
     }
 
+    /// After the first successful poll reveals the gateway's token_id,
+    /// repairs an adopt-time scope that was minted fresh (no validated
+    /// token_id existed yet). Migrates the scope to the STABLE mapping
+    /// entry so history doesn't split per launch. No-op when the scope
+    /// already matches the mapped UUID.
+    public func repairScopeIfUnstable(tokenID: String) {
+        guard let current = scope else { return }
+        let stable = opaqueID(forTokenID: tokenID)
+        if current.opaqueID != stable {
+            scope = UsageScope(kind: current.kind, opaqueID: stable, gatewayOrigin: gatewayOrigin)
+            pinValidatedTokenID(tokenID)
+        }
+    }
+
     /// Installs the initially-loaded token's scope at startup (no
     /// validation needed — the stored token is the working credential).
     /// The scope reuses the STABLE mapping entry of the last validated
@@ -390,7 +404,7 @@ public final class CredentialController {
         return UUID()
     }
 
-    private func pinValidatedTokenID(_ tokenID: String) {
+    func pinValidatedTokenID(_ tokenID: String) {
         // The token_id itself is the persisted value inside the mapping
         // (opaqueID(forTokenID:) writes it); pinning the LAST VALIDATED id
         // separately lets adopt reuse it before any validation response.

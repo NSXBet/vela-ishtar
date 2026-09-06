@@ -205,6 +205,10 @@ public final class AppCoordinator {
             lastGoodResponse = snapshot.response
             lastGoodReceivedAt = snapshot.receivedAt
             lastSnapshot = snapshot
+            // First poll reveals the gateway's token_id: repair an
+            // adopt-time fresh-minted scope to the stable mapping entry so
+            // history never splits per launch.
+            credentials.repairScopeIfUnstable(tokenID: snapshot.response.tokenId)
         }
 
         deliverUpdate()

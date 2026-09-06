@@ -73,12 +73,15 @@ public enum TodayModelRows {
         if Set(names).count != names.count { return nil }
 
         let namedSum = models.reduce(0.0) { $0 + $1.totalCostUSD }
-        // Cents-based reconciliation with per-model rounding allowance —
-        // the shared helper in UsageValidation (raw Double comparison
-        // rejects honest gateway rounding like 27.51 vs 27.50).
-        if !UsageValidation.reconciles(namedSum: namedSum, total: total, modelCount: models.count) {
-            return nil
-        }
+        // Gateway lag: `today_models` (per-model) and `daily_budget.spent`
+        // (day total) update at slightly different times, so the named sum
+        // can briefly EXCEED the day total by real cents. Per user decision
+        // (2026-09-06): models and their prices display ALWAYS — a lagging
+        // total is a display anomaly that self-corrects on the next poll,
+        // while hiding the breakdown hides the primary data. Only
+        // structural defects (duplicates, negatives, non-finite — rejected
+        // above) suppress rows.
+        _ = namedSum
 
         return rows(from: models, dayTotal: total)
     }

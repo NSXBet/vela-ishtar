@@ -111,17 +111,17 @@ struct UsageValidationTests {
 
     // MARK: - B07: $80+$70 vs $100 day total
 
-    @Test("named rows $80+$70 against a $100 day total are inconsistent, not reconciled")
-    func namedRowsExceedingDayTotalAreInconsistent() {
+    @Test("named rows $80+$70 against a $100 day total render (gateway lag, user decision)")
+    func namedRowsExceedingDayTotalStillRender() {
         let models = [
             ModelUsage(model: "a", totalCostUSD: 80, totalTokens: 100, requests: 1),
             ModelUsage(model: "b", totalCostUSD: 70, totalTokens: 100, requests: 1),
         ]
         let state = UsageValidation.breakdown(models: models, dayTotal: 100, scope: scope)
-        guard case .inconsistent(let reason) = state else { Issue.record("expected inconsistent"); return }
-        #expect(reason.contains("$150.00"))
-        // And the validated fold refuses too.
-        #expect(TodayModelRows.validatedRows(from: models, dayTotal: 100) == nil)
+        guard case .available(let rows) = state else { Issue.record("expected available rows"); return }
+        #expect(rows.rows.count == 2)
+        // The validated fold renders too.
+        #expect(TodayModelRows.validatedRows(from: models, dayTotal: 100) != nil)
     }
 
     @Test("named sum within a cent of the day total reconciles as available")
