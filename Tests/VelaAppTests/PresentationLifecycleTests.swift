@@ -78,7 +78,7 @@ struct PresentationLifecycleTests {
             repository: repository,
             scheduler: ManualScheduler(),
             clock: SystemPollClock(),
-            scopeMappingStore: defaults,
+            scopeMappingDefaults: defaults,
             gatewayOrigin: "https://gateway.test"
         )
         return coordinator

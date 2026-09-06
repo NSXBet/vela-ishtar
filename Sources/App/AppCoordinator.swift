@@ -99,7 +99,7 @@ public final class AppCoordinator {
         repository: HistoryRepository,
         scheduler: any PollScheduling = OneShotPollScheduler(),
         clock: any PollClock = SystemPollClock(),
-        scopeMappingStore: UserDefaults = .standard,
+        scopeMappingDefaults: UserDefaults? = nil,
         gatewayOrigin: String = "https://ai-llm-gateway.fbr.land"
     ) {
         self.repository = repository
@@ -107,7 +107,7 @@ public final class AppCoordinator {
             transport: transport,
             store: store,
             gatewayOrigin: gatewayOrigin,
-            scopeMappingStore: scopeMappingStore
+            scopeMappingDefaults: scopeMappingDefaults
         )
         self.polls = PollCoordinator(
             transport: transport,

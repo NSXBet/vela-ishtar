@@ -175,7 +175,7 @@ struct CredentialStatusTests {
     @Test func lockedThenRecovered() async {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
 
         // Start locked: the item exists but reads are refused.
         keychain.failReads(with: errSecInteractionNotAllowed)
@@ -199,7 +199,7 @@ struct ReplacementTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.failure(.unauthorized))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
         let oldScope = controller.scope
 
@@ -217,7 +217,7 @@ struct ReplacementTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-b", spent: 7.5)))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
         let oldScopeID = controller.scope?.opaqueID
 
@@ -235,7 +235,7 @@ struct ReplacementTests {
         keychain.scriptWrites(false)
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-b")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         let result = await controller.replaceToken("gt-synth-new")
@@ -251,7 +251,7 @@ struct ReplacementTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-a")), .success(makeUsage(tokenID: "tok-b")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         // Both replacements are issued concurrently; commits are SERIALIZED
@@ -285,7 +285,7 @@ struct ReplacementTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.failure(.network("connection reset")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         let result = await controller.replaceToken("gt-synth-candidate")
@@ -297,7 +297,7 @@ struct ReplacementTests {
     func adoptMintsScope() async {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
 
         #expect(controller.scope == nil)
         await controller.refreshStatus()
@@ -322,7 +322,7 @@ struct CommitRaceTests {
         let transport = ScriptedTransport()
         // A's candidate validates OK; B's candidate is rejected 401.
         transport.script(.success(makeUsage(tokenID: "tok-a")), .failure(.unauthorized))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         let resultA = await controller.replaceToken("gt-synth-a")
@@ -350,7 +350,7 @@ struct CommitRaceTests {
         keychain.holdWrites = true
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-a")), .failure(.unauthorized))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         // A commits (write deferred but "in flight" per the serialized model).
@@ -378,7 +378,7 @@ struct StatusTransitionTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-b")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         // Instrument: observe the in-progress state before the await lands.
@@ -394,7 +394,7 @@ struct StatusTransitionTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.failure(.unauthorized))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         let result = await controller.replaceToken("gt-synth-bad")
@@ -407,7 +407,7 @@ struct StatusTransitionTests {
     func validationInProgressObservable() async {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let gated = GateTransport()
-        let controller = CredentialController(transport: gated, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: gated, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         async let replace = controller.replaceToken("gt-synth-candidate")
@@ -428,7 +428,7 @@ struct StatusTransitionTests {
         keychain.scriptWrites(false)
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-b")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test")
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", mappingDirectory: URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString))
         controller.adoptStoredCredentialSync()
 
         let result = await controller.replaceToken("gt-synth-candidate")
@@ -480,7 +480,7 @@ struct ScopeMappingTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-77")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingStore: defaults)
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingDefaults: defaults)
         controller.adoptStoredCredentialSync()
 
         // A validated replacement pins the mapping through tok-77.
@@ -489,7 +489,7 @@ struct ScopeMappingTests {
 
         // "Restart": a brand-new controller, same defaults + same stored token.
         transport.script(.success(makeUsage(tokenID: "tok-77")))
-        let restarted = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingStore: defaults)
+        let restarted = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingDefaults: defaults)
         restarted.adoptStoredCredentialSync()
 
         #expect(restarted.scope?.opaqueID == scopeAfterReplacement)
@@ -501,7 +501,7 @@ struct ScopeMappingTests {
         let keychain = ScriptedKeychain(token: "gt-synth-working")
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-one")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingStore: defaults)
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingDefaults: defaults)
         controller.adoptStoredCredentialSync()
         _ = await controller.replaceToken("gt-synth-1")
         let scopeOne = controller.scope?.opaqueID
@@ -519,7 +519,7 @@ struct ScopeMappingTests {
         let keychain = ScriptedKeychain(token: "gt-synth-SECRET-TOKEN-VALUE")
         let transport = ScriptedTransport()
         transport.script(.success(makeUsage(tokenID: "tok-public-99")))
-        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingStore: defaults)
+        let controller = CredentialController(transport: transport, store: keychain, gatewayOrigin: "https://gateway.test", scopeMappingDefaults: defaults)
         controller.adoptStoredCredentialSync()
         _ = await controller.replaceToken("gt-synth-SECRET-TOKEN-VALUE")
 
