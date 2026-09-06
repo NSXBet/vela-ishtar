@@ -39,7 +39,18 @@ public struct CoordinatorUpdate: Sendable {
     /// value = that observation's cumulativeAmount (later same-hour
     /// observations overwrite earlier); untouched hours are nil. Nil while
     /// nothing has ever committed.
+    /// The Monday–Sunday week window containing the snapshot's gateway day,
+    /// index 0 = Monday … index 6 = Sunday (index-aligned with DayStripView's
+    /// fixed M T W T F S S letters), each entry that day's LAST-observed
+    /// cumulative amount; nil = a gap day (the strip draws an empty cell,
+    /// never $0.00). Nil while nothing has ever committed.
     public let hourlyCurve: [Double?]?
+    /// The Monday–Sunday week window containing the snapshot's gateway day,
+    /// index 0 = Monday … index 6 = Sunday (index-aligned with DayStripView's
+    /// fixed M T W T F S S letters), each entry that day's LAST-observed
+    /// cumulative amount; nil = a gap day (the strip draws an empty cell,
+    /// never $0.00). Nil while nothing has ever committed.
+    public let weekTotals: [Double?]?
 
     public init(
         displayState: SummaryDisplayState?,
@@ -48,7 +59,8 @@ public struct CoordinatorUpdate: Sendable {
         lastGoodReceivedAt: Date?,
         lastSnapshot: UsageSnapshot?,
         authJustRequired: Bool = false,
-        hourlyCurve: [Double?]? = nil
+        hourlyCurve: [Double?]? = nil,
+        weekTotals: [Double?]? = nil
     ) {
         self.displayState = displayState
         self.connection = connection
@@ -57,6 +69,7 @@ public struct CoordinatorUpdate: Sendable {
         self.lastSnapshot = lastSnapshot
         self.authJustRequired = authJustRequired
         self.hourlyCurve = hourlyCurve
+        self.weekTotals = weekTotals
     }
 }
 
@@ -92,7 +105,9 @@ public final class AppCoordinator {
     /// period switch or failure update (no new snapshot) re-delivers the
     /// same lane instead of going blank.
     private var lastCurve: [Double?]?
-
+    /// The last week window delivered beside the curve (same cache-and-
+    /// re-deliver contract: a failure update keeps the strip populated).
+    private var lastWeekTotals: [Double?]?
     public init(
         transport: any UsageTransport,
         store: any CredentialStoring,
@@ -234,7 +249,8 @@ public final class AppCoordinator {
             lastGoodReceivedAt: lastGoodReceivedAt,
             lastSnapshot: lastSnapshot,
             authJustRequired: authJust,
-            hourlyCurve: lastCurve
+            hourlyCurve: lastCurve,
+            weekTotals: lastWeekTotals
         ))
         deliverCurve()
     }
@@ -251,13 +267,14 @@ public final class AppCoordinator {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let obs = await self.repository.observations(scope: scope, day: day)
-            var hourly: [Double?] = Array(repeating: nil, count: 24)
             var utc = Calendar(identifier: .gregorian)
+            var hourly: [Double?] = Array(repeating: nil, count: 24)
             utc.timeZone = TimeZone(identifier: "UTC")!
             for o in obs {
                 hourly[utc.component(.hour, from: o.receivedAt)] = o.cumulativeAmount
             }
             self.lastCurve = hourly
+            self.lastWeekTotals = await self.weekWindow(scope: scope, around: day)
             self.onUpdate?(CoordinatorUpdate(
                 displayState: self.latestDisplayState,
                 connection: self.connection,
@@ -265,8 +282,44 @@ public final class AppCoordinator {
                 lastGoodReceivedAt: self.lastGoodReceivedAt,
                 lastSnapshot: self.lastSnapshot,
                 authJustRequired: false,
-                hourlyCurve: hourly
+                hourlyCurve: hourly,
+                weekTotals: self.lastWeekTotals
             ))
         }
+    }
+
+    /// The Monday–Sunday week window CONTAINING the snapshot's gateway day
+    /// (the same window DayStrip.week renders), Monday first: for each of the
+    /// 7 day keys, the LAST observation's cumulativeAmount — a day's final
+    /// reading is its total; nil for a gap day (no observations at all).
+    /// Future days within the window stay nil unless history genuinely holds
+    /// them — DayStripView already renders nil as the empty cell, which is
+    /// the honest answer for a day that hasn't happened.
+    /// Monday-first offset math mirrors DayStrip.week exactly (same comment
+    /// rationale): explicit Gregorian-weekday arithmetic, never firstWeekday.
+    @MainActor
+    private func weekWindow(scope: UsageScope, around day: GatewayDay) async -> [Double?] {
+        guard let todayDate = day.startOfDayUTC else { return Array(repeating: nil, count: 7) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let weekday = calendar.component(.weekday, from: todayDate)
+        let offsetFromMonday = (weekday + 5) % 7   // Mon → 0, Sun → 6
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")!
+        formatter.dateFormat = "yyyy-MM-dd"
+        var totals: [Double?] = []
+        totals.reserveCapacity(7)
+        for index in 0..<7 {
+            let date = calendar.date(byAdding: .day, value: index - offsetFromMonday, to: todayDate)!
+            let key = formatter.string(from: date)
+            guard let gwDay = GatewayDay(spendDate: key),
+                  let last = await repository.latestObservation(scope: scope, day: gwDay) else {
+                totals.append(nil)
+                continue
+            }
+            totals.append(last.cumulativeAmount)
+        }
+        return totals
     }
  }
