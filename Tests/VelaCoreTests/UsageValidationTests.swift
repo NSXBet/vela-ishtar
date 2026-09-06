@@ -207,4 +207,25 @@ struct UsageValidationTests {
         let (vd, _) = UsageValidation.budget(from: disabled)
         #expect(MoneyFormat.heroSuffix(limit: vd.limitUSD, limitEnabled: vd.limitEnabled) == nil)
     }
+
+    // MARK: - reconciliation (live smoke-test fix)
+
+    @Test("exact-1¢ rounding gap reconciles (cents comparison, not raw doubles)")
+    func oneCentGapReconciles() {
+        #expect(UsageValidation.reconciles(namedSum: 27.51, total: 27.50, modelCount: 2))
+    }
+
+    @Test("per-model rounding allowance: a few cents of drift across models reconciles")
+    func perModelAllowance() {
+        // 2 models: 1¢ base + 2 allowance = 3¢ tolerated
+        #expect(UsageValidation.reconciles(namedSum: 28.56, total: 28.53, modelCount: 2))
+        #expect(UsageValidation.reconciles(namedSum: 28.59, total: 28.53, modelCount: 2) == false,
+                "6¢ on 2 models exceeds the allowance")
+    }
+
+    @Test("a real contradiction (way past the total) still rejects")
+    func realContradictionRejects() {
+        #expect(!UsageValidation.reconciles(namedSum: 150, total: 100, modelCount: 2))
+        #expect(!UsageValidation.reconciles(namedSum: 28.90, total: 28.53, modelCount: 2))
+    }
 }
