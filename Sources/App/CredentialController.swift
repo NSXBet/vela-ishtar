@@ -14,6 +14,7 @@
 // Sources/VelaCore/UsageContracts.swift, Sources/VelaCore/AIHubClientProtocol.swift
 
 import Foundation
+import os
 
 /// Credential lifecycle: what is known about the gateway token right now.
 /// `KeychainStore.readStatus()` provides the raw OSStatus; this maps it to
@@ -101,6 +102,8 @@ public enum CredentialValidationFailure: Equatable, Sendable {
 /// never on the interactive path (§6.1: zero synchronous Keychain I/O on
 /// the interaction path).
 @MainActor
+private let mappingLog = Logger(subsystem: "com.nsxbet.velaishtar", category: "CredentialController")
+
 public final class CredentialController {
     /// The last observed credential status (raw status preserved for the UI).
     public private(set) var status: CredentialStatus = .missing
@@ -191,9 +194,16 @@ public final class CredentialController {
             return
         }
         guard let url = scopeMappingURL else { return }
+        // The history directory may not exist on first launch (it is
+        // created lazily by the first history save) — create it or the
+        // mapping write silently fails and history splits per launch.
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let wrapped = [Self.scopeMappingFileKey: mapping]
         if let data = try? JSONEncoder().encode(wrapped) {
             try? data.write(to: url, options: .atomic)
+        } else {
+            mappingLog.error("scope mapping write failed — history would split per launch")
         }
     }
 

@@ -80,6 +80,12 @@ public final class AppCoordinator {
     /// The sink the app layer (main.swift) observes.
     public var onUpdate: ((CoordinatorUpdate) -> Void)?
 
+    /// Monotonic epoch for async curve/week fetches: a commit that lands
+    /// while an older fetch is in flight bumps this, so the stale fetch's
+    /// result is discarded instead of overwriting newer curve/week data
+    /// with an old day's numbers.
+    private var curveEpoch: UInt64 = 0
+
     public let credentials: CredentialController
     public let polls: PollCoordinator
     public let repository: HistoryRepository
@@ -264,9 +270,13 @@ public final class AppCoordinator {
         guard let snapshot = lastSnapshot else { return }
         let scope = snapshot.scope
         let day = snapshot.gatewayDay
+        curveEpoch &+= 1
+        let epoch = curveEpoch
         Task { @MainActor [weak self] in
             guard let self else { return }
             let obs = await self.repository.observations(scope: scope, day: day)
+            // Stale-fetch gate: a newer commit superseded this fetch.
+            guard epoch == self.curveEpoch else { return }
             var utc = Calendar(identifier: .gregorian)
             var hourly: [Double?] = Array(repeating: nil, count: 24)
             utc.timeZone = TimeZone(identifier: "UTC")!

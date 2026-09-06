@@ -205,20 +205,20 @@ public final class PopoverView: NSView {
     /// Feeds the week strip from CoordinatorUpdate.weekTotals — Monday-first,
     /// index-aligned with the strip's fixed M T W T F S S letters. Gap days
     /// stay nil: the strip's existing empty-cell style (never a $0.00).
-    public func applyWeek(totals: [Double?]?) {
+    public func applyWeek(totals: [Double?]?, anchorDay: GatewayDay? = nil) {
         guard let totals, totals.count == 7 else {
             // A wrong-shaped week is an upstream bug, not a render state —
             // keep the last good week rather than drawing garbage.
             return
         }
         appliedWeekTotals = totals
-        rebuildStrip(from: totals)
+        rebuildStrip(from: totals, anchorDay: anchorDay)
     }
 
     /// DayStripView holds its week as a let (drawing code untouched by this
     /// fix), so a data update replaces the view in the same frame slot.
-    private func rebuildStrip(from totals: [Double?]) {
-        let strip = DayStripView(week: Self.stripWeek(from: totals), frame: dayStripView.frame)
+    private func rebuildStrip(from totals: [Double?], anchorDay: GatewayDay?) {
+        let strip = DayStripView(week: Self.stripWeek(from: totals, anchorDay: anchorDay), frame: dayStripView.frame)
         dayStripView.removeFromSuperview()
         dayStripView = strip
         addSubview(strip)
@@ -228,20 +228,38 @@ public final class PopoverView: NSView {
     /// by the strip's drawing/hover labels (letters are static, Monday-first);
     /// today's ring is carried by isToday, resolved from the real calendar
     /// week so the ring advances through the stable row.
-    private static func stripWeek(from totals: [Double?]) -> [DayStrip.Day] {
+    private static func stripWeek(from totals: [Double?], anchorDay: GatewayDay?) -> [DayStrip.Day] {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
-        let monday = calendar.dateInterval(of: .weekOfYear, for: Date())!.start
+        // Anchor the Monday on the GATEWAY day the totals were computed
+        // around (the coordinator passes it) — anchoring on wall-clock now
+        // shifts every column when the gateway day lags UTC midnight.
+        let fallbackDay = GatewayDay(spendDate: formatter.string(from: Date()))
+        let anchorDate = (anchorDay ?? fallbackDay)?.startOfDayUTC
+            ?? calendar.startOfDay(for: Date())
+        let weekday = calendar.component(.weekday, from: anchorDate)
+        let offsetFromMonday = (weekday + 5) % 7   // Mon → 0, Sun → 6
+        let monday = calendar.date(byAdding: .day, value: -offsetFromMonday, to: anchorDate)!
         return totals.enumerated().map { index, total in
             let day = calendar.date(byAdding: .day, value: index, to: monday)!
+            let key = formatter.string(from: day)
             return DayStrip.Day(
-                key: ISODate.dayKey(day.description),
+                key: key,
                 total: total,
-                isToday: calendar.isDateInToday(day),
+                // "Today" = the anchor gateway day, not the wall clock.
+                isToday: key == anchorDay?.key,
                 exhausted: false
             )
         }
     }
+
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")!
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     // MARK: - Layout (named slots; height changes only on content growth)
 

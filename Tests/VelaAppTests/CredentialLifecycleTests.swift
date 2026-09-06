@@ -527,4 +527,31 @@ struct ScopeMappingTests {
         #expect(!blob.contains("gt-synth-SECRET-TOKEN-VALUE"))
         #expect(blob.contains("tok-public-99"))   // public token_id IS the mapping key
     }
+    @Test("production mapping file round-trips: same token_id across two controllers, one shared directory")
+    func productionMappingFileRoundTrip() async throws {
+        let mappingDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("VelaMappingTests-\(UUID().uuidString)", isDirectory: true)
+        // Directory deliberately NOT pre-created — first-launch simulation.
+        let tokenID = "production-token-\(UUID().uuidString)"
+
+        let transport = ScriptedTransport()
+        let keychain = ScriptedKeychain(token: "gt-synth-production")
+        let first = CredentialController(
+            transport: transport, store: keychain,
+            gatewayOrigin: "https://gateway.test", mappingDirectory: mappingDir)
+        let scope1 = first.opaqueID(forTokenID: tokenID)
+
+        let second = CredentialController(
+            transport: transport, store: keychain,
+            gatewayOrigin: "https://gateway.test", mappingDirectory: mappingDir)
+        let scope2 = second.opaqueID(forTokenID: tokenID)
+
+        #expect(scope1 == scope2, "same token_id must map to the same UUID across controllers")
+        #expect(FileManager.default.fileExists(
+            atPath: mappingDir.appendingPathComponent("scope-mapping.json").path))
+        // No secret material in the mapping file.
+        let raw = (try? String(contentsOf: mappingDir.appendingPathComponent("scope-mapping.json"), encoding: .utf8)) ?? ""
+        #expect(!raw.contains("gt-synth-production"), "the mapping file must not carry the secret token itself")
+    }
 }
+

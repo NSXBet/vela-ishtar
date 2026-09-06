@@ -93,7 +93,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 view.applyCurve(hourly: update.hourlyCurve,
                                 limit: update.lastGoodResponse?.dailyBudget.limitUSD ?? 0,
                                 limitEnabled: update.lastGoodResponse?.dailyBudget.limitEnabled ?? false)
-                view.applyWeek(totals: update.weekTotals)
+                view.applyWeek(
+                    totals: update.weekTotals,
+                    anchorDay: (update.lastGoodResponse?.dailyBudget.spendDate).flatMap(GatewayDay.init(spendDate:)))
             }
             // A rejected token re-opens the token flow with an explanation —
             // once per failure episode (03.3), never every 60s tick.
@@ -316,6 +318,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.popoverView = view
         view.updateChecker = updateChecker
         view.onRequestDismiss = { [weak self] in self?.popover?.dismiss() }
+        // Period selection must re-derive in EVERY popover build path —
+        // the loading-state branch wires it too; missing it here leaves a
+        // dead Today/Month switch on the normal reopen path.
+        view.onSelectModelPeriod = { [weak coordinator] period in
+            coordinator?.setSelectedPeriod(period)
+        }
         // "API key" swaps the popover into token-entry mode so a rotated
         // token can be pasted — the token itself never touches this view.
         view.onReplaceToken = { [weak self, weak controller] in
