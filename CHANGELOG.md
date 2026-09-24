@@ -4,7 +4,15 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
-## [1.0.4] — 2026-08-28
+## [1.0.5] — 2026-09-24
+
+### Added
+
+- **Model rows now show requests and tokens, straight from the gateway.** Each model row in the Today and Month tabs is two lines: name · share% · cost, and `N requests · X tokens` plus the $/M efficiency underneath. The per-model data comes from the gateway's `today_models` on `/v1/me/usage`, so a zero counter renders as an em-dash and the Other row never claims counts it can't derive.
+
+### Fixed
+
+- **The Today models split no longer disappears.** The split now comes ready from the gateway instead of being derived from yesterday's snapshot, which removes the "needs one full day of the app running" state, the month-seam unavailability, and the snapshot-differencing failure modes entirely. A small production-observed cache-lag between the gateway's `spent_usd` and `today_models` aggregates (~$0.09) is tolerated via the existing restatement rule (max 1% or $0.50) instead of hiding the whole split.
 
 ### Added
 

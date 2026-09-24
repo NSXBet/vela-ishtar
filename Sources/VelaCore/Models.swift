@@ -28,19 +28,43 @@ public struct UsageResponse: Codable, Equatable, Sendable {
     public let dailyBudget: DailyBudget
     public let currentMonth: MonthStats
     public let topModels: [ModelUsage]
+    /// The spend day's period stats — same wire shape as `current_month`
+    /// (cost/tokens/requests over the gateway's enforced spend day).
+    public let today: MonthStats?
+    /// The spend day's per-model breakdown, ranked by cost, capped at 5 rows
+    /// by the gateway. `today_models` sums to `today.total_cost_usd` (this
+    /// token), which is at most `daily_budget.spent_usd` (the whole user).
+    /// Optional in decode so an older gateway build that omits the fields
+    /// still reads — the split then shows its "gateway can't split" note
+    /// instead of failing to decode the whole response.
+    public let todayModels: [ModelUsage]?
 
     private enum CodingKeys: String, CodingKey {
         case tokenId = "token_id"
         case dailyBudget = "daily_budget"
         case currentMonth = "current_month"
         case topModels = "top_models"
+        case today
+        case todayModels = "today_models"
     }
 
-    public init(tokenId: String, dailyBudget: DailyBudget, currentMonth: MonthStats, topModels: [ModelUsage]) {
+    public init(tokenId: String, dailyBudget: DailyBudget, currentMonth: MonthStats, topModels: [ModelUsage], today: MonthStats? = nil, todayModels: [ModelUsage]? = nil) {
         self.tokenId = tokenId
         self.dailyBudget = dailyBudget
         self.currentMonth = currentMonth
         self.topModels = topModels
+        self.today = today
+        self.todayModels = todayModels
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tokenId = try c.decode(String.self, forKey: .tokenId)
+        dailyBudget = try c.decode(DailyBudget.self, forKey: .dailyBudget)
+        currentMonth = try c.decode(MonthStats.self, forKey: .currentMonth)
+        topModels = try c.decode([ModelUsage].self, forKey: .topModels)
+        today = try c.decodeIfPresent(MonthStats.self, forKey: .today)
+        todayModels = try c.decodeIfPresent([ModelUsage].self, forKey: .todayModels)
     }
 }
 
@@ -225,3 +249,4 @@ public enum ISODate {
         return String(format: "%04d-%02d-%02d", year, month, day)
     }
 }
+
