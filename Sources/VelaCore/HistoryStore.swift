@@ -106,7 +106,7 @@ public struct HistoryStore: Sendable {
         // restatement doesn't wedge the slot at a stale high.
         let runningMax = day.hourly.compactMap { $0 }.max()
         if let peak = runningMax {
-            let tolerance = max(peak * 0.01, 0.50)
+            let tolerance = TodayModelSplitEngine.restatementTolerance(base: peak)
             if spentToday < peak - tolerance {
                 historyLog.notice("ignored downward restatement for \(key, privacy: .public) hour \(hour, privacy: .public): peak \(peak, privacy: .public) -> \(spentToday, privacy: .public)")
             } else {
@@ -245,7 +245,7 @@ public struct HistoryStore: Sendable {
         let observed = day.hourly.compactMap { $0 }
         guard observed.count > 1 else { return false }
         let peak = observed.max() ?? 0
-        let tolerance = max(peak * 0.01, 0.50)
+        let tolerance = TodayModelSplitEngine.restatementTolerance(base: peak)
         var previous = -Double.infinity
         for value in observed {
             if value < previous - tolerance { return true }

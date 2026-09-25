@@ -95,6 +95,14 @@ public enum TodayModelSplitEngine {
     /// Sub-cent amounts round-trip the display as $0.00, so they're noise.
     static let displayEpsilon = 0.005
 
+    /// The restatement tolerance every downward-reading guard in the app
+    /// shares: max 1% of the base, floored at $0.50. HistoryStore's monotonic
+    /// record guard and contamination filter use the same rule — it lives
+    /// here because it's pure math, and both callers already import VelaCore.
+    public static func restatementTolerance(base: Double) -> Double {
+        max(base * 0.01, 0.50)
+    }
+
     /// The month key ("yyyy-MM") a spend_date CARRIES, read from its calendar
     /// label via GatewayDay — never from parsing it as an instant. Used by
     /// ModelSnapshots to tag recorded snapshots.
@@ -139,7 +147,7 @@ public enum TodayModelSplitEngine {
         // and a split that doesn't tie is worse than none.
         let namedSum = named.reduce(0) { $0 + $1.costUSD }
         let other = spentUSD - namedSum
-        let restatementTolerance = max(spentUSD * 0.01, 0.50)
+        let restatementTolerance = restatementTolerance(base: spentUSD)
         guard other >= -restatementTolerance else { return .unavailable(.doesNotTie) }
 
         var rows = named

@@ -9,7 +9,6 @@ semantic versioning.
 ### Added
 
 - **Model rows now show requests and tokens, straight from the gateway.** Each model row in the Today and Month tabs is two lines: name · share% · cost, and `N requests · X tokens` plus the $/M efficiency underneath. Today's per-model rows come from the gateway's `today_models` on `/v1/me/usage`; the Month tab's come from `top_models` as before. A zero counter renders as an em-dash, and the Other row never claims counts it can't derive.
-- **Nested per-model daily caps are now visible in the app.** A collapsible model-cap row sits between the pace sentence and the spend curve, with a 4pt pill alert dot when an enforced cap is at least 90% used or blocked; no further user action is required, and cooldown state ("relaxed until …"), blocked semantics, clean color-ramp detail, and state-level accessibility are included.
 
 ### Fixed
 
@@ -18,6 +17,12 @@ semantic versioning.
 ### Removed
 
 - The dead snapshot-differencing machinery: the split no longer reads the stored baseline, so `ModelSnapshots` recordings and the adjacency guards are no longer consulted by the split (candidates for removal once callers stop passing them).
+
+## [1.0.4] — 2026-08-28
+
+### Added
+
+- **Nested per-model daily caps are now visible in the app.** A collapsible model-cap row sits between the pace sentence and the spend curve, with a 4pt pill alert dot when an enforced cap is at least 90% used or blocked; no further user action is required, and cooldown state ("relaxed until …"), blocked semantics, clean color-ramp detail, and state-level accessibility are included.
 
 ## [1.0.3] — 2026-08-14
 

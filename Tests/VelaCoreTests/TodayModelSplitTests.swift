@@ -148,4 +148,78 @@ struct TodayModelSplitTests {
         ])))
         #expect(r == .doesNotTie)
     }
+
+// MARK: - Formatter (UsageCounts, v1.1.0)
+
+@Test("count formatter matches the dashboard's compact conventions")
+func formatterConventions() {
+    #expect(UsageCounts.compact(50) == "50")
+    #expect(UsageCounts.compact(999) == "999")
+    #expect(UsageCounts.compact(1_000) == "1.0K")
+    #expect(UsageCounts.compact(2_046) == "2.0K")
+    #expect(UsageCounts.compact(14_590) == "14.6K")
+    #expect(UsageCounts.compact(379_130_000) == "379.13M")
+    #expect(UsageCounts.compact(8_360_000) == "8.36M")
+}
+
+@Test("zero count labels render as an em-dash, never a claimed 0")
+func formatterZeroIsSilent() {
+    #expect(UsageCounts.requestsLabel(0) == "—")
+    #expect(UsageCounts.tokensLabel(0) == "—")
+    #expect(UsageCounts.requestsLabel(2_046) == "2.0K requests")
+    #expect(UsageCounts.tokensLabel(14_590_000) == "14.59M tokens")
+}
+
+// MARK: - Wire decode (v1.1.0)
+
+@Test("a gateway response carrying today fields decodes them; one without decodes nil")
+func decodeToleranceOmitsTodayFields() throws {
+    let full = """
+    {"token_id":"t",
+     "daily_budget":{"limit_usd":300,"spent_usd":16.2,"remaining_usd":283.8,"used_percent":5.4,"limit_enabled":true,"spend_date":"2026-09-24"},
+     "current_month":{"total_cost_usd":620.5,"total_tokens":1,"requests":1},
+     "top_models":[],
+     "today":{"period_start":"2026-09-24T00:00:00-03:00","period_end":"2026-09-25T00:00:00-03:00","total_cost_usd":16.2,"total_tokens":450000000,"requests":2400},
+     "today_models":[{"model":"z-ai/glm-5.3-flash","total_cost_usd":9.25,"total_tokens":442000000,"requests":2345}]}
+    """
+    let usage = try JSONDecoder().decode(UsageResponse.self, from: Data(full.utf8))
+    #expect(usage.today?.totalCostUSD == 16.2)
+    #expect(usage.todayModels?.count == 1)
+    #expect(usage.todayModels?.first?.requests == 2345)
+
+    let legacy = """
+    {"token_id":"t",
+     "daily_budget":{"limit_usd":300,"spent_usd":16.2,"remaining_usd":283.8,"used_percent":5.4,"limit_enabled":true,"spend_date":"2026-09-24"},
+     "current_month":{"total_cost_usd":620.5,"total_tokens":1,"requests":1},
+     "top_models":[]}
+    """
+    let old = try JSONDecoder().decode(UsageResponse.self, from: Data(legacy.utf8))
+    #expect(old.today == nil)
+    #expect(old.todayModels == nil)
+}
+
+// MARK: - Tolerance boundaries (v1.1.0)
+
+@Test("a residue exactly at the $0.50 tolerance floor still splits; one cent past does not tie")
+func toleranceBoundary() {
+    // Named rows sum to 5.50 against a 5.00 day: residue −$0.50 = exactly at
+    // the floor (max(1% of 5.00, $0.50)) → tolerated, rows shown as-is.
+    let atFloor = split(TodayModelSplitEngine.split(current: usage(spentToday: 5.00, models: [("a", 5.50, 1_000, 5)])))
+    #expect(atFloor?.rows.first { $0.isOther } == nil)
+    #expect(atFloor?.rows.first { !$0.isOther }?.costUSD == 5.50)
+
+    // One cent past the floor genuinely disagrees → no split.
+    #expect(reason(TodayModelSplitEngine.split(current: usage(spentToday: 5.00, models: [("a", 5.51, 1_000, 5)]))) == .doesNotTie)
+}
+
+@Test("the $0.50 floor permits documented over-attribution on small days")
+func smallDayOverAttributionIsAccepted() {
+    // Documented accepted behavior (pr-deep-review residual risk): on a
+    // $10 day the floor is $0.50, so a named row claiming up to $0.50 over
+    // the day total still renders. The cost figures are the gateway's own
+    // today_models rows, so this is bounded noise, not a wrong breakdown.
+    let s = split(TodayModelSplitEngine.split(current: usage(spentToday: 10.00, models: [("a", 10.40, 1_000, 5)])))
+    #expect(s?.rows.first { !$0.isOther }?.costUSD == 10.40)
+    #expect(s?.rows.first { $0.isOther } == nil)
+}
 }
