@@ -308,9 +308,10 @@ public final class PopoverView: NSView {
                     modelRowsRendered += 1
                 }
             } else if isFresh, case .unavailable(let reason) = todayModelSplit {
-                // Fresh but not derivable (first day, month seam, gap): the
-                // honest total plus WHY there's no split. noSpendYet's nil
-                // note keeps the plain "monthly only" line.
+                // Fresh but not derivable: the honest total plus WHY there's
+                // no split (gateway without today_models, or a reconciliation
+                // failure). noSpendYet's nil note renders as silence — the
+                // app never claims "monthly only" now that Today has a split.
                 yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: reason.note, at: &yOffset)
                 modelRowsRendered = Self.maxModelRows   // total row + note fills the block
             } else {
@@ -812,7 +813,7 @@ public final class PopoverView: NSView {
         addSubview(totalLabel)
         managedSubviews.append(totalLabel)
 
-        let noteLabel = NSTextField(labelWithString: note ?? "Per-model breakdown is monthly only")
+        let noteLabel = NSTextField(labelWithString: note ?? "")
         noteLabel.font = NSFont.systemFont(ofSize: 10.5)
         noteLabel.textColor = .labelColor.withAlphaComponent(0.40)
         noteLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 16, width: 320 - 2 * sidePadding, height: 14)
