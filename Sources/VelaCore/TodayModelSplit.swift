@@ -1,13 +1,13 @@
 // Sources/VelaCore/TodayModelSplit.swift
-// Derives TODAY's per-model spend by differencing two month-cumulative
-// top_models snapshots (yesterday's baseline vs. the current response),
-// reconciled against the authoritative daily_budget.spent_usd so the rows
-// always sum to the day total.
-// Why: the API only exposes month-cumulative per-model figures, so "today
-// by model" is a derived number. The derivation can lie (truncated
-// top_models, cross-midnight snapshots, month rollovers) — every guard
-// here exists to prefer a labeled fallback over a confident wrong number.
-// RELEVANT FILES: Tests/VelaCoreTests/TodayModelSplitTests.swift, Sources/VelaCore/ModelSnapshots.swift, Sources/VelaCore/PollStateMachine.swift
+// Today's per-model breakdown, straight from the gateway: `/v1/me/usage`
+// carries `today_models` (cost/tokens/requests per model over the enforced
+// spend day, ranked by cost, capped at 5 rows) alongside
+// `daily_budget.spent_usd`. The rows are reconciled against that
+// authoritative day total so the block always ties to the hero figure.
+// Why: the gateway used to expose only month-cumulative per-model figures,
+// which forced a snapshot-differencing derivation; `today_models` made the
+// derivation (and its baseline store) dead weight.
+// RELEVANT FILES: Tests/VelaCoreTests/TodayModelSplitTests.swift, Sources/VelaCore/Models.swift
 
 import Foundation
 
@@ -16,20 +16,23 @@ public struct TodayModelRow: Equatable, Sendable {
     public let name: String
     public let costUSD: Double
     public let tokens: Int
-    /// The residual bucket that absorbs truncation/dropped/new models so the
-    /// rows still tie to the day total. Renders without a bar, tokens as "—".
+    public let requests: Int
+    /// The residual bucket that absorbs multi-token share, beyond-cap rows
+    /// and dust so the rows still tie to the day total. Renders without a
+    /// bar; requests and tokens as "—".
     public let isOther: Bool
 
-    public init(name: String, costUSD: Double, tokens: Int, isOther: Bool) {
+    public init(name: String, costUSD: Double, tokens: Int, requests: Int = 0, isOther: Bool) {
         self.name = name
         self.costUSD = costUSD
         self.tokens = tokens
+        self.requests = requests
         self.isOther = isOther
     }
 }
 
-/// The derived split: named rows (cost desc) + an optional pinned-last
-/// Other row. `totalUSD` is the authoritative daily_budget.spent_usd.
+/// The split: named rows (cost desc) + an optional pinned-last Other row.
+/// `totalUSD` is the authoritative daily_budget.spent_usd.
 public struct TodayModelSplit: Equatable, Sendable {
     public let rows: [TodayModelRow]
     public let totalUSD: Double
@@ -45,114 +48,107 @@ public enum TodayModelSplitResult: Equatable, Sendable {
     case unavailable(Reason)
 
     public enum Reason: Equatable, Sendable {
-        /// No yesterday snapshot yet (first run, or app was off over the seam).
-        /// Non-adjacent snapshots are filtered out by ModelSnapshots.baseline
-        /// itself, so the engine only ever sees nil — there is no separate
-        /// "not adjacent" reason.
-        case noBaseline
-        /// Baseline and current are in different UTC months (rollover seam).
-        case monthChanged
-        /// current_month.total_cost_usd fell below the baseline's beyond
-        /// tolerance — the month series was reset/restated underneath us.
-        case monthRegressed
-        /// Named deltas exceed the day total — the baseline is untrustworthy.
-        /// Unlike monthRegressed there is NO tolerance slack here: too much
-        /// explained is always wrong.
-        case overAttributed
         /// Nothing spent today yet — not an error, just nothing to split.
         case noSpendYet
+        /// The response carries no `today_models` (an older gateway build).
+        case gatewayLacksSplit
+        /// Named rows exceed the day total — the two figures don't tie, so
+        /// any split would be a confident wrong one.
+        case doesNotTie
 
         /// The sentence the Today section shows in place of the rows.
         public var note: String? {
             switch self {
-            case .noBaseline:
-                // Not "midnight UTC": the gateway's day rolls at ITS midnight,
-                // which for an offset label ("+03:00") can be 21:00 UTC. Claim
-                // the gateway day, never a UTC clock time.
-                return "Per-model split starts after the next gateway day"
-            case .monthChanged, .monthRegressed:
-                return "Per-model split resumes tomorrow (new month)"
-            case .overAttributed:
-                // The baseline was untrustworthy — almost always because the
-                // app wasn't running at yesterday's close, so yesterday's
-                // stored snapshot is stale and folds yesterday-afternoon
-                // spend into "today". Say THAT, not a permanent-sounding
-                // error: the split self-heals from tomorrow's baseline.
-                return "Per-model split needs one full day of the app running"
             case .noSpendYet:
                 return nil
+            case .gatewayLacksSplit:
+                return "This AI Hub gateway build doesn't expose today's split yet"
+            case .doesNotTie:
+                return "Per-model split doesn't tie to today's total"
             }
         }
     }
 }
 
-/// Pure differencing engine — no clock, no I/O. Callers parse spend_date and
-/// resolve the baseline; this type only sees the two payloads.
+/// Compact count formatting for the model rows' subtitle ("50", "2.0K",
+/// "379.13M"). Zero renders as an em-dash, never "0": the Other row's counts
+/// aren't derivable, and silence beats a claim.
+public enum UsageCounts {
+    public static func compact(_ n: Int) -> String {
+        let v = Double(n)
+        if v >= 1_000_000 { return String(format: "%.2fM", v / 1_000_000) }
+        if v >= 1_000 { return String(format: "%.1fK", v / 1_000) }
+        return String(n)
+    }
+
+    public static func requestsLabel(_ n: Int) -> String {
+        n > 0 ? "\(compact(n)) requests" : "—"
+    }
+
+    public static func tokensLabel(_ n: Int) -> String {
+        n > 0 ? "\(compact(n)) tokens" : "—"
+    }
+}
+
+/// Pure reconciliation — no clock, no I/O, no stored state. Sees one payload.
 public enum TodayModelSplitEngine {
     /// Sub-cent amounts round-trip the display as $0.00, so they're noise.
     static let displayEpsilon = 0.005
 
-    /// Downward month restatement is tolerated up to 1% of the baseline month
-    /// total (floor $0.50) — the gateway re-slices recent rows by cents.
-    static func monthTolerance(base: Double) -> Double {
+    /// The restatement tolerance every downward-reading guard in the app
+    /// shares: max 1% of the base, floored at $0.50. HistoryStore's monotonic
+    /// record guard and contamination filter use the same rule — it lives
+    /// here because it's pure math, and both callers already import VelaCore.
+    public static func restatementTolerance(base: Double) -> Double {
         max(base * 0.01, 0.50)
     }
 
     /// The month key ("yyyy-MM") a spend_date CARRIES, read from its calendar
-    /// label via GatewayDay — never from parsing it as an instant. A
-    /// non-UTC-midnight label ("2026-08-01T00:00:00+03:00") is the gateway's
-    /// Aug 1, so its month is "2026-08"; reading the UTC instant would say
-    /// "2026-07" and keep the split unavailable an extra day across the seam.
-    /// Both "2026-08-10" and "2026-08-10T00:00:00Z" resolve identically.
+    /// label via GatewayDay — never from parsing it as an instant. Used by
+    /// ModelSnapshots to tag recorded snapshots.
     public static func monthKey(of spendDate: String) -> String? {
         GatewayDay(spendDate: spendDate)?.monthKey()
     }
 
-    public static func split(current: UsageResponse, baseline: ModelSnapshot?) -> TodayModelSplitResult {
+    /// `baseline` is IGNORED since v1.1.0: the gateway's today_models replaced
+    /// the old snapshot-differencing derivation. The parameter survives so
+    /// PollStateMachine's call site (and its snapshot recording) stays
+    /// untouched; it is dead weight and a candidate for removal once callers
+    /// stop passing it.
+    public static func split(current: UsageResponse, baseline: ModelSnapshot? = nil) -> TodayModelSplitResult {
         let spentUSD = current.dailyBudget.spentUSD
 
         // 0. Nothing spent today — the honest answer is "no rows", not a
         // split of zeros.
         guard spentUSD > displayEpsilon else { return .unavailable(.noSpendYet) }
 
-        // 1. No baseline to difference against.
-        guard let baseline else { return .unavailable(.noBaseline) }
+        // 1. The gateway build must carry today's breakdown.
+        guard let models = current.todayModels else { return .unavailable(.gatewayLacksSplit) }
 
-        // 2. Month seam: baseline belongs to a different UTC month, so its
-        // cumulative figures aren't on the same series as current's.
-        guard let currentMonthKey = monthKey(of: current.dailyBudget.spendDate),
-              currentMonthKey == baseline.monthKey else {
-            return .unavailable(.monthChanged)
-        }
+        // 2. Named rows: the server's today rows above display noise, cost desc.
+        let named = models
+            .filter { $0.totalCostUSD > displayEpsilon }
+            .map { TodayModelRow(name: $0.model, costUSD: $0.totalCostUSD, tokens: $0.totalTokens, requests: $0.requests, isOther: false) }
+            .sorted { $0.costUSD > $1.costUSD }
 
-        // 3. Month regression: current_month.total_cost_usd should be
-        // monotonic within a month. A drop beyond tolerance means the series
-        // reset under us — the deltas would be garbage.
-        let monthTotal = current.currentMonth.totalCostUSD
-        if monthTotal < baseline.monthTotalUSD - monthTolerance(base: baseline.monthTotalUSD) {
-            return .unavailable(.monthRegressed)
-        }
-
-        // 4. Named rows: only models present in BOTH snapshots with a
-        // strictly-positive cost delta above the display epsilon. Everything
-        // else (new-in-current, dropped, restated-down, flat, dust) falls
-        // into Other so the rows still tie.
-        var named: [TodayModelRow] = []
-        for model in current.topModels {
-            guard let base = baseline.models[model.model] else { continue }
-            let deltaCost = model.totalCostUSD - base.costUSD
-            guard deltaCost > displayEpsilon else { continue }
-            let deltaTokens = max(model.totalTokens - base.tokens, 0)
-            named.append(TodayModelRow(name: model.model, costUSD: deltaCost, tokens: deltaTokens, isOther: false))
-        }
-        named.sort { $0.costUSD > $1.costUSD }
-
-        // 5. Reconcile against the authoritative day total. Over-attribution
-        // bails with NO tolerance: named rows claiming more than the day
-        // means the baseline is wrong, and a wrong split is worse than none.
+        // 3. Reconcile against the authoritative day total. today_models is
+        // scoped to this token; spent_usd spans the whole user, so the delta
+        // (other tokens' share, beyond-cap rows, dust) lands in Other and the
+        // rows always sum to the day total.
+        //
+        // Gateway cache lag (v1.1.0, observed in production): spent_usd and
+        // today.total_cost_usd are two aggregates with independent 1-minute
+        // caches, and spent_usd can trail by cents — the docs' "today_models
+        // ≤ spent_usd" is the steady state, not a guarantee mid-minute. A
+        // small NEGATIVE residue is therefore restatement noise, not a lie:
+        // show the rows as-is (they tie to today.total_cost_usd, the figure
+        // they actually sum to) rather than bailing or showing a negative
+        // Other. Beyond that tolerance the two figures genuinely disagree,
+        // and a split that doesn't tie is worse than none.
         let namedSum = named.reduce(0) { $0 + $1.costUSD }
         let other = spentUSD - namedSum
-        guard other >= -displayEpsilon else { return .unavailable(.overAttributed) }
+        let restatementTolerance = restatementTolerance(base: spentUSD)
+        guard other >= -restatementTolerance else { return .unavailable(.doesNotTie) }
 
         var rows = named
         if other > displayEpsilon {

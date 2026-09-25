@@ -41,7 +41,7 @@ public final class PopoverView: NSView {
     private var latestSuccessAt: Date?
     // The latest Today-by-model split, captured in update() like latestState
     // so periodChanged() can re-render the Today segment without a fresh poll.
-    private var latestModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)
+    private var latestModelSplit: TodayModelSplitResult = .unavailable(.noSpendYet)
 
     /// The update checker (v0.5.2), injected by main.swift after launch.
     /// addVersionBullet reads `pendingRelease` to place the update bell left
@@ -91,16 +91,16 @@ public final class PopoverView: NSView {
     /// blank air), so the section is the same height whichever tab is up —
     /// the second half of the never-resize-on-switch guarantee above.
     private static let maxModelRows = 5
-    /// One model row's FULL stride: makeModelRow's 24pt row + its 8pt of air
-    /// (it returns rowHeight + 8). The padding loop adds this per empty slot
+    /// One model row's FULL stride: makeModelRow's 36pt two-line row + its
+    /// 4pt of air (it returns 40). The padding loop adds this per empty slot
     /// and makeTodayTotalRow claims maxModelRows × it, so every models-block
     /// branch lands on exactly maxModelRows × stride — v0.4.3's first cut used
     /// the bare rowHeight and under-charged rendered rows by 8pt each, which
     /// made a Today-total ↔ Month switch resize the card again.
-    private static let modelRowSlotHeight: CGFloat = 32
+    private static let modelRowSlotHeight: CGFloat = 40
 
     @MainActor
-    public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date, todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)) {
+    public func update(state: PollState, history: HistoryStore, exhaustedAt: Date?, lastSuccessAt: Date?, now: Date, todayModelSplit: TodayModelSplitResult = .unavailable(.noSpendYet)) {
         // Clear all subviews and rebuild from scratch on each update.
         subviews.forEach { $0.removeFromSuperview() }
         managedSubviews.removeAll()
@@ -275,10 +275,10 @@ public final class PopoverView: NSView {
         yOffset += makeModelsHeader(at: &yOffset)
         var modelRowsRendered = 0
         if selectedPeriod == .today, let usage = usageResponse {
-            // Today segment, three states. The split is the snapshot-derived
-            // per-model breakdown (v0.3.0) — only trustable when the data is
-            // fresh, so a stale reading falls back to the honest total-only
-            // row and never shows a derived split against hours-old data.
+            // Today segment, three states. The split is the gateway's own
+            // today_models — only trustable when the data is fresh, so a
+            // stale reading falls back to the honest total-only row and
+            // never shows a split against hours-old data.
             if isFresh, case .split(let s) = todayModelSplit {
                 // Shares are of TODAY's total spend (the authoritative daily
                 // figure), so the percents tie to the hero number. The pinned
@@ -291,26 +291,27 @@ public final class PopoverView: NSView {
                 let dayTotal = usage.dailyBudget.spentUSD
                 let named = s.rows.filter { !$0.isOther }
                 let engineOther = s.rows.first { $0.isOther }?.costUSD ?? 0
-                let displayRows: [(name: String, cost: Double, tokens: Double, isOther: Bool)]
+                let displayRows: [(name: String, cost: Double, tokens: Double, requests: Int, isOther: Bool)]
                 if named.count <= 4 {
-                    displayRows = named.map { ($0.name, $0.costUSD, Double($0.tokens), false) }
-                        + (engineOther > 0 ? [("Other", engineOther, 0, true)] : [])
+                    displayRows = named.map { ($0.name, $0.costUSD, Double($0.tokens), $0.requests, false) }
+                        + (engineOther > 0 ? [("Other", engineOther, 0, 0, true)] : [])
                 } else {
                     let kept = named.prefix(4)
                     let folded = named.dropFirst(4).reduce(0) { $0 + $1.costUSD } + engineOther
-                    displayRows = kept.map { ($0.name, $0.costUSD, Double($0.tokens), false) }
-                        + [( "Other", folded, 0, true )]
+                    displayRows = kept.map { ($0.name, $0.costUSD, Double($0.tokens), $0.requests, false) }
+                        + [( "Other", folded, 0, 0, true )]
                 }
                 for row in displayRows {
                     let displayName = row.name.split(separator: "/").last.map(String.init) ?? row.name
                     let share = ModelShare.percent(cost: row.cost, total: dayTotal)
-                    yOffset += makeModelRow(name: displayName, cost: row.cost, tokens: row.tokens, sharePercent: share, showsShare: !row.isOther, at: &yOffset)
+                    yOffset += makeModelRow(name: displayName, cost: row.cost, tokens: Double(row.tokens), requests: row.requests, sharePercent: share, showsShare: !row.isOther, at: &yOffset)
                     modelRowsRendered += 1
                 }
             } else if isFresh, case .unavailable(let reason) = todayModelSplit {
-                // Fresh but not derivable (first day, month seam, gap): the
-                // honest total plus WHY there's no split. noSpendYet's nil
-                // note keeps the plain "monthly only" line.
+                // Fresh but not derivable: the honest total plus WHY there's
+                // no split (gateway without today_models, or a reconciliation
+                // failure). noSpendYet's nil note renders as silence — the
+                // app never claims "monthly only" now that Today has a split.
                 yOffset += makeTodayTotalRow(spent: usage.dailyBudget.spentUSD, note: reason.note, at: &yOffset)
                 modelRowsRendered = Self.maxModelRows   // total row + note fills the block
             } else {
@@ -331,7 +332,7 @@ public final class PopoverView: NSView {
                 // Month has no "Other" residual, so every row is a real model
                 // and shows its share. Explicit (not the default) so a future
                 // Month-side Other-fold is forced to reconsider this line.
-                yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), sharePercent: share, showsShare: true, at: &yOffset)
+                yOffset += makeModelRow(name: displayName, cost: model.totalCostUSD, tokens: Double(model.totalTokens), requests: model.requests, sharePercent: share, showsShare: true, at: &yOffset)
                 modelRowsRendered += 1
             }
         }
@@ -812,7 +813,7 @@ public final class PopoverView: NSView {
         addSubview(totalLabel)
         managedSubviews.append(totalLabel)
 
-        let noteLabel = NSTextField(labelWithString: note ?? "Per-model breakdown is monthly only")
+        let noteLabel = NSTextField(labelWithString: note ?? "")
         noteLabel.font = NSFont.systemFont(ofSize: 10.5)
         noteLabel.textColor = .labelColor.withAlphaComponent(0.40)
         noteLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight - 16, width: 320 - 2 * sidePadding, height: 14)
@@ -834,9 +835,7 @@ public final class PopoverView: NSView {
     /// use monospacedDigitSystemFont so their right edges and decimal points
     /// stack into true columns — the hero already proved this is what makes
     /// figures read as aligned (the old proportional face left a wavy edge).
-    private func makeModelRow(name: String, cost: Double, tokens: Double, sharePercent: Int, showsShare: Bool = true, at yOffset: inout CGFloat) -> CGFloat {
-        let rowHeight: CGFloat = 24
-
+    private func makeModelRow(name: String, cost: Double, tokens: Double, requests: Int = 0, sharePercent: Int, showsShare: Bool = true, at yOffset: inout CGFloat) -> CGFloat {
         // Name + share, one attributed label so a long model name truncates
         // with the share still attached. Share is dimmer + smaller so it reads
         // as a qualifier, not a second name.
@@ -858,7 +857,7 @@ public final class PopoverView: NSView {
         // overlap the cost column's frame. A long name truncates its tail
         // rather than push the number columns — the provider prefix is
         // already stripped, so the meaningful part leads.
-        nameLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - rowHeight, width: 152, height: rowHeight)
+        nameLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - 20, width: 152, height: 20)
         addSubview(nameLabel)
         managedSubviews.append(nameLabel)
 
@@ -869,9 +868,27 @@ public final class PopoverView: NSView {
         costLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         costLabel.textColor = .labelColor
         costLabel.alignment = .right
-        costLabel.frame = NSRect(x: 320 - sidePadding - 66 - 66, y: bounds.height - yOffset - rowHeight, width: 66, height: rowHeight)
+        costLabel.frame = NSRect(x: 320 - sidePadding - 66 - 66, y: bounds.height - yOffset - 20, width: 66, height: 20)
         addSubview(costLabel)
         managedSubviews.append(costLabel)
+
+        // Subtitle (second line, 10.5pt at 40% alpha): the dashboard-style
+        // detail — "1.2K requests · 8.36M tokens". A zero on either side
+        // renders as an em-dash: the Other row's requests aren't derivable,
+        // and silence beats a claim (the app-wide honesty rule).
+        let detailAttr = NSMutableAttributedString(string: UsageCounts.requestsLabel(requests), attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular),
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.40),
+        ])
+        detailAttr.append(NSAttributedString(string: " · \(UsageCounts.tokensLabel(Int(tokens)))", attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular),
+            .foregroundColor: NSColor.labelColor.withAlphaComponent(0.40),
+        ]))
+        let detailLabel = NSTextField(labelWithAttributedString: detailAttr)
+        detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.frame = NSRect(x: sidePadding, y: bounds.height - yOffset - 36, width: 152, height: 12)
+        addSubview(detailLabel)
+        managedSubviews.append(detailLabel)
 
         // Efficiency (11pt tabular digits, 40% alpha, right, 64 wide): cost
         // per million tokens. Raw token counts are a vanity metric — two
@@ -880,8 +897,8 @@ public final class PopoverView: NSView {
         // usage) shows an em-dash rather than a divide-by-zero or a
         // meaningless $0.00. Past $999/M the label switches to compact form
         // ("$1.2k/M") so a new model with a handful of expensive calls
-        // doesn't clip the column. Dropped 2pt so its baseline sits on the
-        // 13pt cost baseline (the two fonts' first baselines differ by ~2pt).
+        // doesn't clip the column. Sits on the SECOND line, sharing the
+        // subtitle row with the requests·tokens detail.
         let efficiencyText: String
         if tokens > 0 {
             let perMillion = cost / (tokens / 1_000_000)
@@ -899,11 +916,11 @@ public final class PopoverView: NSView {
         tokenLabel.textColor = .labelColor.withAlphaComponent(0.40)
         tokenLabel.alignment = .right
         // 66pt clears the worst case ($999.99k/M = 64.4pt measured).
-        tokenLabel.frame = NSRect(x: 320 - sidePadding - 66, y: bounds.height - yOffset - rowHeight - 2, width: 66, height: rowHeight)
+        tokenLabel.frame = NSRect(x: 320 - sidePadding - 66, y: bounds.height - yOffset - 35, width: 66, height: 13)
         addSubview(tokenLabel)
         managedSubviews.append(tokenLabel)
 
-        return rowHeight + 8
+        return Self.modelRowSlotHeight
     }
 
     private func makeStaleBanner(minutesOld: Int, at yOffset: inout CGFloat) -> CGFloat {
@@ -1206,14 +1223,14 @@ public final class PopoverView: NSView {
     }
 
     /// Aggregates model usage over the selected window. Month: the API's
-    /// top_models (current-month per-model breakdown). Today: the gateway
-    /// doesn't return per-day model splits, so this returns empty and the
-    /// section shows today's total + a note instead of a fake list.
-    private func aggregatedModels(response: UsageResponse?, history: HistoryStore, now: Date) -> [(model: String, totalCostUSD: Double, totalTokens: Int)] {
+    /// top_models (current-month per-model breakdown). Today: the gateway's
+    /// today_models (spend-day per-model breakdown); the split rendering in
+    /// update() handles it, so this returns empty for Today.
+    private func aggregatedModels(response: UsageResponse?, history: HistoryStore, now: Date) -> [(model: String, totalCostUSD: Double, totalTokens: Int, requests: Int)] {
         guard let response else { return [] }
         switch selectedPeriod {
         case .month:
-            return response.topModels.map { (model: $0.model, totalCostUSD: $0.totalCostUSD, totalTokens: $0.totalTokens) }
+            return response.topModels.map { (model: $0.model, totalCostUSD: $0.totalCostUSD, totalTokens: $0.totalTokens, requests: $0.requests) }
         case .today:
             return []
         }

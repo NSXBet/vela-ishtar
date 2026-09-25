@@ -9,7 +9,7 @@ glance. An instrument, not a scoreboard.
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2014%2B%20(Apple%20Silicon)-000000?style=flat-square&logo=apple&logoColor=white)
 ![Swift](https://img.shields.io/badge/Swift%206-AppKit%20%C2%B7%20zero%20deps-F05138?style=flat-square&logo=swift&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-285%20passing-30d158?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-275%20passing-30d158?style=flat-square)
 ![License](https://img.shields.io/badge/internal-NSX-8a8a8e?style=flat-square)
 [![Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-blue?style=flat-square)](CHANGELOG.md)
 
@@ -146,8 +146,8 @@ That's the same one-liner the update bell hands you.
 **Direct download:**
 
 ```bash
-curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v1.0.4/VelaIshtar-1.0.4.zip
-unzip VelaIshtar-1.0.4.zip -d /Applications/
+curl -LO https://github.com/NSXBet/vela-ishtar/releases/download/v1.0.5/VelaIshtar-1.0.5.zip
+unzip VelaIshtar-1.0.5.zip -d /Applications/
 xattr -cr "/Applications/Vela Ishtar.app"
 open -a "Vela Ishtar"
 ```
@@ -193,15 +193,15 @@ UTC used to file yesterday's total under today and make the curve visibly
 decrease within a day.
 
 **Models period switcher.** Month ranks models by current-month cost, straight
-from the API. Today is *derived*: the gateway exposes only month-cumulative
-per-model figures, so today's split is computed by differencing against a stored
-snapshot of yesterday, then reconciled against your authoritative daily total
-(any residue lands in an explicit `Other` row). It needs a yesterday snapshot to
-difference against, so it unlocks after the app has been running across one
-midnight UTC. If the numbers don't tie — the app wasn't running at yesterday's
-close, or a month rolled over — you get your real daily total plus a line saying
-why there's no split, never a confident wrong breakdown. A Week segment was
-removed: `/v1/me/usage` has no weekly per-model endpoint.
+from the API's `top_models`. Today gets its per-model split the same way — the
+gateway's `today_models` reports the spend day's cost, tokens, and requests per
+model, which the app reconciles against your authoritative daily total (any
+residue from other tokens or credentials lands in an explicit `Other` row). If
+the gateway can't provide a split — an older gateway build, or the two daily
+aggregates disagree beyond the restatement tolerance — you get your real daily
+total plus a line saying why there's no split, never a confident wrong
+breakdown. A Week segment was removed: `/v1/me/usage` has no weekly per-model
+endpoint.
 
 **Comparison surfaces wait for enough data.** The ghost curve and the median-day
 sentence need five past days holding a reading at the hour being compared; the
@@ -248,7 +248,7 @@ codebase explains itself). Builds with bare `swiftc` into an ad-hoc-signed
 `.app` — no Xcode. SwiftPM runs the unit tests.
 
 ```bash
-make test     # 285 unit tests
+make test     # 275 unit tests
 ./build.sh    # compile + bundle + ad-hoc sign into build/Vela Ishtar.app
 make release  # sync README, rebuild, zip for the Homebrew cask
 ```
@@ -256,7 +256,8 @@ make release  # sync README, rebuild, zip for the Homebrew cask
 The split is deliberate. `Sources/VelaCore` is pure Foundation and holds every
 rule worth pinning — pace verdicts and the median-day benchmark, the week
 window, cell-intensity buckets, the budget border's dash math and colour
-thresholds, hover-readout text, the Today-by-model differencing engine, footer
+thresholds, hover-readout text, the Today-by-model reconciliation of the
+gateway's `today_models` rows against the authoritative daily total, footer
 arithmetic, semver comparison — so all of it is unit-tested. `Sources/App` is
 AppKit rendering and event handling, verified on screen rather than in tests:
 geometry that only means something once it's drawn.

@@ -4,23 +4,25 @@ All notable changes to Vela Ishtar, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project uses
 semantic versioning.
 
+## [1.0.5] — 2026-09-24
+
+### Added
+
+- **Model rows now show requests and tokens, straight from the gateway.** Each model row in the Today and Month tabs is two lines: name · share% · cost, and `N requests · X tokens` plus the $/M efficiency underneath. Today's per-model rows come from the gateway's `today_models` on `/v1/me/usage`; the Month tab's come from `top_models` as before. A zero counter renders as an em-dash, and the Other row never claims counts it can't derive.
+
+### Fixed
+
+- **The Today models split no longer disappears.** The split now comes ready from the gateway instead of being derived from yesterday's snapshot, which removes the "needs one full day of the app running" state, the month-seam unavailability, and the snapshot-differencing failure modes entirely. A small production-observed cache-lag between the gateway's `spent_usd` and `today_models` aggregates (~$0.09) is tolerated via the existing restatement rule (max 1% or $0.50) instead of hiding the whole split.
+
+### Removed
+
+- The dead snapshot-differencing machinery: the split no longer reads the stored baseline, so `ModelSnapshots` recordings and the adjacency guards are no longer consulted by the split (candidates for removal once callers stop passing them).
+
 ## [1.0.4] — 2026-08-28
 
 ### Added
 
 - **Nested per-model daily caps are now visible in the app.** A collapsible model-cap row sits between the pace sentence and the spend curve, with a 4pt pill alert dot when an enforced cap is at least 90% used or blocked; no further user action is required, and cooldown state ("relaxed until …"), blocked semantics, clean color-ramp detail, and state-level accessibility are included.
-
-### Changed
-
-- None.
-
-### Fixed
-
-- None.
-
-### Removed
-
-- None.
 
 ## [1.0.3] — 2026-08-14
 

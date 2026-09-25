@@ -35,7 +35,7 @@ public struct PollStateMachine: Sendable {
     /// The most recent Today-by-model split, recomputed on each successful
     /// ingest. Starts unavailable (no baseline until the second gateway day).
     /// The App layer renders `.split` as rows and `.unavailable` as a note.
-    public private(set) var todayModelSplit: TodayModelSplitResult = .unavailable(.noBaseline)
+    public private(set) var todayModelSplit: TodayModelSplitResult = .unavailable(.noSpendYet)
 
     /// Loads persisted spend history AND model snapshots from disk
     /// (no-op-safe if either file is missing). Called once at app launch
